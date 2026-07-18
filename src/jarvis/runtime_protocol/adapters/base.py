@@ -104,32 +104,47 @@ class DispatchCoordinator:
     def dispatch(self, command_id: str) -> DispatchReport:
         """Dispatch a validated command and record its outcome.
 
-        TTL is re-checked first (principle 4); an expired command is never sent.
-        The command is routed by ``device_id`` → profile → adapter name. The
-        adapter's honest status is mapped onto the lifecycle; on any failure the
-        safe result is non-execution (principle 2.7).
+        Routing is resolved *before* the command is marked ``DISPATCHED``: the
+        command is routed by ``device_id`` → profile → adapter name, then the TTL
+        is re-checked immediately before hand-off (principle 4). Only then does it
+        become ``DISPATCHED`` — so a command that can't be routed or has expired
+        never carries a state implying it was sent. The adapter's honest status is
+        mapped onto the lifecycle; on any failure the safe result is non-execution
+        (principle 2.7).
         """
-        guard_state = self._engine.dispatch_guard(command_id)
-        if guard_state is CommandState.EXPIRED:
+        state = self._engine.state(command_id)
+        if state is None:
+            raise KeyError(command_id)
+        if state is not CommandState.VALIDATED:
+            # Idempotent: a command dispatched once never executes again. A repeat
+            # call reports the current state without touching an adapter.
             return DispatchReport(
-                command_id, CommandState.EXPIRED, None, "TTL lapsed before dispatch"
+                command_id, state, None, f"already dispatched (state {state})"
             )
 
         command = self._engine.command(command_id)
-        if command is None:  # pragma: no cover - dispatch_guard already proved it exists
-            raise KeyError(command_id)
+        assert command is not None  # state was not None, so the ledger entry exists
 
         profile = self._registry.get(command.device_id)
         if profile is None:
-            state = self._engine.mark_failed(command_id)
+            # Target device is no longer registered: cannot route, never sent.
+            final = self._engine.transition_to(command_id, CommandState.REJECTED)
             return DispatchReport(
-                command_id, state, AdapterStatus.FAILED,
+                command_id, final, None,
                 f"device {command.device_id!r} is not registered",
             )
 
         adapter = self._adapters.get(profile.adapter)
         if adapter is None:
+            # Wiring error: the profile names an adapter that was never registered.
+            # Fail loud; the command stays VALIDATED (honestly never dispatched).
             raise UnknownAdapterError(profile.adapter, command.device_id)
+
+        guard_state = self._engine.dispatch_guard(command_id)
+        if guard_state is CommandState.EXPIRED:
+            return DispatchReport(
+                command_id, CommandState.EXPIRED, None, "TTL lapsed before dispatch"
+            )
 
         result = adapter.execute(command, profile)
         final_state = self._engine.state(command_id)

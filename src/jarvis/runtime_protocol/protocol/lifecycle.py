@@ -4,6 +4,11 @@ Success path:  VALIDATED → DISPATCHED → ACKNOWLEDGED → VERIFIED
 Failure paths: REJECTED (never dispatched), EXPIRED (TTL lapsed before dispatch),
                FAILED (adapter error), UNVERIFIED (dispatched but state unconfirmed).
 
+A validated command can also become REJECTED without ever being dispatched — the
+dispatcher takes this edge when it cannot route the command (the target device is
+no longer registered), so an unroutable command reaches an honest terminal state
+instead of a fabricated DISPATCHED.
+
 The protocol owns VALIDATED/REJECTED/EXPIRED and the transition rules here; the
 adapter layer (chunk 3) drives DISPATCHED onward but must move only along these
 edges. Terminal states never transition again.
@@ -47,7 +52,7 @@ TERMINAL_STATES: frozenset[CommandState] = frozenset(
 # Allowed forward edges. Any transition not listed here is a programming error.
 _ALLOWED: dict[CommandState, frozenset[CommandState]] = {
     CommandState.VALIDATED: frozenset(
-        {CommandState.DISPATCHED, CommandState.EXPIRED}
+        {CommandState.DISPATCHED, CommandState.EXPIRED, CommandState.REJECTED}
     ),
     CommandState.DISPATCHED: frozenset(
         {CommandState.ACKNOWLEDGED, CommandState.FAILED, CommandState.UNVERIFIED}

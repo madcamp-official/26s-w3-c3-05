@@ -19,6 +19,12 @@ def test_validated_may_expire() -> None:
     assert can_transition(CommandState.VALIDATED, CommandState.EXPIRED)
 
 
+def test_validated_may_be_rejected_when_unroutable() -> None:
+    # The dispatcher takes this edge when it cannot route a validated command.
+    assert can_transition(CommandState.VALIDATED, CommandState.REJECTED)
+    assert CommandState.REJECTED in TERMINAL_STATES
+
+
 def test_dispatched_may_fail_or_be_unverified() -> None:
     assert can_transition(CommandState.DISPATCHED, CommandState.FAILED)
     assert can_transition(CommandState.DISPATCHED, CommandState.UNVERIFIED)

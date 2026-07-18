@@ -142,7 +142,7 @@ def test_expired_command_is_not_sent_to_adapter() -> None:
     assert adapter.calls == []  # safe default: never dispatched
 
 
-def test_unregistered_adapter_raises() -> None:
+def test_unregistered_adapter_raises_and_leaves_command_undispatched() -> None:
     registry = _registry(adapter_name="ghost")
     engine = ProtocolEngine(registry, RuntimeClock(FakeTime()))
     coordinator = DispatchCoordinator(engine, registry, {})  # no "ghost" adapter
@@ -150,15 +150,35 @@ def test_unregistered_adapter_raises() -> None:
     command_id = _submit(engine)
     with pytest.raises(UnknownAdapterError):
         coordinator.dispatch(command_id)
+    # Not stuck in a fabricated DISPATCHED: it was never sent, so it stays VALIDATED.
+    assert engine.state(command_id) == CommandState.VALIDATED
 
 
-def test_device_missing_from_registry_marks_failed() -> None:
+def test_device_missing_from_registry_is_rejected_not_dispatched() -> None:
     # Command validated against a full registry, then dispatched with an empty one.
     full = _registry()
     engine = ProtocolEngine(full, RuntimeClock(FakeTime()))
     command_id = _submit(engine)
 
     empty = DeviceRegistry({})
-    coordinator = DispatchCoordinator(engine, empty, {"fake": FakeAdapter("fake", AdapterResult(AdapterStatus.ACKNOWLEDGED))})
+    adapter = FakeAdapter("fake", AdapterResult(AdapterStatus.ACKNOWLEDGED))
+    coordinator = DispatchCoordinator(engine, empty, {"fake": adapter})
     report = coordinator.dispatch(command_id)
-    assert report.final_state == CommandState.FAILED
+    # Unroutable → REJECTED (never dispatched), and no adapter was touched.
+    assert report.final_state == CommandState.REJECTED
+    assert adapter.calls == []
+
+
+def test_second_dispatch_is_idempotent_and_does_not_re_execute() -> None:
+    registry = _registry()
+    engine = ProtocolEngine(registry, RuntimeClock(FakeTime()))
+    adapter = FakeAdapter("fake", AdapterResult(AdapterStatus.ACKNOWLEDGED, "ok"))
+    coordinator = DispatchCoordinator(engine, registry, {"fake": adapter})
+
+    command_id = _submit(engine)
+    first = coordinator.dispatch(command_id)
+    second = coordinator.dispatch(command_id)
+
+    assert first.final_state == CommandState.ACKNOWLEDGED
+    assert second.final_state == CommandState.ACKNOWLEDGED  # unchanged
+    assert len(adapter.calls) == 1  # executed exactly once, no raise
