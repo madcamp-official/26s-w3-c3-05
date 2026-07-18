@@ -37,6 +37,11 @@ _NX_KEYTYPE = {
 # 감각을 맞추는 정도로 충분 — 정밀 매핑은 실기기 튜닝 대상).
 _SCROLL_UNIT_LINE = 1
 
+# 표준 ANSI 키보드 keycode(Carbon HIToolbox/Events.h). Cmd+Tab 창 전환용.
+_KEYCODE_TAB = 0x30
+_KEYCODE_COMMAND = 0x37
+_KEYCODE_SHIFT = 0x38
+
 
 class MacOSInputSink:
     """Real OS input via Quartz/AppKit CGEvent (macOS only, manually verified).
@@ -92,3 +97,31 @@ class MacOSInputSink:
             None, Quartz.kCGEventMouseMoved, target, Quartz.kCGMouseButtonLeft
         )
         self._post(event)
+
+    def switch_window(self, forward: bool, repeat: int) -> None:
+        """Cmd+Tab (forward) / Cmd+Shift+Tab (backward)로 창을 전환한다.
+
+        Win32의 Alt+Tab hold와 같은 구조: Command를 누른 채로 Tab을 repeat번
+        누른다. Quartz 키 이벤트에 Command(+backward면 Shift) 플래그를 실어
+        보내며, 앱 스위처가 뜬 상태를 유지하도록 Command down/up으로 감싼다.
+        """
+        import Quartz
+
+        flags = Quartz.kCGEventFlagMaskCommand
+        if not forward:
+            flags |= Quartz.kCGEventFlagMaskShift
+
+        def key(code: int, key_down: bool, event_flags: int) -> None:
+            event = Quartz.CGEventCreateKeyboardEvent(None, code, key_down)
+            Quartz.CGEventSetFlags(event, event_flags)
+            self._post(event)
+
+        key(_KEYCODE_COMMAND, True, Quartz.kCGEventFlagMaskCommand)
+        if not forward:
+            key(_KEYCODE_SHIFT, True, flags)
+        for _ in range(repeat):
+            key(_KEYCODE_TAB, True, flags)
+            key(_KEYCODE_TAB, False, flags)
+        if not forward:
+            key(_KEYCODE_SHIFT, False, Quartz.kCGEventFlagMaskCommand)
+        key(_KEYCODE_COMMAND, False, 0)
