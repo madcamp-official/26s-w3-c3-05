@@ -65,6 +65,15 @@ from jarvis.gesture_fusion.intent import (
     IntentConfig,
     assemble_intent,
 )
+from jarvis.gesture_fusion.hard_negative_mining import (
+    DEFAULT_HARD_NEGATIVE_CONFIG,
+    HardNegative,
+    HardNegativeConfig,
+    LabeledCommitAttempt,
+    WrongActuationRateResult,
+    compute_wrong_actuation_rate,
+    mine_hard_negatives,
+)
 
 __all__ = [
     "DEFAULT_GESTURE_CONFIG",
@@ -109,4 +118,11 @@ __all__ = [
     "GestureCapabilityMap",
     "IntentConfig",
     "assemble_intent",
+    "DEFAULT_HARD_NEGATIVE_CONFIG",
+    "HardNegative",
+    "HardNegativeConfig",
+    "LabeledCommitAttempt",
+    "WrongActuationRateResult",
+    "compute_wrong_actuation_rate",
+    "mine_hard_negatives",
 ]
