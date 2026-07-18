@@ -19,28 +19,34 @@ jarvis-gaze evaluate --input data/evaluation/gaze.csv --dataset-id bright-01 --c
 `inspect-head-pose`는 실제 카메라에서 좌우·상하 움직임에 따른 yaw/pitch 부호와 축을
 확인하기 위한 진단 명령이다. 모델 파일 확보 방법은 `models/README.md`를 따른다.
 
-## Pipeline monitor (디버깅 UI)
+## Pipeline monitor (실시간 데스크탑 앱)
 
-파이프라인 각 단계(캡처·Gaze·Gesture·Fusion·Command·Adapter·Latency·Trace)의 상태를
-한 화면에서 시각적으로 확인하는 디버깅 대시보드. 외부 의존성 없이 자체 완결 HTML을
-생성한다. 구현은 `src/jarvis/monitoring/`에 있고 `jarvis-monitor` 명령으로 실행한다.
+웹캠을 실시간으로 띄우고 파이프라인 각 단계를 시각적으로 검증하는 데스크탑 GUI
+(PySide6). 구현은 `src/jarvis/monitoring/`에 있고 `jarvis-monitor` 명령으로 실행한다.
 
 ```powershell
-pip install -e ".[dev]"
-
-# 1) HTML 파일로 생성해서 브라우저로 연다
-jarvis-monitor --open                       # monitor.html 생성 후 브라우저 실행
-jarvis-monitor -o build/monitor.html        # 출력 경로 지정
-
-# 2) 라이브 새로고침 서버 (2초마다 자동 갱신)
-jarvis-monitor --serve 8000                 # http://127.0.0.1:8000
-jarvis-monitor --serve 8000 --refresh 1     # 갱신 주기 1초
+pip install -e ".[ui,dev]"        # PySide6 + opencv
+jarvis-monitor                    # 데스크탑 창 실행
+jarvis-monitor --camera 1         # 카메라 장치 인덱스 지정
 ```
 
-- 현재는 **대표 목업 스냅샷**(`monitoring/demo.py`)을 렌더링한다. 화면 상단에
-  `source: mock ...`으로 표시되며, Gesture·Fusion 패널은 2인 파트 미구현이라
-  `미구현 · mock` 배지가 붙는다. 라이브 배선 후에는 `monitoring/cli.py`의
-  `current_snapshot()`만 실제 스냅샷 빌더로 교체하면 되고 렌더링 경로는 그대로다.
-- 정직성 원칙상 `UNKNOWN`·`UNVERIFIED`·`FAILED`·`REJECTED`를 색만 다르게 그대로
-  표시한다. 상태를 임의로 성공 처리하지 않는다. SmartThings 토큰 등 비밀값은 화면에
-  절대 노출하지 않는다.
+화면 구성:
+
+- **실시간 탭**: 가운데 라이브 웹캠(FPS·해상도 HUD 오버레이), 오른쪽 사이드바에
+  인식된 제스처 목록, 하단에 시스템 메시지 패널.
+- **파이프라인 탭**: 단계별(Capture·Gaze·Gesture·Fusion·Protocol·Adapters) 실제
+  실행 가능 여부 카드. `LIVE`(초록)/`DEGRADED`(호박, 의존성·모델·설정 부족)/
+  `UNAVAILABLE`(회색, 미구현)/`ERROR`(빨강)로 정직하게 표시한다.
+
+동작 원칙:
+
+- 지금 실제로 도는 것: 웹캠 캡처, 어댑터/설정 감지, 시스템 메시지. 실제 데이터만 쓴다.
+- 아직 없는 것(정직하게 표시): **Gesture·Fusion(2인 파트 미구현)** → 제스처 사이드바는
+  "제스처 모듈 미구현"으로, 파이프라인 탭은 `UNAVAILABLE`로 나온다. Gaze는 mediapipe
+  (`vision` extra)와 `face_landmarker.task` 모델이 있어야 `LIVE`가 된다.
+- 인식되지 않은 것을 인식된 것처럼 꾸미지 않는다. 카메라 열기 실패도 메시지 패널에
+  그대로 남긴다. SmartThings 토큰 등 비밀값은 화면에 노출하지 않는다.
+
+라이브 연결 지점: 제스처 사이드바는 `monitoring/gesture_source.py`의 `GestureSource`에
+바인딩되어 있다. 2인 파트가 완성되면 `GestureEstimate`를 어댑트하는 실제 소스로
+`NullGestureSource`를 교체하기만 하면 UI는 그대로 채워진다.
