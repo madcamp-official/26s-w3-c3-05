@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-# ModelConfig는 torch 무의존이지만 torch 모듈(model.py)에 함께 있어, extra 미설치
-# 환경에서 수집이 깨지지 않도록 건너뛴다(test_model.py와 같은 이유).
-pytest.importorskip("torch")
-
-from jarvis.gesture_fusion.model import ModelConfig  # noqa: E402
+# ModelConfig는 torch 무의존이라 model_protocol(torch-free)에서 가져온다 — `ml` extra
+# 없이도 이 순수 검증 규칙을 CI에서 돌린다(importorskip 불필요).
+from jarvis.gesture_fusion.model_protocol import ModelConfig
 
 
 def test_default_labels_include_none_background_class() -> None:

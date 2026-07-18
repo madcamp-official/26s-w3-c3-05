@@ -44,6 +44,62 @@ DEFAULT_GESTURE_LABELS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True, slots=True)
+class ModelConfig:
+    """Causal TCN 아키텍처 파라미터.
+
+    `GestureConfig`(전처리 임계값)와 분리한다 — 이 값들은 모델 가중치의 shape을
+    결정하므로, 저장된 가중치와 함께 버전 관리해야 하는 별개의 관심사다
+    (development-principles.md 7.3).
+
+    torch에 의존하지 않는 순수 값 타입이라(`ModelPrediction`·`ModelMetadata`와 같이)
+    여기 torch-free 경계에 둔다 — `ml` extra 없이도 검증 규칙을 단위 테스트할 수 있다.
+    """
+
+    feature_dim: int
+    """입력 feature 벡터 차원. `features.feature_dimension(GestureConfig)`와 일치해야 한다."""
+
+    gesture_labels: tuple[str, ...] = DEFAULT_GESTURE_LABELS
+    """gesture 분류 head의 출력 클래스 순서. 열린 문자열 키(interface-contract.md)."""
+
+    channels: tuple[int, ...] = (32, 32, 32)
+    """각 temporal block의 채널 수. 층이 늘수록(dilation이 커질수록) 더 긴 과거를 본다."""
+
+    kernel_size: int = 3
+    """각 causal conv의 시간축 커널 크기."""
+
+    dropout: float = 0.2
+    """temporal block 내부 dropout 비율 (0=off, 학습 시에만 적용)."""
+
+    def __post_init__(self) -> None:
+        if self.feature_dim <= 0:
+            raise ValueError("feature_dim must be positive")
+        if len(self.gesture_labels) < 2:
+            raise ValueError("gesture_labels must contain at least two classes")
+        if len(set(self.gesture_labels)) != len(self.gesture_labels):
+            raise ValueError("gesture_labels must not contain duplicates")
+        if not self.channels or any(c <= 0 for c in self.channels):
+            raise ValueError("channels must be a non-empty tuple of positive ints")
+        if self.kernel_size < 2:
+            raise ValueError("kernel_size must be at least 2 for causal padding to be meaningful")
+        if not math.isfinite(self.dropout) or not 0.0 <= self.dropout < 1.0:
+            raise ValueError("dropout must be within [0, 1)")
+
+    @property
+    def receptive_field(self) -> int:
+        """이 아키텍처가 인과적으로 볼 수 있는 최대 과거 프레임 수(현재 프레임 포함).
+
+        각 temporal block은 동일 dilation의 causal conv 두 개를 직렬로 쓰므로,
+        block i(0-indexed, dilation=2**i)가 늘리는 시야는 `2 * (kernel_size-1) * 2**i`.
+        스트리밍 추론에 필요한 최소 window 길이로 쓰인다.
+        """
+        span = 0
+        for i in range(len(self.channels)):
+            dilation = 2**i
+            span += 2 * (self.kernel_size - 1) * dilation
+        return span + 1
+
+
+@dataclass(frozen=True, slots=True)
 class ModelPrediction:
     """모델 한 번의 추론 결과 (윈도우의 마지막 시점 기준).
 
