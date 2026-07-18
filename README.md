@@ -227,6 +227,19 @@ Gaze Lock == laptop (게이트)
 
 Gaze Lock은 게이트로만 남아있다 — 노트북을 보고 있지 않으면 손을 움직여도 커서가 반응하지 않는다. Target Lock이 풀리는 즉시(예: 시선이 다른 기기로 이동) 이 분기도 즉시 종료되어야 하며, Intent Commit 같은 TTL·중복 방지 로직은 적용되지 않는다(연속 스트림이므로 "중복 실행"이라는 개념 자체가 없다).
 
+### 커서 모드 ↔ 제스처 모드 분기
+
+노트북 Lock 상태에서는 같은 손 스트림이 커서 조작과 이산 제스처 양쪽에 쓰일 수 있으므로 다음 규칙으로 분기한다.
+
+```
+기본 상태: 커서 모드 (손 위치 → 커서 좌표)
+→ Gesture Spotter가 ONSET 감지: 커서 스트림 일시정지, 제스처 판정 우선
+→ 제스처 완료(ENDING → commit): 이산 명령 실행 후 커서 모드 복귀
+→ 제스처 불성립(IDLE 복귀): 즉시 커서 모드 복귀
+```
+
+별도의 모드 전환 동작 없이 자연스럽게 이어지는 대신, 제스처 시작 순간 커서가 미세하게 끌릴 수 있는 것은 감수한다(2026-07-18 결정, [decisions.md](documents/decisions.md)).
+
 ---
 
 # 7. 핵심 기능 1: Gaze Targeting Engine
@@ -372,7 +385,7 @@ MediaPipe Hand Landmark
 
 ```
 Gesture:
-SWIPE_DOWN 0.92
+swipe_down 0.92
 
 Phase:
 ENDING 0.88
