@@ -47,6 +47,15 @@ from jarvis.gesture_fusion.alignment import (
     TemporalAligner,
     check_alignment,
 )
+from jarvis.gesture_fusion.fusion import (
+    DEFAULT_FUSION_CONFIG,
+    CommitDecision,
+    FusionConfig,
+    FusionEngine,
+    FusionScore,
+    IntentPhase,
+    compute_fusion_score,
+)
 
 __all__ = [
     "DEFAULT_GESTURE_CONFIG",
@@ -76,4 +85,11 @@ __all__ = [
     "TargetLockTracker",
     "TemporalAligner",
     "check_alignment",
+    "DEFAULT_FUSION_CONFIG",
+    "CommitDecision",
+    "FusionConfig",
+    "FusionEngine",
+    "FusionScore",
+    "IntentPhase",
+    "compute_fusion_score",
 ]
