@@ -29,3 +29,11 @@ build/
 
 # Claude Code local settings
 .claude/
+
+# Local model binaries and evaluation artifacts
+models/*.task
+models/*.onnx
+models/*.pt
+data/raw/
+data/traces/
+artifacts/
