@@ -185,8 +185,12 @@ class CausalTCNGestureModel:
         return self._config.receptive_field
 
     def load_weights(self, state_dict_path: str, metadata: ModelMetadata) -> None:
-        """학습된 가중치를 불러온다. 불러온 뒤에만 `metadata.trained=True`를 인정한다."""
-        state_dict = torch.load(state_dict_path, map_location="cpu")
+        """학습된 가중치를 불러온다. 불러온 뒤에만 `metadata.trained=True`를 인정한다.
+
+        `weights_only=True`로 로드해 pickle 임의 코드 실행 경로를 차단한다 — torch<2.6은
+        이 기본값이 False라 명시한다(state_dict만 담긴 신뢰 파일이라도 방어적으로).
+        """
+        state_dict = torch.load(state_dict_path, map_location="cpu", weights_only=True)
         self._net.load_state_dict(state_dict)
         self._net.eval()
         self.metadata = metadata
