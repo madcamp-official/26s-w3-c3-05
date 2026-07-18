@@ -132,6 +132,17 @@ def test_gesture_started_only_from_target_locked() -> None:
     assert lock.locked_device == "laptop"
 
 
+def test_gesture_started_after_lock_ttl_is_rejected() -> None:
+    config = GazeConfig(dwell_time_ms=0, target_lock_ttl_ms=1000)
+    lock = GazeLockStateMachine(config)
+    lock.update(100, _confident("laptop"))
+
+    state = lock.notify_gesture_started(1100)
+
+    assert state == GazeLockState.EXPIRED
+    assert lock.locked_device is None
+
+
 def test_committed_only_from_gesture_wait_and_resets_next_tick() -> None:
     config = GazeConfig(dwell_time_ms=0)
     lock = GazeLockStateMachine(config)
@@ -143,6 +154,17 @@ def test_committed_only_from_gesture_wait_and_resets_next_tick() -> None:
 
     state = lock.update(21, _unknown())
     assert state == GazeLockState.SEARCHING
+
+
+def test_commit_after_original_lock_ttl_is_rejected() -> None:
+    config = GazeConfig(dwell_time_ms=0, target_lock_ttl_ms=1000)
+    lock = GazeLockStateMachine(config)
+    lock.update(100, _confident("laptop"))
+    lock.notify_gesture_started(500)
+
+    state = lock.notify_committed(1100)
+
+    assert state == GazeLockState.EXPIRED
 
 
 def test_reset_clears_candidate_and_lock() -> None:

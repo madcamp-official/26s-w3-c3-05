@@ -38,6 +38,9 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
 - `UNKNOWN`은 기기 간 상대 확률(`unknown_probability_threshold`)뿐 아니라 가장 가까운
   등록 방향과의 절대 각도(`unknown_max_angle_deg`, 기본 25도)도 함께 검사한다. 등록
   기기가 하나일 때 상대 확률이 항상 1.0이 되는 경우에도 먼 시선을 거부하기 위해서다.
+- Gaze Lock TTL은 마지막으로 같은 대상을 확신 있게 본 시각을 기준으로 한다. Gesture
+  시작은 기존 TTL을 연장하지 않으며, gesture 시작과 commit 이벤트 모두 자신의
+  `timestamp_ms`가 만료 시각에 도달했으면 `EXPIRED`로 거부한다.
 - 알려진 미검증 항목: `landmarks.py`의 head yaw/pitch/roll 부호 규약은 실제 카메라로
   검증하지 않았다 — models/README.md의 `face_landmarker.task` 항목 참고.
 

@@ -127,12 +127,19 @@ class GazeLockStateMachine:
     def notify_gesture_started(self, timestamp_ms: int) -> GazeLockState:
         """TARGET_LOCKED 상태에서 Fusion이 gesture 시작을 감지했을 때 호출한다."""
         if self._state == GazeLockState.TARGET_LOCKED:
+            assert self._lock_expires_at_ms is not None
+            if timestamp_ms >= self._lock_expires_at_ms:
+                self._state = GazeLockState.EXPIRED
+                return self._state
             self._state = GazeLockState.GESTURE_WAIT
-            self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
         return self._state
 
     def notify_committed(self, timestamp_ms: int) -> GazeLockState:
         """GESTURE_WAIT 상태에서 Fusion이 intent를 commit했을 때 호출한다."""
         if self._state == GazeLockState.GESTURE_WAIT:
+            assert self._lock_expires_at_ms is not None
+            if timestamp_ms >= self._lock_expires_at_ms:
+                self._state = GazeLockState.EXPIRED
+                return self._state
             self._state = GazeLockState.COMMITTED
         return self._state
