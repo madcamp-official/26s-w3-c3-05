@@ -38,6 +38,15 @@ from jarvis.gesture_fusion.spotting import (
     GestureSpotter,
     SpotterConfig,
 )
+from jarvis.gesture_fusion.alignment import (
+    DEFAULT_ALIGNMENT_CONFIG,
+    AlignmentConfig,
+    AlignmentResult,
+    TargetLockState,
+    TargetLockTracker,
+    TemporalAligner,
+    check_alignment,
+)
 
 __all__ = [
     "DEFAULT_GESTURE_CONFIG",
@@ -60,4 +69,11 @@ __all__ = [
     "DEFAULT_SPOTTER_CONFIG",
     "GestureSpotter",
     "SpotterConfig",
+    "DEFAULT_ALIGNMENT_CONFIG",
+    "AlignmentConfig",
+    "AlignmentResult",
+    "TargetLockState",
+    "TargetLockTracker",
+    "TemporalAligner",
+    "check_alignment",
 ]
