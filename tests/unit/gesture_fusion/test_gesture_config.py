@@ -29,3 +29,8 @@ def test_palm_reference_indices_must_differ() -> None:
 def test_palm_reference_index_out_of_range() -> None:
     with pytest.raises(ValueError, match="valid hand landmark index"):
         GestureConfig(palm_scale_tip_index=99)
+
+
+def test_origin_index_out_of_range() -> None:
+    with pytest.raises(ValueError, match="origin_index"):
+        GestureConfig(origin_index=99)

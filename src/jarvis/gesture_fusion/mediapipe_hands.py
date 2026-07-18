@@ -105,14 +105,19 @@ class MediaPipeHandLandmarker:
             # 모델이 21점을 채우지 못한 비정상 프레임은 추적 손실로 처리한다.
             return _lost_tracking_observation(timestamp_ms, frame_id)
 
-        handedness, detection_confidence = self._primary_handedness(result, best_index)
+        handedness, handedness_score = self._primary_handedness(result, best_index)
 
+        # MediaPipe HandLandmarkerResult는 손별 검출 score를 공개 API로 내주지 않는다.
+        # 반환된 손은 이미 모델 내부의 min_hand_detection_confidence를 통과했으므로,
+        # 검출 신뢰도의 프록시로 handedness score를 재사용한다(원격 소스는 둘을 독립적으로
+        # 보고할 수 있어 RawHandLandmarks는 두 필드를 분리해 둔다).
         raw = RawHandLandmarks(
             timestamp_ms=timestamp_ms,
             frame_id=frame_id,
             points=points,
             handedness=handedness,
-            detection_confidence=detection_confidence,
+            detection_confidence=handedness_score,
+            handedness_score=handedness_score,
         )
         return normalize_hand(raw, self._config)
 
