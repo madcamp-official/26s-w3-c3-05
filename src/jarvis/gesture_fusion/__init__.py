@@ -33,6 +33,11 @@ from jarvis.gesture_fusion.model_protocol import (
     SlidingFeatureWindow,
     normalized_entropy,
 )
+from jarvis.gesture_fusion.spotting import (
+    DEFAULT_SPOTTER_CONFIG,
+    GestureSpotter,
+    SpotterConfig,
+)
 
 __all__ = [
     "DEFAULT_GESTURE_CONFIG",
@@ -52,4 +57,7 @@ __all__ = [
     "ModelPrediction",
     "SlidingFeatureWindow",
     "normalized_entropy",
+    "DEFAULT_SPOTTER_CONFIG",
+    "GestureSpotter",
+    "SpotterConfig",
 ]
