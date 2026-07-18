@@ -35,8 +35,9 @@ Task 1·2는 mediapipe·카메라 없이 단위 테스트되는 순수 경계다
 - [x] **Task 2 — Feature engineering** (`features.py`): causal 속도·가속도(monotonic `timestamp_ms` 차분)·관절 굴곡각. 추적손실·프레임 공백 시 history 리셋, 관절각 퇴화 시 NaN 대신 0. feature 그룹 on/off·차원은 `GestureConfig`로 제어.
 - [x] **Task 3 — Causal TCN/GRU** (`model_protocol.py`, `model.py`): dilated causal 1D conv(TCN), `GestureModel` Protocol(torch 무의존, `mediapipe_hands.py`와 같은 격리 원칙)로 아키텍처 교체 가능. `phase`는 `jarvis.contracts.GesturePhase`를 그대로 재사용(자체 enum 재정의 없음). gesture head(7-class: 6개 동적 제스처 + 배경 클래스 `"none"`) + phase head(4-class), confidence=softmax max, uncertainty=정규화 엔트로피. 진짜 인과성(미래 프레임 미사용)을 `test_output_is_truly_causal`로 회귀 검증. **모델은 아직 미학습(무작위 초기화)** — `ModelMetadata.trained=False`가 이를 명시하며, 학습 데이터 확보 전까지 fusion·safe commit에 실제 인식 결과로 쓰면 안 됨(`models/README.md` 참고).
 - [x] **Task 4 — Gesture spotting 상태 머신** (`spotting.py`): raw 모델 phase를 `min_consecutive_frames` 디바운스해 단일 프레임 노이즈를 억제하고, `IDLE→ONSET→ACTIVE→ENDING→IDLE` 외 전이(단계 건너뛰기)는 거부. ONSET 확정 시 배경 클래스(`"none"`)·낮은 gesture confidence는 게이팅으로 거부. 한 제스처당 `ENDING`은 정확히 한 프레임만 방출(방출 즉시 IDLE로 리셋) — `GestureEstimate`(계약)를 매 프레임 조립해 밀집 스트림으로 출력. 추적 손실(`prediction=None`) 시 진행 중이던 제스처를 안전하게 포기. `is_tracking_gesture` 프로퍼티로 커서/제스처 분기 신호(2026-07-18 결정) 노출 — `pointer/` 모듈 연동은 아직 미배선.
-- [ ] Task 5 — 시선·제스처 temporal alignment
-- [ ] Task 6 이후 — fusion confidence·safe commit, duplicate 방지, intent 조립, hard-negative mining
+- [x] **Task 5 — 시선·제스처 temporal alignment** (`alignment.py`): `TargetLockTracker` — Gaze→Fusion 스트림(§1)에서 Fusion 자체 Target Lock을 추적(dwell 승격, TTL 슬라이딩 만료). Gaze 모듈의 자체 Gaze Lock(커서 게이팅용)과는 독립적 구현 — 모듈 경계상 Gaze 내부를 import할 수 없어 같은 원시 확률에서 별도로 계산(documents/decisions.md 기록 대상). `check_alignment`가 Commit 조건 1(lock 여부)·2(lock 이후 시작)·3(TTL 안 완료)를 판정 — 조건 6(시간 관계 유효)은 2·3의 결합으로 자연히 충족되어 별도 필드 없음. `TemporalAligner`가 Gaze·Gesture 두 비동기 스트림을 "as-of" 조인해 제스처 `ENDING` 시점에만 평가. 검증 중 `x or default` 0-falsy 함정(타임스탬프 0일 때 오작동) 발견해 명시적 `None` 체크로 수정.
+- [ ] Task 6 — fusion confidence·safe commit (결합 점수 `S=P(target)×P(gesture)×gaze_stability×(1−uncertainty)`, Intent 상태 머신 COMMITTED·COOLDOWN)
+- [ ] Task 7 이후 — duplicate intent 방지, intent 조립, hard-negative mining
 
 ## 이슈 / 의사결정 필요 사항
 
