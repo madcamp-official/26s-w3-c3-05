@@ -41,10 +41,11 @@ def _gesture(
     gesture: str = "swipe_down",
     gesture_confidence: float = 0.9,
     uncertainty: float = 0.05,
+    frame_id: int = 0,
 ) -> GestureEstimate:
     return GestureEstimate(
         timestamp_ms=timestamp_ms,
-        frame_id=0,
+        frame_id=frame_id,
         gesture=gesture,
         gesture_confidence=gesture_confidence,
         phase=phase,
@@ -188,8 +189,8 @@ def test_cooldown_expires_after_configured_duration() -> None:
     assert first is not None and first.committed  # cooldown until 500
 
     engine.push_target(_target(600))  # cooldown 경과 후 프레임이 만료를 트리거
-    engine.push_gesture(_gesture(700, GesturePhase.ONSET))
-    second = engine.push_gesture(_gesture(900, GesturePhase.ENDING))
+    engine.push_gesture(_gesture(700, GesturePhase.ONSET, frame_id=1))
+    second = engine.push_gesture(_gesture(900, GesturePhase.ENDING, frame_id=1))
     assert second is not None
     assert second.committed
 
@@ -224,3 +225,41 @@ def test_phase_cooldown_after_commit() -> None:
     engine.push_gesture(_gesture(100, GesturePhase.ONSET))
     engine.push_gesture(_gesture(300, GesturePhase.ENDING))
     assert engine.phase == IntentPhase.COOLDOWN
+
+
+# --- Commit 조건 7: duplicate intent 방지 ---
+
+
+def test_commit_carries_deterministic_intent_id() -> None:
+    engine = _locked_engine()
+    engine.push_gesture(_gesture(100, GesturePhase.ONSET, frame_id=42))
+    decision = engine.push_gesture(_gesture(300, GesturePhase.ENDING, frame_id=42))
+    assert decision is not None
+    assert decision.committed
+    assert decision.intent_id == "intent-42"
+
+
+def test_replaying_same_frame_after_cooldown_is_rejected_as_duplicate() -> None:
+    """cooldown이 지나도, 같은 frame_id의 ENDING이 재생되면 두 번째 Intent를 만들지 않는다."""
+    engine = _locked_engine(_fusion_config(cooldown_ms=0))
+    engine.push_gesture(_gesture(100, GesturePhase.ONSET, frame_id=7))
+    first = engine.push_gesture(_gesture(300, GesturePhase.ENDING, frame_id=7))
+    assert first is not None and first.committed
+
+    # 같은 frame_id가 재전송(replay)됨 — cooldown은 이미 만료됐지만 dedup이 막아야 한다.
+    engine.push_target(_target(400))
+    engine.push_gesture(_gesture(500, GesturePhase.ONSET, frame_id=7))
+    replay = engine.push_gesture(_gesture(600, GesturePhase.ENDING, frame_id=7))
+    assert replay is not None
+    assert not replay.committed
+    assert "duplicate" in replay.reason
+    assert replay.intent_id is None
+
+
+def test_rejected_decisions_have_no_intent_id() -> None:
+    engine = FusionEngine(_fusion_config(), _alignment_config())  # lock 안 함 → 정렬 실패
+    engine.push_gesture(_gesture(100, GesturePhase.ONSET))
+    decision = engine.push_gesture(_gesture(300, GesturePhase.ENDING))
+    assert decision is not None
+    assert not decision.committed
+    assert decision.intent_id is None

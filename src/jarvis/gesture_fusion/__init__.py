@@ -57,6 +57,7 @@ from jarvis.gesture_fusion.fusion import (
     IntentPhase,
     compute_fusion_score,
 )
+from jarvis.gesture_fusion.dedup import IntentDeduplicator, generate_intent_id
 
 __all__ = [
     "DEFAULT_GESTURE_CONFIG",
@@ -94,4 +95,6 @@ __all__ = [
     "FusionScore",
     "IntentPhase",
     "compute_fusion_score",
+    "IntentDeduplicator",
+    "generate_intent_id",
 ]
