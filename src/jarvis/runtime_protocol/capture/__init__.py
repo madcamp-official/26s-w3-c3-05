@@ -4,11 +4,16 @@ from jarvis.runtime_protocol.capture.clock import FrameStamp, RuntimeClock
 from jarvis.runtime_protocol.capture.frame import Frame
 from jarvis.runtime_protocol.capture.pipeline import CapturePipeline
 from jarvis.runtime_protocol.capture.queue import BoundedLatestQueue
-from jarvis.runtime_protocol.capture.source import FrameSource, OpenCVCameraSource
+from jarvis.runtime_protocol.capture.source import (
+    EndOfStream,
+    FrameSource,
+    OpenCVCameraSource,
+)
 
 __all__ = [
     "BoundedLatestQueue",
     "CapturePipeline",
+    "EndOfStream",
     "Frame",
     "FrameSource",
     "FrameStamp",

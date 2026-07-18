@@ -15,3 +15,6 @@
 | 2026-07-18 | 상대 연산(increment/decrement)의 결과 절대값 [min,max] clamp는 protocol이 아니라 adapter가 수행 | clamp에 기기 현재 상태가 필요한데 protocol은 상태를 모름. protocol은 delta의 부호·step 배수만 정적 검증 | suh1088(3인) |
 | 2026-07-18 | capability 연산 집합(number: set/increment/decrement, boolean: set/toggle)을 capability spec에 선언(config 주입) | 연산을 코드에 하드코딩하지 않고 기기별로 다르게 선언 가능하게. 열린 문자열 키 원칙과 일관 | suh1088(3인) |
 | 2026-07-18 | (미해결·논의필요) Intent에 생성 timestamp 없음 → TTL을 "수신 시점 기준"으로 해석. enum capability는 Intent.value(int/float/bool)로 표현 불가라 보류 | 정밀 TTL·enum 기기는 계약 변경 필요. MVP 범위(전구·노트북)에선 문제 없어 후순위 | 3인 제기, Fusion과 협의 대상 |
+| 2026-07-18 | capture 소스의 `read()→None`은 "일시적 미스"로만 정의하고, 유한 소스의 스트림 종료는 `EndOfStream` 예외로 분리 | 리뷰에서 발견: 둘을 혼동해 웹캠 프레임 하나 놓치면 파이프라인이 죽던 버그 수정 | suh1088(3인) |
+| 2026-07-18 | `CapturePipeline`을 컨텍스트 매니저 + `close()`로 소스 디바이스를 명시 해제. `stop()`은 루프만 중단 | 리뷰에서 발견: `close` 미호출로 `cv2.VideoCapture` 핸들이 프로세스 종료까지 누수 | suh1088(3인) |
+| 2026-07-18 | protocol dedup을 `register()` 원자 연산 하나에만 의존하도록 변경(선(先) `seen()` 검사 제거, `DuplicateCommandError`→`Rejected(DUPLICATE)`) | 리뷰에서 발견: 동시 submit 시 검사-등록 사이 경쟁으로 예외가 새어나가던 TOCTOU 수정 | suh1088(3인) |

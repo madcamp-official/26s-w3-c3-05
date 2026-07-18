@@ -10,12 +10,13 @@ without affecting the others.
 from __future__ import annotations
 
 from threading import Event, Thread
+from types import TracebackType
 from typing import Any
 
 from jarvis.runtime_protocol.capture.clock import RuntimeClock
 from jarvis.runtime_protocol.capture.frame import Frame
 from jarvis.runtime_protocol.capture.queue import BoundedLatestQueue
-from jarvis.runtime_protocol.capture.source import FrameSource
+from jarvis.runtime_protocol.capture.source import EndOfStream, FrameSource
 
 
 class CapturePipeline:
@@ -50,9 +51,11 @@ class CapturePipeline:
     def run_once(self) -> Frame[Any] | None:
         """Capture, stamp, and distribute one frame.
 
-        Returns the distributed :class:`Frame`, or ``None`` when the source has
-        no frame (end of stream). The same ``Frame`` object is delivered to
-        every consumer so their stamps are identical by construction.
+        Returns the distributed :class:`Frame`, or ``None`` on a **transient**
+        miss (no frame available this tick — the caller should try again). Raises
+        :class:`EndOfStream` when a finite source is exhausted. The same
+        ``Frame`` object is delivered to every consumer so their stamps are
+        identical by construction.
         """
         image = self._source.read()
         if image is None:
@@ -72,13 +75,42 @@ class CapturePipeline:
         thread.start()
 
     def stop(self, timeout: float | None = None) -> None:
-        """Signal the capture loop to stop and join the thread."""
+        """Signal the capture loop to stop and join the thread.
+
+        Does not release the frame source; call :meth:`close` (or use the
+        pipeline as a context manager) to release the device.
+        """
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout)
             self._thread = None
 
+    def close(self) -> None:
+        """Stop capturing and release the frame source's device.
+
+        Safe to call more than once. This is what actually frees a real webcam;
+        without it the underlying ``cv2.VideoCapture`` stays open for the life of
+        the process.
+        """
+        self.stop()
+        self._source.close()
+
+    def __enter__(self) -> CapturePipeline:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
     def _loop(self) -> None:
+        # A transient miss (``run_once`` returns None) is retried; only a finite
+        # source raising EndOfStream — or an explicit stop — ends the loop.
         while not self._stop.is_set():
-            if self.run_once() is None:
+            try:
+                self.run_once()
+            except EndOfStream:
                 break

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from types import TracebackType
 
+import pytest
+
 from jarvis.runtime_protocol.capture.clock import RuntimeClock
 from jarvis.runtime_protocol.capture.pipeline import CapturePipeline
+from jarvis.runtime_protocol.capture.source import EndOfStream
 
 
 class FakeTime:
@@ -17,7 +20,10 @@ class FakeTime:
 
 
 class ListFrameSource:
-    """Yields a fixed list of images, then ``None`` (end of stream)."""
+    """Yields a fixed list of images, then raises ``EndOfStream``.
+
+    A finite source: exhaustion is a true end of stream, not a transient miss.
+    """
 
     def __init__(self, images: list[str]) -> None:
         self._images = list(images)
@@ -25,7 +31,7 @@ class ListFrameSource:
 
     def read(self) -> str | None:
         if not self._images:
-            return None
+            raise EndOfStream
         return self._images.pop(0)
 
     def close(self) -> None:
@@ -41,6 +47,42 @@ class ListFrameSource:
         tb: TracebackType | None,
     ) -> None:
         self.close()
+
+
+class FlakyFrameSource:
+    """Replays a script of transient misses (``None``) and images, then ends."""
+
+    def __init__(self, script: list[str | None]) -> None:
+        self._script = list(script)
+        self.closed = False
+
+    def read(self) -> str | None:
+        if not self._script:
+            raise EndOfStream
+        return self._script.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
+
+    def __enter__(self) -> "FlakyFrameSource":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+
+def _drain(pipeline: CapturePipeline) -> None:
+    """Run captures until the finite source signals end of stream."""
+    try:
+        while True:
+            pipeline.run_once()
+    except EndOfStream:
+        pass
 
 
 def test_one_capture_delivers_identical_stamp_to_all_consumers() -> None:
@@ -66,8 +108,7 @@ def test_frame_ids_advance_across_captures() -> None:
     )
     consumer = pipeline.add_consumer("gaze", capacity=8)
 
-    while pipeline.run_once() is not None:
-        pass
+    _drain(pipeline)
 
     ids = []
     while (frame := consumer.get_nowait()) is not None:
@@ -75,9 +116,27 @@ def test_frame_ids_advance_across_captures() -> None:
     assert ids == [0, 1, 2]
 
 
-def test_run_once_returns_none_at_end_of_stream() -> None:
+def test_run_once_raises_end_of_stream_when_source_exhausted() -> None:
     pipeline = CapturePipeline(ListFrameSource([]), RuntimeClock(FakeTime()))
-    assert pipeline.run_once() is None
+    with pytest.raises(EndOfStream):
+        pipeline.run_once()
+
+
+def test_transient_miss_does_not_stop_pipeline() -> None:
+    # None (a dropped webcam frame) must be retried, not treated as end of stream.
+    source = FlakyFrameSource([None, "img", None])
+    pipeline = CapturePipeline(source, RuntimeClock(FakeTime()))
+    consumer = pipeline.add_consumer("gaze", capacity=4)
+
+    assert pipeline.run_once() is None  # transient miss: nothing distributed
+    frame = pipeline.run_once()  # real frame follows the miss
+    assert frame is not None and frame.image == "img"
+    assert pipeline.run_once() is None  # another transient miss
+    with pytest.raises(EndOfStream):
+        pipeline.run_once()  # now truly exhausted
+
+    assert consumer.get_nowait() is frame
+    assert consumer.get_nowait() is None
 
 
 def test_slow_consumer_drops_oldest_without_affecting_others() -> None:
@@ -87,8 +146,7 @@ def test_slow_consumer_drops_oldest_without_affecting_others() -> None:
     slow = pipeline.add_consumer("slow", capacity=1)
     fast = pipeline.add_consumer("fast", capacity=8)
 
-    while pipeline.run_once() is not None:
-        pass
+    _drain(pipeline)
 
     # Slow consumer kept only the latest frame and counted the drops.
     latest = slow.get_nowait()
@@ -140,3 +198,25 @@ def test_start_then_stop_drains_stream() -> None:
     while (frame := consumer.get_nowait()) is not None:
         images.append(frame.image)
     assert images == ["a", "b"]
+
+
+def test_close_releases_source() -> None:
+    source = ListFrameSource([])
+    pipeline = CapturePipeline(source, RuntimeClock(FakeTime()))
+    pipeline.close()
+    assert source.closed is True
+
+
+def test_stop_alone_does_not_release_source() -> None:
+    source = ListFrameSource(["a"])
+    pipeline = CapturePipeline(source, RuntimeClock(FakeTime()))
+    pipeline.start()
+    pipeline.stop(timeout=1.0)
+    assert source.closed is False  # stop() ends the loop but keeps the device
+
+
+def test_context_manager_closes_source() -> None:
+    source = ListFrameSource(["a"])
+    with CapturePipeline(source, RuntimeClock(FakeTime())) as pipeline:
+        pipeline.add_consumer("gaze", capacity=2)
+    assert source.closed is True

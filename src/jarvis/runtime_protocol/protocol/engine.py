@@ -18,7 +18,10 @@ from jarvis.runtime_protocol.protocol.capability import (
     DeviceRegistry,
     validate_request,
 )
-from jarvis.runtime_protocol.protocol.ledger import CommandLedger
+from jarvis.runtime_protocol.protocol.ledger import (
+    CommandLedger,
+    DuplicateCommandError,
+)
 from jarvis.runtime_protocol.protocol.lifecycle import CommandState, RejectionReason
 
 
@@ -92,23 +95,26 @@ class ProtocolEngine:
                 intent.intent_id, RejectionReason.INVALID_VALUE, failure.detail
             )
 
-        command_id = _command_id_for(intent.intent_id)
-        if self._ledger.seen(command_id):
-            return Rejected(
-                intent.intent_id,
-                RejectionReason.DUPLICATE,
-                f"intent {intent.intent_id!r} already produced a command",
-            )
-
         command = Command(
-            command_id=command_id,
+            command_id=_command_id_for(intent.intent_id),
             intent_id=intent.intent_id,
             capability=intent.capability,
             operation=intent.operation,
             value=intent.value,
             expires_at_ms=self._clock.now_ms() + intent.expires_in_ms,
         )
-        self._ledger.register(command)
+        # Registration is the single atomic dedup point: the ledger admits a
+        # command id at most once. Relying on it (instead of a separate seen()
+        # pre-check) closes the race where two concurrent submits of the same
+        # intent both pass the check and one then crashes on register.
+        try:
+            self._ledger.register(command)
+        except DuplicateCommandError:
+            return Rejected(
+                intent.intent_id,
+                RejectionReason.DUPLICATE,
+                f"intent {intent.intent_id!r} already produced a command",
+            )
         return Accepted(command)
 
     def dispatch_guard(self, command_id: str) -> CommandState:

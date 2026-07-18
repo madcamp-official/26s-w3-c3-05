@@ -12,13 +12,27 @@ from types import TracebackType
 from typing import Any, Protocol, runtime_checkable
 
 
+class EndOfStream(Exception):
+    """Signals that a finite frame source will yield no further frames.
+
+    This is distinct from a *transient* miss. :meth:`FrameSource.read` returns
+    ``None`` when no frame is available **right now** (a live camera hiccup) and
+    the pipeline should keep polling; it raises :class:`EndOfStream` only when no
+    frame will **ever** arrive again (a finite replay/trace source), which stops
+    the capture loop. Conflating the two would let a single dropped webcam frame
+    silently kill the whole pipeline.
+    """
+
+
 @runtime_checkable
 class FrameSource(Protocol):
     """Yields raw images until exhausted or closed.
 
-    ``read`` returns the next image, or ``None`` when no frame is available
-    (end of stream or a transient camera miss). Implementations must be usable
-    as a context manager so the pipeline can release the device deterministically.
+    ``read`` returns the next image, or ``None`` on a **transient** miss (no
+    frame available this instant — the caller should try again). A finite source
+    raises :class:`EndOfStream` when it is exhausted. Implementations must be
+    usable as a context manager so the pipeline can release the device
+    deterministically.
     """
 
     def read(self) -> Any | None: ...
@@ -42,6 +56,10 @@ class OpenCVCameraSource:
     fan-out, or success faking — it only reads real frames or reports failure.
     ``cv2`` is imported lazily so the capture core and its tests do not require
     the optional ``vision`` extra.
+
+    A live camera has no natural end of stream, so a failed read is reported as a
+    transient miss (``None``); it never raises :class:`EndOfStream`. The pipeline
+    stops the loop via :meth:`close`/``stop``, not via read failure.
     """
 
     def __init__(self, device_index: int = 0) -> None:
