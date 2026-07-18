@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 jarvis-gaze = "jarvis.gaze.cli:main"
+jarvis-monitor = "jarvis.monitoring.cli:main"
 
 [project.optional-dependencies]
 vision = [
