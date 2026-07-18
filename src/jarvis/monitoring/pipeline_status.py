@@ -59,7 +59,7 @@ def _gaze_status(model_path: Path | None) -> StageStatus:
 
 def _gesture_status() -> StageStatus:
     # dev-2 module: implemented only when gesture_fusion has real code.
-    if _module_installed("jarvis.gesture_fusion.spotter"):
+    if _module_installed("jarvis.gesture_fusion.spotting"):
         return StageStatus("Gesture Spotter", StageState.LIVE, "gesture spotter loaded")
     return StageStatus(
         "Gesture Spotter", StageState.UNAVAILABLE, "2인 파트 미구현"

@@ -161,8 +161,11 @@ class Win32InputSink:
         import ctypes
 
         # ctypes function pointers are resolved dynamically at call time; typing
-        # the handle as Any is the honest description of this boundary.
-        return ctypes.windll.user32
+        # the handle as Any is the honest description of this boundary. `windll`
+        # only exists on Windows, so reach it via getattr — a static
+        # ``ctypes.windll`` trips [attr-defined] when mypy runs on a non-Windows
+        # host (a per-line ignore would flip to unused when checked on Windows).
+        return getattr(ctypes, "windll").user32
 
     def scroll(self, ticks: int) -> None:
         self._user32().mouse_event(_MOUSEEVENTF_WHEEL, 0, 0, ticks * _WHEEL_DELTA, 0)
