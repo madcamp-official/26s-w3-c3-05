@@ -29,6 +29,20 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 
 ## 설계 노트
 
+### adapters/ (청크 3b — SmartThings)
+
+전구 실제 실행 경계. 실제 상태를 되읽어 확인하고 성공을 위조하지 않는다(원칙 1.1).
+
+- `http.py`: `HttpTransport`(Protocol) + `HttpRequest`/`HttpResponse` + 타입 오류(`TransportTimeout`/`TransportNetworkError`) + `UrllibTransport`(stdlib, 추가 의존성 없음). adapter는 구체 HTTP 라이브러리가 아니라 이 경계에 의존 → fake transport로 네트워크 없이 테스트.
+- `config.py`: `read_env_file()` — `.env`를 dict로 파싱(주석·빈 줄 무시, 없으면 빈 dict → "미설정"으로 degrade). 비밀·환경 종속 값은 env/`.env`로만 주입(원칙 6.1/6.2).
+- `smartthings.py`: `SmartThingsConfig.from_env()`(토큰 없으면 `None`) + `SmartThingsAdapter`.
+  - 토큰 없음 → `UNCONFIGURED`(네트워크 미접촉, Windows 전용 실행 차단 안 함, 원칙 6.3). device_id 미매핑 → `FAILED`.
+  - power: set(on/off), toggle(현재 상태 읽어 반대로). brightness/color_temperature: set은 절대값, increment/decrement는 **현재 상태 GET → delta 적용 → [min,max] clamp → 절대 setLevel**(clamp가 adapter 몫이라는 decisions.md 결정 구현). README 데모의 "Swipe Down 밝기 감소"가 이 경로.
+  - 명령 후 상태 GET으로 verify: 일치 `VERIFIED`, 되읽기 실패·불일치 `UNVERIFIED`(보냈으나 미확인). 위조된 성공 없음.
+  - 오류 분류(원칙 6.4): timeout / network / auth(401·403) / rate limit(429) / 기타 HTTP를 구분해 `FAILED` detail에 기록. **토큰은 detail·로그에 절대 노출 안 함**(원칙 6.5, 테스트로 보장).
+- **비밀 관리**: 실제 토큰은 `.env`(gitignore)에만. `.env.example`은 키 이름·안전한 설명·플레이스홀더만(원칙 6.2). 전구 UUID는 미확보 → `SMARTTHINGS_DEVICE_TARGETS={}` 상태. 실물 연결하려면 `GET /devices`로 UUID 얻어 채워야 함(아래 이슈).
+- 테스트 18개: unconfigured·미매핑·power set/toggle·brightness set·increment/decrement clamp(하한 0·상한 100)·오류 4종 분류·토큰 비노출·verify 불가→UNVERIFIED·미지원 capability·from_env 파싱.
+
 ### adapters/ (청크 3a — Windows + dispatch 코디네이터)
 
 실제 실행 경계. adapter는 실제로 일어난 일을 정직하게 보고하고, 성공을 위조하지 않는다(원칙 1.1).
@@ -67,8 +81,8 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 
 - [x] 청크 1: capture/ 구현 + 단위 테스트 (리뷰 수정 후 21개)
 - [x] 청크 2: protocol/ 구현 + 단위 테스트 35개
-- [x] 청크 3a: adapters/base + DispatchCoordinator + Windows adapter (리뷰 수정 후 누적 76개, pytest/mypy/ruff 통과). Command.device_id 계약 보강 + dispatch 순서·idempotency 수정 + Command contract test 포함
-- [ ] 청크 3b: adapters/ SmartThings + config/secrets + `.env.example`
+- [x] 청크 3a: adapters/base + DispatchCoordinator + Windows adapter (리뷰 수정 후 76개). Command.device_id 계약 보강 + dispatch 순서·idempotency 수정 + Command contract test 포함
+- [x] 청크 3b: adapters/ SmartThings + http transport + config/secrets + `.env.example` + 테스트 18개 (누적 94개, pytest/mypy/ruff 통과)
 - [ ] 청크 4: telemetry/
 
 ## 이슈 / 의사결정 필요 사항
@@ -77,3 +91,5 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 - **(계약 공백) enum capability를 Intent가 표현할 수 없다.** `Intent.value`가 `int|float|bool`이라 enum 멤버 문자열(예: aircon `mode`)을 담지 못한다. MVP 기기(전구·노트북)엔 enum이 없어 boolean/number만 구현. 확장 기기 추가 시 `Intent.value`에 `str` 허용을 계약 변경으로 논의.
 - **(결정됨)** 상대 연산의 결과 절대값 clamp를 adapter가 담당 — 아래 decisions.md 참고.
 - (미정) bounded queue 기본 capacity 값 — 실제 카메라 fps·소비자 처리속도 측정 후 configs로 확정 예정.
+- **(실물 검증 필요) SmartThings 전구 UUID 미확보.** 토큰은 `.env`에 저장했으나 `SMARTTHINGS_DEVICE_TARGETS={}` 상태라 실제 라우팅 불가. `GET https://api.smartthings.com/v1/devices`(토큰 필요)로 전구 UUID를 얻어 `.env`에 채워야 실물 동작. HTTP 계층·매핑·verify 로직은 fake transport로만 검증됨 — 실제 API 응답 shape(status JSON 경로)과 전구 실물 동작은 미확인.
+- **(실물 검증 필요) Windows Win32 입력 경로**(청크 3a) — 실제 커서·스크롤·볼륨은 fake sink로만 검증. 실물 노트북 확인 필요.
