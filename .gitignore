@@ -33,4 +33,5 @@ models/*.onnx
 models/*.pt
 data/raw/
 data/traces/
+data/calibration/
 artifacts/

@@ -35,3 +35,7 @@ python_version = "3.11"
 strict = true
 packages = ["jarvis"]
 
+[[tool.mypy.overrides]]
+module = "mediapipe.*"
+ignore_missing_imports = true
+
