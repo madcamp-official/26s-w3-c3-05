@@ -57,7 +57,8 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
 - [x] `UNKNOWN` rejection (classifier의 `unknown_probability_threshold`)
 - [x] Gaze Lock 상태 머신 (`lock.py`)
 - [x] Target Selection Accuracy 평가 함수 (`evaluation.py`)
-- [ ] 실제 카메라로 head pose 부호/축 검증 (Day 1 통합 테스트 필요)
+- [ ] 실제 카메라로 head pose 부호/축 검증 (모델 로드·카메라 프레임 처리 smoke test는
+  2026-07-18 통과했으나 캡처 프레임에서 얼굴이 검출되지 않아 방향 부호는 미확정)
 - [ ] Gesture·Fusion·Runtime과의 실제 통합(코드 조립은 Runtime composition root 몫)
 - [ ] 환경 변화(조명/안경/거리) 조건에서 실측 Target Selection Accuracy 수집
 
