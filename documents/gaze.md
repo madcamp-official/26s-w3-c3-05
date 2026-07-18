@@ -35,6 +35,9 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
   `src/jarvis/calibration/profiles.py`가 README 7장 JSON 포맷대로 처리한다.
 - Target Selection Accuracy는 `jarvis.gaze.evaluation.compute_target_selection_accuracy`로
   계산하며 dataset_id·조건을 결과에 강제로 남긴다.
+- `UNKNOWN`은 기기 간 상대 확률(`unknown_probability_threshold`)뿐 아니라 가장 가까운
+  등록 방향과의 절대 각도(`unknown_max_angle_deg`, 기본 25도)도 함께 검사한다. 등록
+  기기가 하나일 때 상대 확률이 항상 1.0이 되는 경우에도 먼 시선을 거부하기 위해서다.
 - 알려진 미검증 항목: `landmarks.py`의 head yaw/pitch/roll 부호 규약은 실제 카메라로
   검증하지 않았다 — models/README.md의 `face_landmarker.task` 항목 참고.
 

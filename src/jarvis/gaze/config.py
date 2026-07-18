@@ -37,6 +37,13 @@ class GazeConfig:
     공유한다 — 서로 다른 값이 필요해지면 그 이유를 documents/decisions.md에 남긴다.
     """
 
+    unknown_max_angle_deg: float = 25.0
+    """가장 가까운 등록 방향과도 이 각도보다 멀면 UNKNOWN으로 거부한다.
+
+    기기 간 상대 확률만 사용하면 등록 기기가 하나일 때 모든 방향의 확률이 1.0이
+    되는 문제를 막는 절대 거리 안전 기준이다.
+    """
+
     # Gaze vector composition (README 7장 "시선 방향 벡터 합성")
     max_eye_offset_deg: float = 30.0
     """홍채 상대 위치(-1..1)를 각도로 환산할 때 사용하는 눈 최대 회전각."""

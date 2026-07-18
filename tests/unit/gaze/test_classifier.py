@@ -54,6 +54,32 @@ def test_rejects_as_unknown_below_probability_threshold() -> None:
     assert result.probability < config.unknown_probability_threshold
 
 
+def test_single_registered_device_rejects_gaze_far_from_profile() -> None:
+    """기기가 하나여도 상대확률 1.0만으로 먼 시선을 선택하면 안 된다."""
+    config = GazeConfig(unknown_probability_threshold=0.8, unknown_max_angle_deg=25.0)
+    classifier = TargetClassifier(config)
+    classifier.register_profile(
+        DeviceGazeProfile("laptop", _unit([0.0, 0.0, 1.0]), variance=0.05)
+    )
+
+    result = classifier.classify(_unit([1.0, 0.0, 0.0]))
+
+    assert result.target == config.UNKNOWN_TARGET
+    assert result.probability == pytest.approx(1.0)
+
+
+def test_absolute_angle_threshold_accepts_nearby_single_device() -> None:
+    config = GazeConfig(unknown_probability_threshold=0.8, unknown_max_angle_deg=25.0)
+    classifier = TargetClassifier(config)
+    classifier.register_profile(
+        DeviceGazeProfile("laptop", _unit([0.0, 0.0, 1.0]), variance=0.05)
+    )
+
+    result = classifier.classify(_unit([math.sin(math.radians(10)), 0.0, math.cos(math.radians(10))]))
+
+    assert result.target == "laptop"
+
+
 def test_two_devices_probabilities_sum_to_one() -> None:
     classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
     classifier.register_profile(DeviceGazeProfile("a", _unit([0.0, 0.0, 1.0]), variance=0.02))
