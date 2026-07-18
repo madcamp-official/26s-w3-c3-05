@@ -9,10 +9,19 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import torch
 
-from jarvis.contracts.messages import GesturePhase
-from jarvis.gesture_fusion.model import CausalTCN, CausalTCNGestureModel, ModelConfig
+# model.py는 torch(`ml` extra)를 필요로 한다. 다른 optional extra(mediapipe) 테스트와
+# 같이, extra 미설치 환경에서도 나머지 스위트 수집이 깨지지 않도록 여기서 건너뛴다.
+pytest.importorskip("torch")
+
+import torch  # noqa: E402  (importorskip 뒤에 와야 함)
+
+from jarvis.contracts.messages import GesturePhase  # noqa: E402
+from jarvis.gesture_fusion.model import (  # noqa: E402
+    CausalTCN,
+    CausalTCNGestureModel,
+    ModelConfig,
+)
 
 
 def _config(**overrides: object) -> ModelConfig:

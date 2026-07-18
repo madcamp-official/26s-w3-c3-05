@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.gesture_fusion.model import ModelConfig
+# ModelConfig는 torch 무의존이지만 torch 모듈(model.py)에 함께 있어, extra 미설치
+# 환경에서 수집이 깨지지 않도록 건너뛴다(test_model.py와 같은 이유).
+pytest.importorskip("torch")
+
+from jarvis.gesture_fusion.model import ModelConfig  # noqa: E402
 
 
 def test_default_labels_include_none_background_class() -> None:
