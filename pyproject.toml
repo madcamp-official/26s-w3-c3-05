@@ -7,7 +7,12 @@ name = "jarvis-runtime"
 version = "0.1.0"
 description = "Local gaze-grounded motion control runtime"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "numpy>=1.26,<3",
+]
+
+[project.scripts]
+jarvis-gaze = "jarvis.gaze.cli:main"
 
 [project.optional-dependencies]
 vision = [
@@ -37,7 +42,7 @@ packages = ["jarvis"]
 
 # cv2 (OpenCV) is an optional `vision` extra and ships no type stubs; treat its
 # imports as untyped whether or not it is installed in the current environment.
+# MediaPipe is optional for the same camera-only boundary.
 [[tool.mypy.overrides]]
-module = ["cv2"]
+module = ["cv2", "mediapipe.*"]
 ignore_missing_imports = true
-

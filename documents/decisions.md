@@ -21,3 +21,4 @@
 | 2026-07-18 | `Command`에 `device_id` 필드 추가 (계약 변경) | dispatch 시 어느 adapter(Windows/SmartThings)로 라우팅할지 결정하려면 command이 대상 기기를 알아야 함. Command은 dev-3 경계 안에서만(protocol 생성·adapter 소비) 쓰여 Gaze/Gesture/Fusion 영향 없음 | suh1088(3인) |
 | 2026-07-18 | lifecycle에 `VALIDATED→REJECTED` edge 추가. dispatch 시 대상 기기가 registry에 없어 라우팅 불가하면 `REJECTED`(never dispatched)로 처리 | 리뷰에서 발견: 라우팅을 `DISPATCHED` 전이 후에 하던 순서를 바로잡음. 보낸 적 없는 command에 "보냄" 상태를 붙이지 않도록(정직성·telemetry 정확도) | suh1088(3인) |
 | 2026-07-18 | `DispatchCoordinator.dispatch()`를 idempotent하게: command이 `VALIDATED`가 아니면 adapter 미접촉·현재 상태 리포트 | 리뷰에서 발견: 재호출 시 `IllegalTransitionError`가 raw로 튀던 것 해소. 중복 실행은 이전에도 방지됐으나 coordinator 레벨에서 "정확히 한 번" 보장을 명시 | suh1088(3인) |
+| 2026-07-18 | Gaze UNKNOWN 거부에 최근접 등록 방향과의 최대 각도 25도를 추가 | 등록 기기가 하나면 기기 간 정규화 확률이 방향과 무관하게 1.0이 되어 먼 시선을 선택하는 결함을 방지 | Gaze Targeting 담당 |
