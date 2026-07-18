@@ -36,13 +36,19 @@ def _points_with_scale(scale: float, offset: tuple[float, float, float] = (0.0, 
     return points
 
 
-def _raw(points: np.ndarray, *, detection_confidence: float = 0.9) -> RawHandLandmarks:
+def _raw(
+    points: np.ndarray,
+    *,
+    detection_confidence: float = 0.9,
+    handedness_score: float = 0.95,
+) -> RawHandLandmarks:
     return RawHandLandmarks(
         timestamp_ms=1_000,
         frame_id=1,
         points=points,
         handedness="Right",
         detection_confidence=detection_confidence,
+        handedness_score=handedness_score,
     )
 
 
@@ -71,7 +77,8 @@ def test_low_detection_confidence_is_lost_tracking() -> None:
     raw = _raw(_points_with_scale(0.2), detection_confidence=0.1)
     obs = normalize_hand(raw)
     assert not obs.hand_detected
-    assert obs.tracking_confidence == 0.0
+    assert obs.detection_confidence == 0.0
+    assert obs.handedness_score == 0.0
     np.testing.assert_array_equal(obs.landmarks, np.zeros((HAND_LANDMARK_COUNT, 3)))
 
 
@@ -103,6 +110,31 @@ def test_configurable_palm_reference_indices() -> None:
     assert obs.palm_scale == pytest.approx(0.5)
 
 
+def test_origin_index_is_independent_of_palm_scale_root() -> None:
+    """좌표 원점(origin_index)은 스케일 기준(palm_scale_root_index)과 분리돼 있다.
+
+    스케일 기준만 손목으로 두고 원점을 다른 랜드마크로 옮기면, 그 랜드마크가
+    (스케일 기준이 아님에도) 원점(0,0,0)에 와야 한다.
+    """
+    config = GestureConfig(
+        origin_index=MIDDLE_FINGER_MCP,
+        palm_scale_root_index=WRIST,
+        palm_scale_tip_index=MIDDLE_FINGER_MCP,
+    )
+    obs = normalize_hand(_raw(_points_with_scale(0.2, offset=(0.5, 0.3, 0.1))), config)
+    # 원점으로 지정한 중지 MCP가 (0,0,0)에 온다.
+    np.testing.assert_allclose(obs.landmarks[MIDDLE_FINGER_MCP], [0.0, 0.0, 0.0], atol=1e-9)
+    # 손목은 스케일 기준일 뿐 원점이 아니므로 (0,0,0)이 아니다.
+    assert not np.allclose(obs.landmarks[WRIST], [0.0, 0.0, 0.0])
+
+
+def test_handedness_score_is_propagated_separately() -> None:
+    """handedness_score는 검출 신뢰도와 별개로 관측값까지 전파된다."""
+    obs = normalize_hand(_raw(_points_with_scale(0.2), detection_confidence=0.8, handedness_score=0.6))
+    assert obs.detection_confidence == pytest.approx(0.8)
+    assert obs.handedness_score == pytest.approx(0.6)
+
+
 def test_raw_landmarks_reject_wrong_shape() -> None:
     with pytest.raises(ValueError, match="shape"):
         RawHandLandmarks(
@@ -111,6 +143,7 @@ def test_raw_landmarks_reject_wrong_shape() -> None:
             points=np.zeros((10, 3), dtype=np.float64),
             handedness="Right",
             detection_confidence=0.9,
+            handedness_score=0.9,
         )
 
 
@@ -124,6 +157,7 @@ def test_observation_rejects_non_finite_landmarks() -> None:
             landmarks=bad,
             handedness="Right",
             palm_scale=0.2,
-            tracking_confidence=0.9,
+            detection_confidence=0.9,
+            handedness_score=0.9,
             hand_detected=True,
         )

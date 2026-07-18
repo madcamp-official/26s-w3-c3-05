@@ -38,9 +38,21 @@ class GestureConfig:
     min_tracking_confidence: float = 0.5
     """프레임 간 추적 신뢰도 하한 (MediaPipe Hand Landmarker 옵션)."""
 
+    # --- 좌표계 원점 (README 8장 "손목 기준 좌표 정규화") ---
+    origin_index: int = 0
+    """평행이동으로 원점(0,0,0)에 놓을 랜드마크 (기본: WRIST).
+
+    스케일 기준(`palm_scale_root_index`)과 **의도적으로 분리된** 필드다. 스케일을
+    다른 두 점으로 재도록 튜닝하더라도 좌표 원점은 여기 값에만 따르므로, 한 필드를
+    바꿨을 때 원점이 딸려 이동하는 숨은 커플링이 생기지 않는다.
+    """
+
     # --- 손바닥 크기 정규화 (README 8장 "손바닥 크기 정규화") ---
     palm_scale_root_index: int = 0
-    """손바닥 크기 기준 벡터의 시작점 랜드마크 (기본: WRIST)."""
+    """손바닥 크기 기준 벡터의 시작점 랜드마크 (기본: WRIST).
+
+    스케일 계산에만 쓰인다 — 좌표 원점은 `origin_index`가 따로 정한다.
+    """
 
     palm_scale_tip_index: int = 9
     """손바닥 크기 기준 벡터의 끝점 랜드마크 (기본: MIDDLE_FINGER_MCP).
@@ -93,6 +105,7 @@ class GestureConfig:
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
         index_fields = {
+            "origin_index": self.origin_index,
             "palm_scale_root_index": self.palm_scale_root_index,
             "palm_scale_tip_index": self.palm_scale_tip_index,
         }
