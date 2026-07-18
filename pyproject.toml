@@ -13,10 +13,15 @@ dependencies = [
 
 [project.scripts]
 jarvis-gaze = "jarvis.gaze.cli:main"
+jarvis-monitor = "jarvis.monitoring.cli:main"
 
 [project.optional-dependencies]
 vision = [
   "mediapipe>=0.10,<0.11",
+  "opencv-python>=4.9,<5",
+]
+ui = [
+  "PySide6>=6.6,<7",
   "opencv-python>=4.9,<5",
 ]
 dev = [

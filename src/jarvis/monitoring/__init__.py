@@ -1,2 +1,1 @@
-"""Minimal local monitoring and calibration UI."""
-
+"""Real-time desktop monitor: live webcam, recognized gestures, and pipeline view."""
