@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 jarvis-gaze = "jarvis.gaze.cli:main"
+jarvis-monitor = "jarvis.monitoring.cli:main"
 
 [project.optional-dependencies]
 vision = [
@@ -21,6 +22,10 @@ vision = [
 ]
 ml = [
   "torch>=2.2,<3",
+]
+ui = [
+  "PySide6>=6.6,<7",
+  "opencv-python>=4.9,<5",
 ]
 dev = [
   "pytest>=8,<9",
