@@ -1,16 +1,18 @@
 """JARVIS real-time monitor — desktop application (PySide6).
 
 Tabs:
-- 실시간: live webcam (with gaze overlay) + recognized-gesture sidebar + messages.
+- 실시간: live webcam (gaze + hand overlays) + gesture sidebar + messages.
 - Gaze 파이프라인: every intermediate value of the real gaze engine, per frame
   (landmarks → vector → smoothing → classifier → lock → TargetEstimate).
-- 파이프라인: a card per stage's real availability + the message contracts that
-  the not-yet-implemented stages (Gesture/Fusion/Command) will carry.
+- 손 추적: real MediaPipe hand landmarks per frame. Hand *tracking* is live;
+  gesture *recognition* is honestly marked off (the classifier is untrained).
+- 파이프라인: a card per stage's real availability + the message contracts.
 - 지연·어댑터: measured per-stage latency and device-adapter readiness.
 
 The window wires the parts that exist today (webcam capture, the gaze pipeline
-when mediapipe+model+calibration are present, adapter/config detection) and
-honestly marks the parts that do not. No detection is faked.
+when mediapipe+model+calibration are present, hand tracking when the hand model is
+present, adapter/config detection) and honestly marks the parts that do not. No
+detection is faked, and the untrained gesture model is never shown as recognizing.
 """
 
 from __future__ import annotations
@@ -46,9 +48,15 @@ from jarvis.contracts.messages import Command, GestureEstimate, Intent
 from jarvis.gaze.lock import GazeLockState
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
-from jarvis.monitoring.gesture_source import GestureSource, NullGestureSource
+from jarvis.monitoring.gesture_source import GestureSource, UntrainedGestureSource
+from jarvis.monitoring.hand_probe import HandProbe, HandSnapshot
 from jarvis.monitoring.messages import MessageLevel, MessageLog
-from jarvis.monitoring.overlay import draw_gaze_overlay, draw_hud, placeholder_frame
+from jarvis.monitoring.overlay import (
+    draw_gaze_overlay,
+    draw_hand_overlay,
+    draw_hud,
+    placeholder_frame,
+)
 from jarvis.monitoring.pipeline_status import StageState, StageStatus, detect_pipeline_status
 from jarvis.runtime_protocol.config import read_env_file
 from jarvis.runtime_protocol.telemetry.latency import LatencyAggregator, LatencyStage
@@ -247,6 +255,70 @@ class GazePanel(QScrollArea):
         )
 
 
+class HandPanel(QScrollArea):
+    """Live MediaPipe hand-tracking view + honest gesture-recognition status."""
+
+    def __init__(self, probe_status: str, gesture_status: str) -> None:
+        super().__init__()
+        self.setWidgetResizable(True)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+
+        self._status = QLabel(probe_status)
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet("color:#d29922; padding:2px 0;")
+        layout.addWidget(self._status)
+
+        # The one thing that must not be misread: recognition is OFF (untrained).
+        banner = QLabel("⚠ 제스처 인식 비활성\n" + gesture_status)
+        banner.setWordWrap(True)
+        banner.setStyleSheet(
+            "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
+            " border-radius:6px; padding:8px; font-weight:600;"
+        )
+        layout.addWidget(banner)
+
+        layout.addWidget(_header("손 랜드마크 추적 (MediaPipe Hands, 실제)"))
+        self._detected = QLabel("hand detected : —")
+        self._detected.setStyleSheet(_MONO)
+        layout.addWidget(self._detected)
+        self._det_conf = LabeledBar("detection confidence", threshold=0.50)
+        layout.addWidget(self._det_conf)
+        self._numeric = QLabel("웹캠·mediapipe·hand 모델이 준비되면 실시간 값이 표시됩니다.")
+        self._numeric.setStyleSheet(_MONO)
+        layout.addWidget(self._numeric)
+
+        note = QLabel(
+            "여기 보이는 손 랜드마크는 실제 검출 결과다. 제스처 이름·phase는 분류 모델이 "
+            "학습된 뒤에만 의미가 있으므로 지금은 표시하지 않는다(무작위 출력을 인식으로 "
+            "가장하지 않음)."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#6e7681; padding-top:8px;")
+        layout.addWidget(note)
+        layout.addStretch(1)
+        self.setWidget(body)
+
+    def update_snapshot(self, s: HandSnapshot) -> None:
+        self._status.setText(f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame")
+        self._status.setStyleSheet("color:#3fb950;" if s.hand_detected else "color:#8b949e;")
+        self._detected.setText(
+            f"hand detected : {s.hand_detected}"
+            + (f"   handedness : {s.handedness} ({s.handedness_score:.0%})" if s.hand_detected else "")
+        )
+        self._det_conf.set_value(
+            s.detection_confidence if s.hand_detected else 0.0, color="#58a6ff"
+        )
+        if s.hand_detected:
+            self._numeric.setText(
+                f"palm scale   : {s.palm_scale:.4f}\n"
+                f"landmarks    : {s.landmark_count} points (정규화 좌표는 downstream feature 입력)\n"
+                f"handedness   : {s.handedness}  score {s.handedness_score:.3f}"
+            )
+        else:
+            self._numeric.setText("손 없음 (추적 손실) — 스켈레톤 미표시")
+
+
 class ContractPanel(QFrame):
     """Shows the message contract a not-yet-implemented stage will emit."""
 
@@ -402,10 +474,14 @@ class VideoView(QLabel):
         self._fps_times: deque[float] = deque(maxlen=30)
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
+        self._hand: HandSnapshot | None = None
         self._show_placeholder("카메라 시작 중…")
 
     def set_gaze(self, snapshot: GazeSnapshot) -> None:
         self._gaze = snapshot
+
+    def set_hand(self, snapshot: HandSnapshot) -> None:
+        self._hand = snapshot
 
     def _show_placeholder(self, text: str) -> None:
         self._render(placeholder_frame(text=text))
@@ -419,6 +495,8 @@ class VideoView(QLabel):
         draw_hud(frame, [f"{w}x{h}  {fps:4.1f} FPS", f"frame #{self._frame_count}"])
         if self._gaze is not None:
             draw_gaze_overlay(frame, self._gaze)
+        if self._hand is not None:
+            draw_hand_overlay(frame, self._hand)
         self._render(frame)
 
     def _current_fps(self) -> float:
@@ -440,7 +518,12 @@ class VideoView(QLabel):
 
 
 class GestureSidebar(QWidget):
-    """Recognized-gesture list bound to a GestureSource."""
+    """Recognized-gesture list bound to a GestureSource, plus a live hand-track line.
+
+    The recognized-gesture list stays empty while the classifier is untrained
+    (the source yields nothing) — no fabricated detections. The separate hand line
+    reflects real MediaPipe hand tracking so the sidebar still shows live signal.
+    """
 
     def __init__(self, source: GestureSource) -> None:
         super().__init__()
@@ -451,11 +534,24 @@ class GestureSidebar(QWidget):
         self._status = QLabel(source.status_text)
         self._status.setWordWrap(True)
         self._status.setStyleSheet("color:#8b949e;" if source.available else "color:#d29922;")
+        self._hand_line = QLabel("손 추적: —")
+        self._hand_line.setWordWrap(True)
+        self._hand_line.setStyleSheet(_MONO)
         self._list = QListWidget()
         layout.addWidget(title)
         layout.addWidget(self._status)
+        layout.addWidget(self._hand_line)
         layout.addWidget(self._list, 1)
         self.setMinimumWidth(220)
+
+    def set_hand_status(self, snapshot: HandSnapshot) -> None:
+        if snapshot.hand_detected:
+            label = snapshot.handedness or "?"
+            self._hand_line.setText(f"손 추적: {label} 검출 (det {snapshot.detection_confidence:.0%})")
+            self._hand_line.setStyleSheet(_MONO + " color:#3fb950;")
+        else:
+            self._hand_line.setText("손 추적: 손 없음")
+            self._hand_line.setStyleSheet(_MONO + " color:#8b949e;")
 
     def poll(self) -> None:
         for g in self._source.poll():
@@ -513,25 +609,31 @@ class MainWindow(QMainWindow):
         env: dict[str, str] | None = None,
         model_path: Path | None = None,
         profiles_path: Path | None = None,
+        hand_model_path: Path | None = None,
         start_camera: bool = True,
     ) -> None:
         super().__init__()
         self.setWindowTitle("JARVIS Pipeline Monitor")
         self.resize(1180, 820)
         self._log = MessageLog()
-        self._gesture_source: GestureSource = NullGestureSource()
+        self._gesture_source: GestureSource = UntrainedGestureSource()
         self._env = env if env is not None else _load_env()
         self._model_path = model_path if model_path is not None else _default_model_path()
         self._profiles_path = profiles_path if profiles_path is not None else _default_profiles_path()
+        self._hand_model_path = (
+            hand_model_path if hand_model_path is not None else _default_hand_model_path()
+        )
         self._latency = LatencyAggregator()
 
         self._probe = GazeProbe(
             model_path=self._model_path, profiles_path=self._profiles_path
         )
+        self._hand_probe = HandProbe(model_path=self._hand_model_path)
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
         tabs.addTab(self._build_gaze_tab(), "Gaze 파이프라인")
+        tabs.addTab(self._build_hand_tab(), "손 추적")
         tabs.addTab(self._build_pipeline_tab(), "파이프라인")
         tabs.addTab(self._build_latency_tab(), "지연·어댑터")
         self.setCentralWidget(tabs)
@@ -546,6 +648,10 @@ class MainWindow(QMainWindow):
                 self._log.info(f"gaze 프로브: {self._probe.status_text}")
             else:
                 self._log.warn(f"gaze 프로브 비활성: {self._probe.status_text}")
+            if self._hand_probe.start():
+                self._log.info(f"hand 프로브: {self._hand_probe.status_text}")
+            else:
+                self._log.warn(f"hand 프로브 비활성: {self._hand_probe.status_text}")
             self._start_camera(device_index)
 
         self._timer = QTimer(self)
@@ -576,19 +682,30 @@ class MainWindow(QMainWindow):
         self._gaze_panel = GazePanel(self._probe.status_text)
         return self._gaze_panel
 
+    def _build_hand_tab(self) -> QWidget:
+        self._hand_panel = HandPanel(
+            self._hand_probe.status_text, self._hand_probe.gesture_recognition_status
+        )
+        return self._hand_panel
+
     def _build_pipeline_tab(self) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
         for status in detect_pipeline_status(self._env, self._model_path):
             layout.addWidget(StageCard(status))
-        layout.addWidget(_header("아직 흐르지 않는 메시지 계약 (2인 파트 완성 시 채워짐)"))
+        layout.addWidget(_header("모듈 경계 메시지 계약"))
         layout.addWidget(
             ContractPanel(
-                "Gesture Spotter → Fusion", GestureEstimate, "손 랜드마크 기반 제스처·구간 추정."
+                "Gesture Spotter → Fusion",
+                GestureEstimate,
+                "손 랜드마크 기반 제스처·구간 추정. 코드는 구현됨 — 단 분류 모델 미학습이라 "
+                "아직 실제 제스처로 흐르지 않음.",
             )
         )
         layout.addWidget(
-            ContractPanel("Fusion → Protocol", Intent, "시선 타겟 + 제스처를 합쳐 만든 의도.")
+            ContractPanel(
+                "Fusion → Protocol", Intent, "시선 타겟 + 제스처를 합쳐 만든 의도 (모델 학습 후 활성)."
+            )
         )
         layout.addWidget(
             ContractPanel("Protocol → Adapters", Command, "TTL·dedup을 거친 기기 실행 명령.")
@@ -608,9 +725,10 @@ class MainWindow(QMainWindow):
         return split
 
     def _start_camera(self, device_index: int) -> None:
-        worker = CameraWorker(device_index, probe=self._probe)
+        worker = CameraWorker(device_index, probe=self._probe, hand_probe=self._hand_probe)
         worker.frame_ready.connect(self._on_frame)
         worker.gaze_ready.connect(self._on_gaze)
+        worker.hand_ready.connect(self._on_hand)
         worker.failed.connect(self._on_camera_failed)
         self._camera = worker
         worker.start()
@@ -624,6 +742,12 @@ class MainWindow(QMainWindow):
         self._video.set_gaze(snapshot)
         self._gaze_panel.update_snapshot(snapshot)
         self._latency.record(LatencyStage.CAPTURE_TO_INFERENCE, snapshot.inference_ms)
+
+    def _on_hand(self, snapshot: object) -> None:
+        assert isinstance(snapshot, HandSnapshot)
+        self._video.set_hand(snapshot)
+        self._hand_panel.update_snapshot(snapshot)
+        self._sidebar.set_hand_status(snapshot)
 
     def _on_camera_failed(self, message: str) -> None:
         self._log.error(message)
@@ -644,6 +768,10 @@ def _default_model_path() -> Path | None:
     # Always return the conventional path; GazeProbe/pipeline status explain its
     # absence honestly rather than silently disabling the stage.
     return Path("models/face_landmarker.task")
+
+
+def _default_hand_model_path() -> Path | None:
+    return Path("models/hand_landmarker.task")
 
 
 def _default_profiles_path() -> Path | None:

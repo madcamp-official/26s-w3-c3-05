@@ -26,23 +26,26 @@ def test_main_window_builds_offscreen() -> None:
     try:
         tabs = window.centralWidget()
         assert tabs is not None
-        # four tabs: 실시간 / Gaze 파이프라인 / 파이프라인 / 지연·어댑터
-        assert tabs.count() == 4
+        # five tabs: 실시간 / Gaze 파이프라인 / 손 추적 / 파이프라인 / 지연·어댑터
+        assert tabs.count() == 5
         assert tabs.tabText(0) == "실시간"
         assert tabs.tabText(1) == "Gaze 파이프라인"
-        assert tabs.tabText(2) == "파이프라인"
-        assert tabs.tabText(3) == "지연·어댑터"
+        assert tabs.tabText(2) == "손 추적"
+        assert tabs.tabText(3) == "파이프라인"
+        assert tabs.tabText(4) == "지연·어댑터"
     finally:
         window.close()
         app.processEvents()
 
 
-def test_startup_logs_gesture_unavailable() -> None:
+def test_startup_logs_gesture_recognition_off() -> None:
+    """The gesture pipeline exists but its model is untrained — startup says so
+    honestly ("미학습"), never claiming recognition is running."""
     app = QApplication.instance() or QApplication([])
     window = MainWindow(env={}, start_camera=False)
     try:
         texts = [m.text for m in window._log.recent()]
-        assert any("미구현" in t for t in texts)
+        assert any("미학습" in t for t in texts)
     finally:
         window.close()
         app.processEvents()

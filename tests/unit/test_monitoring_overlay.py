@@ -13,11 +13,29 @@ from jarvis.gaze.features import FaceObservation  # noqa: E402
 from jarvis.gaze.lock import GazeLockStateMachine  # noqa: E402
 from jarvis.gaze.smoothing import GazeSmoother  # noqa: E402
 from jarvis.monitoring.gaze_probe import GazeSnapshot, evaluate  # noqa: E402
+from jarvis.monitoring.hand_probe import HandSnapshot  # noqa: E402
 from jarvis.monitoring.overlay import (  # noqa: E402
     draw_gaze_overlay,
+    draw_hand_overlay,
     draw_hud,
     placeholder_frame,
 )
+
+
+def _hand_snapshot(*, detected: bool) -> HandSnapshot:
+    points = tuple((0.4 + 0.01 * i, 0.4 + 0.01 * i) for i in range(21)) if detected else None
+    return HandSnapshot(
+        timestamp_ms=0,
+        frame_id=0,
+        hand_detected=detected,
+        handedness="Right" if detected else "",
+        handedness_score=0.95 if detected else 0.0,
+        detection_confidence=0.9 if detected else 0.0,
+        palm_scale=0.2 if detected else 0.0,
+        image_points=points,
+        landmark_count=21 if detected else 0,
+        inference_ms=7.0,
+    )
 
 
 def _snapshot(*, detected: bool) -> GazeSnapshot:
@@ -74,6 +92,21 @@ def test_draw_gaze_overlay_shows_tracking_lost_banner() -> None:
     draw_gaze_overlay(frame, snapshot)
     # the banner is drawn along the bottom strip
     assert not np.array_equal(before[-30:], frame[-30:])
+
+
+def test_draw_hand_overlay_draws_skeleton_when_tracking() -> None:
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    before = frame.copy()
+    draw_hand_overlay(frame, _hand_snapshot(detected=True))
+    assert not np.array_equal(before, frame)  # skeleton + HUD drawn
+    assert frame.shape == (240, 320, 3)
+
+
+def test_draw_hand_overlay_noop_when_no_hand() -> None:
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    before = frame.copy()
+    draw_hand_overlay(frame, _hand_snapshot(detected=False))
+    assert np.array_equal(before, frame)  # nothing drawn for a lost hand
 
 
 def test_placeholder_frame_shape_and_content() -> None:

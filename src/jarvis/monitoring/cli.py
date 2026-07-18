@@ -22,6 +22,11 @@ def main(argv: list[str] | None = None) -> int:
         default="data/calibration/profiles.json",
         help="calibration 프로파일 JSON 경로 (Target 분류에 필요)",
     )
+    parser.add_argument(
+        "--hand-model",
+        default="models/hand_landmarker.task",
+        help="hand_landmarker.task 경로 (손 추적 라이브에 필요)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -38,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         device_index=args.camera,
         model_path=Path(args.model),
         profiles_path=Path(args.profiles),
+        hand_model_path=Path(args.hand_model),
     )
     window.show()
     return int(app.exec())
