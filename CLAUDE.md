@@ -18,10 +18,6 @@
 
 커밋 후, 그리고 브랜치 merge 후의 push는 별도 허가 요청 없이 바로 수행한다.
 
-# Team Workflow
-
-백엔드·프론트엔드 모두 `dev` 브랜치에서 함께 작업한다. `milleion`(백엔드 담당)·`ireyhye`(프론트엔드 담당) 모두 별도 병합 절차 없이 `dev`에 바로 커밋·push한다.
-
 # Branch Sync
 
 작업 중 로컬이 해당 브랜치의 원격(`origin/<branch>`)보다 뒤처진 것을 발견하면, `git fetch origin`을 실행한 뒤 `git pull origin <branch>`로 로컬을 최신화한다. 어떤 브랜치에서든 커밋하기 전에는 항상 이 확인을 먼저 수행한다.
