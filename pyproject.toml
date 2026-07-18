@@ -19,6 +19,9 @@ vision = [
   "mediapipe>=0.10,<0.11",
   "opencv-python>=4.9,<5",
 ]
+ml = [
+  "torch>=2.2,<3",
+]
 dev = [
   "pytest>=8,<9",
   "ruff>=0.9,<1",
@@ -45,4 +48,11 @@ packages = ["jarvis"]
 # MediaPipe is optional for the same camera-only boundary.
 [[tool.mypy.overrides]]
 module = ["cv2", "mediapipe.*"]
+ignore_missing_imports = true
+
+# torch is an optional `ml` extra isolated to jarvis.gesture_fusion.model (same
+# import-boundary pattern as mediapipe above); its bundled stubs are incomplete
+# under strict mode, so treat it as untyped rather than failing the whole build.
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*"]
 ignore_missing_imports = true

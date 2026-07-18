@@ -33,8 +33,9 @@ Task 1·2는 mediapipe·카메라 없이 단위 테스트되는 순수 경계다
 
 - [x] **Task 1 — Hand landmark 추출·정규화** (`landmarks.py`, `mediapipe_hands.py`, `config.py`): MediaPipe 연동(교체 가능한 `HandLandmarkSource` 경계), 손목 기준·손바닥 크기 정규화(회전 보존). 검증 후 수정 반영: 좌표 원점을 스케일 기준과 분리(`origin_index`), `tracking_confidence`→`detection_confidence`+`handedness_score` 정정, handedness 부재 시 score 0.0 처리.
 - [x] **Task 2 — Feature engineering** (`features.py`): causal 속도·가속도(monotonic `timestamp_ms` 차분)·관절 굴곡각. 추적손실·프레임 공백 시 history 리셋, 관절각 퇴화 시 NaN 대신 0. feature 그룹 on/off·차원은 `GestureConfig`로 제어.
-- [ ] Task 3 — Causal TCN/GRU (gesture 분류 + phase, confidence·uncertainty)
-- [ ] Task 4 이후 — gesture spotting, temporal alignment, fusion, duplicate 방지, intent 조립, hard-negative mining
+- [x] **Task 3 — Causal TCN/GRU** (`model_protocol.py`, `model.py`): dilated causal 1D conv(TCN), `GestureModel` Protocol(torch 무의존, `mediapipe_hands.py`와 같은 격리 원칙)로 아키텍처 교체 가능. `phase`는 `jarvis.contracts.GesturePhase`를 그대로 재사용(자체 enum 재정의 없음). gesture head(7-class: 6개 동적 제스처 + 배경 클래스 `"none"`) + phase head(4-class), confidence=softmax max, uncertainty=정규화 엔트로피. 진짜 인과성(미래 프레임 미사용)을 `test_output_is_truly_causal`로 회귀 검증. **모델은 아직 미학습(무작위 초기화)** — `ModelMetadata.trained=False`가 이를 명시하며, 학습 데이터 확보 전까지 fusion·safe commit에 실제 인식 결과로 쓰면 안 됨(`models/README.md` 참고).
+- [ ] Task 4 — gesture spotting 상태 머신 (프레임별 phase → 하나의 이벤트로 결합, `GestureEstimate` 계약 조립은 여기서 수행)
+- [ ] Task 5 이후 — temporal alignment, fusion, duplicate 방지, intent 조립, hard-negative mining
 
 ## 이슈 / 의사결정 필요 사항
 
