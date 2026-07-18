@@ -26,10 +26,12 @@ def test_main_window_builds_offscreen() -> None:
     try:
         tabs = window.centralWidget()
         assert tabs is not None
-        # two tabs: 실시간 / 파이프라인
-        assert tabs.count() == 2
+        # four tabs: 실시간 / Gaze 파이프라인 / 파이프라인 / 지연·어댑터
+        assert tabs.count() == 4
         assert tabs.tabText(0) == "실시간"
-        assert tabs.tabText(1) == "파이프라인"
+        assert tabs.tabText(1) == "Gaze 파이프라인"
+        assert tabs.tabText(2) == "파이프라인"
+        assert tabs.tabText(3) == "지연·어댑터"
     finally:
         window.close()
         app.processEvents()
