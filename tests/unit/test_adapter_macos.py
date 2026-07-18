@@ -1,0 +1,55 @@
+"""macOS InputSink 확장을 검증한다.
+
+`MacOSInputSink`는 `Win32InputSink`와 같은 이유로 실제 CGEvent 호출을 자동
+테스트하지 않는다("manually verified" — Win32InputSink도 직접 단위 테스트가
+없다). 여기서는 (1) 이 모듈이 macOS가 아닌 호스트에서도 import는 실패하지
+않는지, (2) `default_input_sink`가 플랫폼별로 올바른 클래스를 고르는지,
+(3) 미디어 키 매핑 테이블이 `InputKey`와 어긋나지 않는지만 검증한다.
+"""
+
+from __future__ import annotations
+
+import sys
+
+import pytest
+
+from jarvis.runtime_protocol.adapters.windows import InputKey, default_input_sink
+
+
+def test_macos_module_imports_without_pyobjc_at_module_level() -> None:
+    """PyObjC는 메서드 안에서만 import한다 — 모듈 import 자체는 항상 성공해야 한다."""
+    from jarvis.runtime_protocol.adapters import macos
+
+    assert hasattr(macos, "MacOSInputSink")
+
+
+def test_nx_keytype_table_covers_every_input_key() -> None:
+    from jarvis.runtime_protocol.adapters.macos import _NX_KEYTYPE
+
+    assert set(_NX_KEYTYPE) == set(InputKey)
+
+
+def test_nx_keytype_values_are_unique() -> None:
+    from jarvis.runtime_protocol.adapters.macos import _NX_KEYTYPE
+
+    assert len(set(_NX_KEYTYPE.values())) == len(_NX_KEYTYPE)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS에서만 의미 있는 분기")
+def test_default_input_sink_is_macos_sink_on_darwin() -> None:
+    from jarvis.runtime_protocol.adapters.macos import MacOSInputSink
+
+    assert isinstance(default_input_sink(), MacOSInputSink)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows에서만 의미 있는 분기")
+def test_default_input_sink_is_win32_sink_on_windows() -> None:
+    from jarvis.runtime_protocol.adapters.windows import Win32InputSink
+
+    assert isinstance(default_input_sink(), Win32InputSink)
+
+
+def test_default_input_sink_rejects_unsupported_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    with pytest.raises(RuntimeError, match="no InputSink implementation"):
+        default_input_sink()

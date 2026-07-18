@@ -24,6 +24,10 @@ ui = [
   "PySide6>=6.6,<7",
   "opencv-python>=4.9,<5",
 ]
+macos = [
+  "pyobjc-framework-Quartz>=10,<12; sys_platform == 'darwin'",
+  "pyobjc-framework-Cocoa>=10,<12; sys_platform == 'darwin'",
+]
 dev = [
   "pytest>=8,<9",
   "ruff>=0.9,<1",
@@ -50,4 +54,11 @@ packages = ["jarvis"]
 # MediaPipe is optional for the same camera-only boundary.
 [[tool.mypy.overrides]]
 module = ["cv2", "mediapipe.*"]
+ignore_missing_imports = true
+
+# PyObjC (Quartz/AppKit) is an optional `macos` extra isolated to
+# jarvis.runtime_protocol.adapters.macos (same import-boundary pattern as
+# mediapipe above) and ships no type stubs.
+[[tool.mypy.overrides]]
+module = ["Quartz", "Quartz.*", "AppKit", "AppKit.*"]
 ignore_missing_imports = true
