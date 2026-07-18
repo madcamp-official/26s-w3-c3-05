@@ -57,6 +57,30 @@ class GestureConfig:
     0에 가까운 값으로 나눠 좌표가 폭주하는 것을 막는 안전 하한이다.
     """
 
+    # --- Feature engineering (README 8장 "속도·가속도·관절 각도 생성") ---
+    # 어떤 feature 그룹을 모델 입력 벡터에 넣을지 켜고 끈다. 모델을 갈아끼우거나
+    # 입력 차원을 줄일 때 코드 수정 없이 조절한다. 순서(위치→각도→속도→가속도)는
+    # 고정이며, 켜진 그룹만 순서대로 이어붙인다.
+    include_positions: bool = True
+    """정규화된 21개 랜드마크 좌표(63차원)를 feature에 포함한다."""
+
+    include_joint_angles: bool = True
+    """손가락 관절 굴곡각(JOINT_ANGLE_TRIPLETS 기준)을 feature에 포함한다."""
+
+    include_velocity: bool = True
+    """프레임 간 좌표 속도(초당, causal 차분)를 feature에 포함한다."""
+
+    include_acceleration: bool = True
+    """속도의 프레임 간 변화(초당 가속도, causal 차분)를 feature에 포함한다."""
+
+    max_frame_gap_ms: int = 200
+    """이 간격을 넘는 프레임 공백이면 속도·가속도 history를 리셋한다.
+
+    추적이 잠깐 끊겼다 돌아온 두 프레임 사이의 큰 점프를 실제 손 움직임으로
+    오해해 허위 속도를 만드는 것을 막는다(development-principles.md 2·5절: 불확실하면
+    지어내지 않는다). 리셋 후 첫 프레임의 속도·가속도는 0이다.
+    """
+
     def __post_init__(self) -> None:
         if self.num_hands < 1:
             raise ValueError("num_hands must be at least 1")
@@ -81,6 +105,17 @@ class GestureConfig:
             raise ValueError("palm_scale_root_index and palm_scale_tip_index must differ")
         if not math.isfinite(self.min_palm_scale) or self.min_palm_scale <= 0.0:
             raise ValueError("min_palm_scale must be finite and positive")
+        if self.max_frame_gap_ms <= 0:
+            raise ValueError("max_frame_gap_ms must be positive")
+        if not any(
+            (
+                self.include_positions,
+                self.include_joint_angles,
+                self.include_velocity,
+                self.include_acceleration,
+            )
+        ):
+            raise ValueError("at least one feature group must be enabled")
 
 
 # MediaPipe Hand Landmarker는 손 하나당 21개 랜드마크를 낸다. downstream feature
@@ -109,6 +144,33 @@ PINKY_MCP = 17
 PINKY_PIP = 18
 PINKY_DIP = 19
 PINKY_TIP = 20
+
+
+# 손가락 관절 굴곡각을 재는 (a, b, c) 랜드마크 삼각. b가 꼭짓점이고, 벡터 b→a와
+# b→c 사이 각을 잰다. 각 손가락마다 뿌리(손목/MCP)부터 끝까지 굽힘 정도를 담아
+# "몇 손가락을 폈는지"·pinch·주먹 같은 정적 손 모양(README 8장 지원 제스처)을
+# 표현한다. 좌표계·모델을 바꿔도 이 정의만 손대면 각도 feature가 따라온다.
+JOINT_ANGLE_TRIPLETS: tuple[tuple[int, int, int], ...] = (
+    # Thumb
+    (WRIST, THUMB_MCP, THUMB_IP),
+    (THUMB_MCP, THUMB_IP, THUMB_TIP),
+    # Index
+    (WRIST, INDEX_FINGER_MCP, INDEX_FINGER_PIP),
+    (INDEX_FINGER_MCP, INDEX_FINGER_PIP, INDEX_FINGER_DIP),
+    (INDEX_FINGER_PIP, INDEX_FINGER_DIP, INDEX_FINGER_TIP),
+    # Middle
+    (WRIST, MIDDLE_FINGER_MCP, MIDDLE_FINGER_PIP),
+    (MIDDLE_FINGER_MCP, MIDDLE_FINGER_PIP, MIDDLE_FINGER_DIP),
+    (MIDDLE_FINGER_PIP, MIDDLE_FINGER_DIP, MIDDLE_FINGER_TIP),
+    # Ring
+    (WRIST, RING_FINGER_MCP, RING_FINGER_PIP),
+    (RING_FINGER_MCP, RING_FINGER_PIP, RING_FINGER_DIP),
+    (RING_FINGER_PIP, RING_FINGER_DIP, RING_FINGER_TIP),
+    # Pinky
+    (WRIST, PINKY_MCP, PINKY_PIP),
+    (PINKY_MCP, PINKY_PIP, PINKY_DIP),
+    (PINKY_PIP, PINKY_DIP, PINKY_TIP),
+)
 
 
 DEFAULT_GESTURE_CONFIG = GestureConfig()

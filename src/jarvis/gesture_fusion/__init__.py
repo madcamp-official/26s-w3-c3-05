@@ -9,6 +9,12 @@ jarvis.gesture_fusion.mediapipe_hands import MediaPipeHandLandmarker`를 쓴다.
 """
 
 from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG, GestureConfig
+from jarvis.gesture_fusion.features import (
+    FrameFeatures,
+    HandFeatureExtractor,
+    compute_joint_angles,
+    feature_dimension,
+)
 from jarvis.gesture_fusion.landmarks import (
     HandLandmarkSource,
     HandObservation,
@@ -23,4 +29,8 @@ __all__ = [
     "RawHandLandmarks",
     "HandLandmarkSource",
     "normalize_hand",
+    "FrameFeatures",
+    "HandFeatureExtractor",
+    "compute_joint_angles",
+    "feature_dimension",
 ]
