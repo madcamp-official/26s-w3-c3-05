@@ -40,7 +40,8 @@ def _obs(
         landmarks=landmarks.astype(np.float64),
         handedness="Right",
         palm_scale=0.2,
-        tracking_confidence=0.9,
+        detection_confidence=0.9,
+        handedness_score=0.9,
         hand_detected=hand_detected,
     )
 
