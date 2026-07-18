@@ -16,10 +16,21 @@ from numpy.typing import NDArray
 
 if TYPE_CHECKING:
     from jarvis.monitoring.gaze_probe import GazeSnapshot
+    from jarvis.monitoring.hand_probe import HandSnapshot
 
 Frame = NDArray[np.uint8]
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+# Standard MediaPipe hand skeleton: 21 landmarks connected finger by finger.
+_HAND_CONNECTIONS: tuple[tuple[int, int], ...] = (
+    (0, 1), (1, 2), (2, 3), (3, 4),        # thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),        # index
+    (5, 9), (9, 10), (10, 11), (11, 12),   # middle
+    (9, 13), (13, 14), (14, 15), (15, 16),  # ring
+    (13, 17), (17, 18), (18, 19), (19, 20),  # pinky
+    (0, 17),                                # palm base
+)
 
 # BGR colors keyed by GazeLockState value (kept as strings to avoid importing
 # the enum at runtime — overlay stays decoupled from the gaze package).
@@ -114,6 +125,38 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
         (f"stability  {stability:.2f}" if stability is not None else "stability  --", grey),
     ]
     _text_block(frame, lines, (8, h - 6 - 20 * len(lines) - 6))
+    return frame
+
+
+def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot) -> Frame:
+    """Overlay the real hand skeleton (21 landmarks) and tracking info.
+
+    Draws only when a hand is actually tracked; a lost frame draws nothing (never
+    a stale skeleton). This is hand *tracking* — no gesture is recognized here.
+    Mutates and returns ``frame``.
+    """
+    if not snapshot.hand_detected or snapshot.image_points is None:
+        return frame
+    h, w = frame.shape[:2]
+    # blue for Right, orange for Left (BGR); grey if handedness unknown
+    color = {"Right": (230, 180, 60), "Left": (60, 150, 230)}.get(
+        snapshot.handedness, (170, 170, 170)
+    )
+    pts = [(int(x * w), int(y * h)) for x, y in snapshot.image_points]
+    for a, b in _HAND_CONNECTIONS:
+        cv2.line(frame, pts[a], pts[b], color, 2, cv2.LINE_AA)
+    for px, py in pts:
+        cv2.circle(frame, (px, py), 3, (235, 235, 235), thickness=-1)
+
+    label = snapshot.handedness or "?"
+    _text_block(
+        frame,
+        [
+            (f"HAND  {label}  det {snapshot.detection_confidence:.0%}", color),
+            (f"palm scale  {snapshot.palm_scale:.3f}", (170, 170, 170)),
+        ],
+        (8, 58),  # below the FPS HUD (top-left) so they do not overlap
+    )
     return frame
 
 

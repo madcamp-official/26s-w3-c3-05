@@ -15,18 +15,26 @@ import time
 from PySide6.QtCore import QThread, Signal
 
 from jarvis.monitoring.gaze_probe import GazeProbe
+from jarvis.monitoring.hand_probe import HandProbe
 from jarvis.runtime_protocol.capture.source import OpenCVCameraSource
 
 
 class CameraWorker(QThread):
     frame_ready = Signal(object)  # numpy BGR frame
-    gaze_ready = Signal(object)  # GazeSnapshot (only when a probe is attached)
+    gaze_ready = Signal(object)  # GazeSnapshot (only when a gaze probe is attached)
+    hand_ready = Signal(object)  # HandSnapshot (only when a hand probe is attached)
     failed = Signal(str)
 
-    def __init__(self, device_index: int = 0, probe: GazeProbe | None = None) -> None:
+    def __init__(
+        self,
+        device_index: int = 0,
+        probe: GazeProbe | None = None,
+        hand_probe: HandProbe | None = None,
+    ) -> None:
         super().__init__()
         self._device_index = device_index
         self._probe = probe
+        self._hand_probe = hand_probe
         self._running = False
 
     def run(self) -> None:
@@ -46,19 +54,34 @@ class CameraWorker(QThread):
                     self.msleep(5)
                     continue
                 self.frame_ready.emit(image)
-                if self._probe is not None and self._probe.available:
+                gaze_on = self._probe is not None and self._probe.available
+                hand_on = self._hand_probe is not None and self._hand_probe.available
+                if gaze_on or hand_on:
                     timestamp_ms = int((time.monotonic() - start) * 1000)
-                    try:
-                        snapshot = self._probe.process_bgr(image, timestamp_ms, frame_id)
-                    except Exception as exc:  # noqa: BLE001 - a bad frame must not kill the thread
-                        self.failed.emit(f"gaze 처리 오류: {exc}")
-                        snapshot = None
-                    if snapshot is not None:
-                        self.gaze_ready.emit(snapshot)
+                    if gaze_on:
+                        assert self._probe is not None
+                        try:
+                            gaze = self._probe.process_bgr(image, timestamp_ms, frame_id)
+                        except Exception as exc:  # noqa: BLE001 - a bad frame must not kill the thread
+                            self.failed.emit(f"gaze 처리 오류: {exc}")
+                            gaze = None
+                        if gaze is not None:
+                            self.gaze_ready.emit(gaze)
+                    if hand_on:
+                        assert self._hand_probe is not None
+                        try:
+                            hand = self._hand_probe.process_bgr(image, timestamp_ms, frame_id)
+                        except Exception as exc:  # noqa: BLE001 - a bad frame must not kill the thread
+                            self.failed.emit(f"hand 처리 오류: {exc}")
+                            hand = None
+                        if hand is not None:
+                            self.hand_ready.emit(hand)
                     frame_id += 1
         finally:
             if self._probe is not None:
                 self._probe.close()
+            if self._hand_probe is not None:
+                self._hand_probe.close()
             source.close()
 
     def stop(self) -> None:
