@@ -11,3 +11,7 @@
 | 2026-07-18 | 노트북 Lock 중 커서/제스처 분기: 기본은 커서 모드, Gesture Spotter `ONSET` 감지 시 커서 일시정지 후 제스처 판정 우선. 판정 실패(`IDLE` 복귀) 시 커서 모드 복귀 | 별도 모드 전환 동작 없이 자연스러움. 제스처 시작 순간의 커서 미세 끌림은 감수 | suh1088 |
 | 2026-07-18 | 제스처 모델 추론은 MVP에서 로컬 실행. 단, 추론 부분을 교체 가능한 경계로 분리해 나중에 GPU 서버 스트리밍으로 옮길 수 있게 설계 | 데모 당일 네트워크 리스크 제거 + 향후 무거운 모델(ST-GCN 등) 서버 실행 여지 확보 | suh1088 |
 | 2026-07-18 | Gaze 방식: 머리+눈 오프셋을 합성한 시선 방향 단위 벡터 + 코사인 유사도 비교 (README 7장) | 등록 시(고개 돌림)와 실사용 시(눈짓만)의 행동 불일치에도 같은 방향이면 같은 벡터가 나오도록 | 팀 합의 |
+| 2026-07-18 | command_id를 `cmd-{intent_id}`로 결정적 생성 | 같은 intent 재시도가 같은 command_id로 collapse되어 dedup만으로 idempotency 보장(원칙 3) | suh1088(3인) |
+| 2026-07-18 | 상대 연산(increment/decrement)의 결과 절대값 [min,max] clamp는 protocol이 아니라 adapter가 수행 | clamp에 기기 현재 상태가 필요한데 protocol은 상태를 모름. protocol은 delta의 부호·step 배수만 정적 검증 | suh1088(3인) |
+| 2026-07-18 | capability 연산 집합(number: set/increment/decrement, boolean: set/toggle)을 capability spec에 선언(config 주입) | 연산을 코드에 하드코딩하지 않고 기기별로 다르게 선언 가능하게. 열린 문자열 키 원칙과 일관 | suh1088(3인) |
+| 2026-07-18 | (미해결·논의필요) Intent에 생성 timestamp 없음 → TTL을 "수신 시점 기준"으로 해석. enum capability는 Intent.value(int/float/bool)로 표현 불가라 보류 | 정밀 TTL·enum 기기는 계약 변경 필요. MVP 범위(전구·노트북)에선 문제 없어 후순위 | 3인 제기, Fusion과 협의 대상 |
