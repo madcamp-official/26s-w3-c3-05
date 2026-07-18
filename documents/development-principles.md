@@ -1,6 +1,6 @@
-# HandOS 개발 원칙
+# JARVIS 개발 원칙
 
-이 문서는 [README.md](../README.md)의 MVP 범위와 아키텍처, 그리고 `documents/` 아래의 모듈별 계획을 구현할 때 모든 팀원이 따르는 공통 원칙이다. HandOS의 우선순위는 기능 수가 아니라 **사용자가 의도한 대상에만 명령을 정확히 한 번 실행하는 것**이다.
+이 문서는 [README.md](../README.md)의 MVP 범위와 아키텍처, 그리고 `documents/` 아래의 모듈별 계획을 구현할 때 모든 팀원이 따르는 공통 원칙이다. JARVIS의 우선순위는 기능 수가 아니라 **사용자가 의도한 대상에만 명령을 정확히 한 번 실행하는 것**이다.
 
 ## 1. 실제 동작과 재현 가능한 검증
 
@@ -22,7 +22,7 @@
 
 ## 3. 모듈 소유권과 협업 경계
 
-HandOS는 다음 세 영역을 독립적으로 개발한다.
+JARVIS는 다음 세 영역을 독립적으로 개발한다.
 
 - Gaze Targeting: [gaze.md](gaze.md)의 얼굴·홍채 추적, calibration, target classifier, `UNKNOWN` rejection, smoothing, Gaze Lock과 정확도 평가
 - Gesture & Intent Fusion: [gesture-fusion.md](gesture-fusion.md)의 hand landmark, dynamic gesture spotting, phase, temporal alignment, safe commit과 hard-negative 평가
@@ -62,7 +62,7 @@ HandOS는 다음 세 영역을 독립적으로 개발한다.
 
 ## 7. AI 및 학습 모델 사용 경계
 
-1. HandOS의 실시간 명령 결정은 README에 정의된 Gaze, Gesture, Fusion과 명시적 state machine·검증 규칙으로 수행한다. 외부 생성형 AI의 비결정적 응답을 안전 실행 경로에 추가하지 않는다.
+1. JARVIS의 실시간 명령 결정은 README에 정의된 Gaze, Gesture, Fusion과 명시적 state machine·검증 규칙으로 수행한다. 외부 생성형 AI의 비결정적 응답을 안전 실행 경로에 추가하지 않는다.
 2. 모델 출력은 신뢰하지 않고 범위, shape, finite 여부, confidence와 enum을 검증한 뒤 사용한다. NaN, 누락, 알 수 없는 label은 실행이 아니라 reject로 이어져야 한다.
 3. 학습 모델 파일에는 버전, 입력 feature, 전처리, label 집합, 학습 데이터 출처와 평가 결과를 연결할 수 있는 메타데이터를 둔다.
 4. AI 개발 도구는 코드·문서 초안과 분석에 사용할 수 있지만 비밀정보나 동의받지 않은 영상·생체정보를 외부 모델에 입력하지 않는다. 생성된 변경은 담당자가 테스트하고 검토한 뒤 반영한다.

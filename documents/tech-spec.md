@@ -5,6 +5,7 @@
 - 전체 아키텍처 다이어그램: [README 6장](../README.md)
 - 모듈별 설계: [gaze.md](gaze.md) · [gesture-fusion.md](gesture-fusion.md) · [runtime-protocol.md](runtime-protocol.md)
 - 모듈 간 데이터 포맷: [interface-contract.md](interface-contract.md)
+- 저장소 구조와 소유권: [repository-structure.md](repository-structure.md)
 
 ## 통합 시 유의점
 

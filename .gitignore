@@ -26,3 +26,11 @@ build/
 
 # Logs
 *.log
+
+# Local model binaries and evaluation artifacts
+models/*.task
+models/*.onnx
+models/*.pt
+data/raw/
+data/traces/
+artifacts/
