@@ -41,6 +41,9 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
 - Gaze Lock TTL은 마지막으로 같은 대상을 확신 있게 본 시각을 기준으로 한다. Gesture
   시작은 기존 TTL을 연장하지 않으며, gesture 시작과 commit 이벤트 모두 자신의
   `timestamp_ms`가 만료 시각에 도달했으면 `EXPIRED`로 거부한다.
+- `jarvis-gaze calibrate`는 카메라 관측을 기기 프로필로 축약해 저장하고,
+  `inspect-head-pose`는 실카메라 축/부호 점검값을 출력한다. `evaluate`는 정답 CSV에서
+  dataset_id·환경 조건을 포함한 재현 가능한 정확도 JSON을 만든다(`tools/README.md`).
 - 알려진 미검증 항목: `landmarks.py`의 head yaw/pitch/roll 부호 규약은 실제 카메라로
   검증하지 않았다 — models/README.md의 `face_landmarker.task` 항목 참고.
 

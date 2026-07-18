@@ -7,7 +7,12 @@ name = "jarvis-runtime"
 version = "0.1.0"
 description = "Local gaze-grounded motion control runtime"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "numpy>=1.26,<3",
+]
+
+[project.scripts]
+jarvis-gaze = "jarvis.gaze.cli:main"
 
 [project.optional-dependencies]
 vision = [
@@ -38,4 +43,3 @@ packages = ["jarvis"]
 [[tool.mypy.overrides]]
 module = "mediapipe.*"
 ignore_missing_imports = true
-
