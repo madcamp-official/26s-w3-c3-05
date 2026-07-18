@@ -80,6 +80,7 @@ def test_valid_intent_becomes_validated_command() -> None:
     command = result.command
     assert command.command_id == "cmd-intent-1"
     assert command.intent_id == "intent-1"
+    assert command.device_id == "room.bulb"
     assert command.capability == "brightness"
     assert command.operation == "decrement"
     assert command.value == 10

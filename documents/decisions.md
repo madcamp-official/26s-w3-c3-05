@@ -18,3 +18,4 @@
 | 2026-07-18 | capture 소스의 `read()→None`은 "일시적 미스"로만 정의하고, 유한 소스의 스트림 종료는 `EndOfStream` 예외로 분리 | 리뷰에서 발견: 둘을 혼동해 웹캠 프레임 하나 놓치면 파이프라인이 죽던 버그 수정 | suh1088(3인) |
 | 2026-07-18 | `CapturePipeline`을 컨텍스트 매니저 + `close()`로 소스 디바이스를 명시 해제. `stop()`은 루프만 중단 | 리뷰에서 발견: `close` 미호출로 `cv2.VideoCapture` 핸들이 프로세스 종료까지 누수 | suh1088(3인) |
 | 2026-07-18 | protocol dedup을 `register()` 원자 연산 하나에만 의존하도록 변경(선(先) `seen()` 검사 제거, `DuplicateCommandError`→`Rejected(DUPLICATE)`) | 리뷰에서 발견: 동시 submit 시 검사-등록 사이 경쟁으로 예외가 새어나가던 TOCTOU 수정 | suh1088(3인) |
+| 2026-07-18 | `Command`에 `device_id` 필드 추가 (계약 변경) | dispatch 시 어느 adapter(Windows/SmartThings)로 라우팅할지 결정하려면 command이 대상 기기를 알아야 함. Command은 dev-3 경계 안에서만(protocol 생성·adapter 소비) 쓰여 Gaze/Gesture/Fusion 영향 없음 | suh1088(3인) |

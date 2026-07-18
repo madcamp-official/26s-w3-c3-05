@@ -19,6 +19,7 @@ def _command(command_id: str = "cmd-1") -> Command:
     return Command(
         command_id=command_id,
         intent_id="intent-1",
+        device_id="room.bulb",
         capability="brightness",
         operation="decrement",
         value=10,

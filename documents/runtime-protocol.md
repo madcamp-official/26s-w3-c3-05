@@ -29,6 +29,16 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 
 ## 설계 노트
 
+### adapters/ (청크 3a — Windows + dispatch 코디네이터)
+
+실제 실행 경계. adapter는 실제로 일어난 일을 정직하게 보고하고, 성공을 위조하지 않는다(원칙 1.1).
+
+- **계약 보강**: `Command`에 `device_id` 추가(계약 변경, decisions.md 기록). command만으로 어느 adapter로 라우팅할지 결정하기 위함. dev-3 경계 안에서만 쓰여 Gaze/Gesture/Fusion 영향 없음.
+- `base.py`: `AdapterStatus`(ACKNOWLEDGED/VERIFIED/UNVERIFIED/FAILED/UNCONFIGURED) + `AdapterResult` + `DeviceAdapter`(Protocol). `DispatchCoordinator`가 TTL 재검증(원칙 4) → `device_id`로 profile·adapter 라우팅 → adapter 결과를 lifecycle 전이로 매핑. 실패·미설정·만료는 모두 미실행이 안전 기본(원칙 2.7).
+- `windows.py`: `WindowsAdapter`가 discrete command(scroll/volume/media)를 `InputSink`로 매핑. 로컬 합성 입력은 OS가 받아들이지만 효과를 되읽지 않으므로 성공은 `ACKNOWLEDGED`가 정직한 상한(VERIFIED 위조 안 함). 처리 못 하는 capability/operation은 추측 없이 `FAILED`. `Win32InputSink`는 user32(keybd_event/mouse_event) 하드웨어 경계로 `ctypes` lazy import — 실물 검증 필요(자동 테스트는 fake sink 사용).
+- 커서 연속 경로(Cursor Control Mapper, README 6장)는 `InputSink.move_cursor`를 재사용할 예정이나 이번 범위 밖(pointer/ 모듈, 공동 소유).
+- 테스트 16개: windows 매핑(scroll/volume/media·미지원·sink 오류 내성) 8개 + coordinator(5종 status 매핑·만료 미전달·미등록 adapter·미등록 기기) 8개.
+
 ### protocol/ (청크 2)
 
 안전 실행 코어. 실제 기기는 건드리지 않고, Intent가 command이 될 자격이 있는지 판정한다(원칙 2·4). 장애·불확실 시 기본은 미실행.
@@ -54,9 +64,10 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 
 ## 진행 상황
 
-- [x] 청크 1: capture/ 구현 + 단위 테스트 17개 (pytest/mypy/ruff 통과)
-- [x] 청크 2: protocol/ 구현 + 단위 테스트 35개 (누적 52개, pytest/mypy/ruff 통과)
-- [ ] 청크 3: adapters/
+- [x] 청크 1: capture/ 구현 + 단위 테스트 (리뷰 수정 후 21개)
+- [x] 청크 2: protocol/ 구현 + 단위 테스트 35개
+- [x] 청크 3a: adapters/base + DispatchCoordinator + Windows adapter + 테스트 16개 (누적 72개, pytest/mypy/ruff 통과). Command.device_id 계약 보강 포함
+- [ ] 청크 3b: adapters/ SmartThings + config/secrets + `.env.example`
 - [ ] 청크 4: telemetry/
 
 ## 이슈 / 의사결정 필요 사항

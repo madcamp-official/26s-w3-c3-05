@@ -55,6 +55,7 @@ class Intent:
 class Command:
     command_id: str
     intent_id: str
+    device_id: str
     capability: str
     operation: str
     value: int | float | bool

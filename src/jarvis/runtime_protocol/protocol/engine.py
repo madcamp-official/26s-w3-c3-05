@@ -98,6 +98,7 @@ class ProtocolEngine:
         command = Command(
             command_id=_command_id_for(intent.intent_id),
             intent_id=intent.intent_id,
+            device_id=intent.target,
             capability=intent.capability,
             operation=intent.operation,
             value=intent.value,
@@ -142,5 +143,13 @@ class ProtocolEngine:
     def mark_unverified(self, command_id: str) -> CommandState:
         return self._ledger.transition(command_id, CommandState.UNVERIFIED)
 
+    def transition_to(self, command_id: str, state: CommandState) -> CommandState:
+        """Move a command to ``state`` if the edge is legal (used by the dispatcher)."""
+        return self._ledger.transition(command_id, state)
+
     def state(self, command_id: str) -> CommandState | None:
         return self._ledger.state(command_id)
+
+    def command(self, command_id: str) -> Command | None:
+        """The registered command, or ``None`` if unknown. Used by the dispatcher."""
+        return self._ledger.command(command_id)

@@ -65,6 +65,7 @@
 {
   "command_id": "command-3901",
   "intent_id": "intent-1042",
+  "device_id": "room.bulb",
   "capability": "brightness",
   "operation": "decrement",
   "value": 1,
@@ -72,7 +73,7 @@
 }
 ```
 
-Command는 실행 내용(`capability`·`operation`·`value`)을 직접 담는다. adapter가 intent를 재조회하지 않는 **stateless adapter** 방식이며, dispatch 전 capability 범위·타입 검증(development-principles 2.5)도 이 payload로 수행한다.
+Command는 대상 기기(`device_id`)와 실행 내용(`capability`·`operation`·`value`)을 직접 담는다. adapter가 intent를 재조회하지 않는 **stateless adapter** 방식이며, dispatch 시 `device_id`로 어느 adapter(Windows/SmartThings)로 라우팅할지 결정하고, dispatch 전 capability 범위·타입 검증(development-principles 2.5)도 이 payload로 수행한다.
 
 ## 변경 이력
 
@@ -83,3 +84,4 @@ Command는 실행 내용(`capability`·`operation`·`value`)을 직접 담는다
 | 2026-07-18 | `timestamp_ms`·`frame_id` 제안 초안 → 정식 계약 확정 | suh1088·Claude |
 | 2026-07-18 | Command payload(`capability`/`operation`/`value`) 포함 확정, `expires_at` → `expires_at_ms` | suh1088·Claude |
 | 2026-07-18 | 공통 규칙 추가: 열린 문자열 키, snake_case 표기, confidence 범위, 매핑의 config 분리 | suh1088·Claude |
+| 2026-07-18 | Command에 `device_id` 추가 (adapter 라우팅에 필수) | suh1088(3인) |
