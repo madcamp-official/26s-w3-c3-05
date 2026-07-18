@@ -79,11 +79,17 @@ class TargetLockState:
     expires_at_ms: int | None
     target_confidence: float
     stability: float
+    candidate: str | None = None
+    """아직 dwell을 못 채워 lock되지 않았지만 후보로 쌓이는 중인 대상(있으면).
+
+    `locked=False`일 때 `IDLE`과 `TARGET_CANDIDATE`(README 9장 Intent 상태 머신)를
+    구분하는 데 쓴다(task 6). `locked=True`일 때는 항상 None이다.
+    """
 
 
 _UNLOCKED = TargetLockState(
     locked=False, target=None, locked_at_ms=None, expires_at_ms=None,
-    target_confidence=0.0, stability=0.0,
+    target_confidence=0.0, stability=0.0, candidate=None,
 )
 
 
@@ -103,7 +109,13 @@ class TargetLockTracker:
     @property
     def state(self) -> TargetLockState:
         if self._locked_target is None:
-            return _UNLOCKED
+            if self._candidate_target is None:
+                return _UNLOCKED
+            return TargetLockState(
+                locked=False, target=None, locked_at_ms=None, expires_at_ms=None,
+                target_confidence=self._last_confidence, stability=self._last_stability,
+                candidate=self._candidate_target,
+            )
         return TargetLockState(
             locked=True,
             target=self._locked_target,
@@ -111,6 +123,7 @@ class TargetLockTracker:
             expires_at_ms=self._expires_at_ms,
             target_confidence=self._last_confidence,
             stability=self._last_stability,
+            candidate=None,
         )
 
     def reset(self) -> None:
