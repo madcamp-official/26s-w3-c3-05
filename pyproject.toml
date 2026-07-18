@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "jarvis-runtime"
 version = "0.1.0"
 description = "Local gaze-grounded motion control runtime"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
   "numpy>=1.26,<3",
 ]
@@ -36,7 +36,7 @@ src = ["src", "tests"]
 line-length = 100
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 packages = ["jarvis"]
 
