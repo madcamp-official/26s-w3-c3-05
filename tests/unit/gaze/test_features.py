@@ -114,3 +114,29 @@ def test_confidence_is_minimum_of_eye_and_face() -> None:
     )
     assert gaze is not None
     assert gaze.confidence == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("head_yaw_deg", float("nan")),
+        ("eye_tracking_confidence", 1.1),
+        ("left_iris_relative", (1.1, 0.0)),
+    ],
+)
+def test_face_observation_rejects_invalid_model_values(field: str, value: object) -> None:
+    values: dict[str, object] = {
+        "timestamp_ms": 1_000,
+        "frame_id": 1,
+        "left_iris_relative": (0.0, 0.0),
+        "right_iris_relative": (0.0, 0.0),
+        "head_yaw_deg": 0.0,
+        "head_pitch_deg": 0.0,
+        "head_roll_deg": 0.0,
+        "eye_tracking_confidence": 1.0,
+        "face_tracking_confidence": 1.0,
+        "face_detected": True,
+    }
+    values[field] = value
+    with pytest.raises(ValueError):
+        FaceObservation(**values)  # type: ignore[arg-type]

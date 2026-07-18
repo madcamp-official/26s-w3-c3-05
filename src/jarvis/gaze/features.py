@@ -43,6 +43,27 @@ class FaceObservation:
     face_tracking_confidence: float
     face_detected: bool
 
+    def __post_init__(self) -> None:
+        if self.timestamp_ms < 0 or self.frame_id < 0:
+            raise ValueError("timestamp_ms and frame_id must be non-negative")
+        numeric_values = (
+            *self.left_iris_relative,
+            *self.right_iris_relative,
+            self.head_yaw_deg,
+            self.head_pitch_deg,
+            self.head_roll_deg,
+            self.eye_tracking_confidence,
+            self.face_tracking_confidence,
+        )
+        if not all(math.isfinite(value) for value in numeric_values):
+            raise ValueError("FaceObservation numeric values must be finite")
+        if not all(-1.0 <= value <= 1.0 for value in (*self.left_iris_relative, *self.right_iris_relative)):
+            raise ValueError("iris relative positions must be within [-1, 1]")
+        if not 0.0 <= self.eye_tracking_confidence <= 1.0:
+            raise ValueError("eye_tracking_confidence must be within [0, 1]")
+        if not 0.0 <= self.face_tracking_confidence <= 1.0:
+            raise ValueError("face_tracking_confidence must be within [0, 1]")
+
 
 @dataclass(frozen=True, slots=True)
 class GazeVector:
@@ -52,6 +73,17 @@ class GazeVector:
     confidence: float
     timestamp_ms: int
     frame_id: int
+
+    def __post_init__(self) -> None:
+        if self.timestamp_ms < 0 or self.frame_id < 0:
+            raise ValueError("timestamp_ms and frame_id must be non-negative")
+        if not 0.0 <= self.confidence <= 1.0 or not math.isfinite(self.confidence):
+            raise ValueError("confidence must be finite and within [0, 1]")
+        if self.direction.shape != (3,) or not np.all(np.isfinite(self.direction)):
+            raise ValueError("direction must contain exactly three finite values")
+        norm = float(np.linalg.norm(self.direction))
+        if not math.isclose(norm, 1.0, abs_tol=1e-6):
+            raise ValueError(f"direction must be a unit vector, got norm={norm}")
 
 
 def _rotate_2d(x: float, y: float, angle_deg: float) -> tuple[float, float]:

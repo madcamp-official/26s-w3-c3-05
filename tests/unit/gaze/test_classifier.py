@@ -123,3 +123,10 @@ def test_device_gaze_profile_rejects_non_unit_direction() -> None:
 def test_device_gaze_profile_rejects_negative_variance() -> None:
     with pytest.raises(ValueError):
         DeviceGazeProfile("bad", _unit([0.0, 0.0, 1.0]), variance=-0.1)
+
+
+def test_device_gaze_profile_rejects_non_finite_values() -> None:
+    with pytest.raises(ValueError):
+        DeviceGazeProfile("bad", np.array([0.0, 0.0, float("nan")]), variance=0.01)
+    with pytest.raises(ValueError):
+        DeviceGazeProfile("bad", _unit([0.0, 0.0, 1.0]), variance=float("nan"))

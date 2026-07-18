@@ -6,6 +6,7 @@ documents/gaze.md와 documents/decisions.md도 함께 갱신한다 (development-
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -56,6 +57,27 @@ class GazeConfig:
     """이 값 미만의 eye/face tracking confidence는 추적 손실로 취급한다."""
 
     UNKNOWN_TARGET: str = "UNKNOWN"
+
+    def __post_init__(self) -> None:
+        if self.dwell_time_ms < 0 or self.target_lock_ttl_ms <= 0:
+            raise ValueError("Gaze timing thresholds must be non-negative and TTL must be positive")
+        if self.smoothing_window_frames <= 0:
+            raise ValueError("smoothing_window_frames must be positive")
+        probability_fields = {
+            "minimum_probability": self.minimum_probability,
+            "minimum_margin": self.minimum_margin,
+            "unknown_probability_threshold": self.unknown_probability_threshold,
+            "minimum_tracking_confidence": self.minimum_tracking_confidence,
+        }
+        for name, value in probability_fields.items():
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
+        if not math.isfinite(self.max_eye_offset_deg) or self.max_eye_offset_deg <= 0.0:
+            raise ValueError("max_eye_offset_deg must be finite and positive")
+        if not math.isfinite(self.unknown_max_angle_deg) or not 0.0 < self.unknown_max_angle_deg <= 180.0:
+            raise ValueError("unknown_max_angle_deg must be finite and within (0, 180]")
+        if not self.UNKNOWN_TARGET:
+            raise ValueError("UNKNOWN_TARGET must not be empty")
 
 
 DEFAULT_GAZE_CONFIG = GazeConfig()

@@ -36,12 +36,16 @@ class DeviceGazeProfile:
     variance: float
 
     def __post_init__(self) -> None:
+        if not self.device_id:
+            raise ValueError("DeviceGazeProfile.device_id must not be empty")
+        if self.mean_direction.shape != (3,) or not np.all(np.isfinite(self.mean_direction)):
+            raise ValueError("DeviceGazeProfile.mean_direction must contain three finite values")
         norm = float(np.linalg.norm(self.mean_direction))
         if not math.isclose(norm, 1.0, abs_tol=1e-3):
             raise ValueError(
                 f"DeviceGazeProfile.mean_direction must be a unit vector, got norm={norm}"
             )
-        if self.variance < 0:
+        if not math.isfinite(self.variance) or self.variance < 0:
             raise ValueError(f"DeviceGazeProfile.variance must be >= 0, got {self.variance}")
 
 
