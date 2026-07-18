@@ -18,6 +18,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--profiles", type=Path, default=Path("data/calibration/profiles.json")
     )
+    parser.add_argument(
+        "--samples", type=Path, default=Path("data/evaluation/gaze_samples.json")
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -34,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         device_index=args.camera,
         model_path=args.model,
         profiles_path=args.profiles,
+        samples_path=args.samples,
     )
     window.show()
     return int(app.exec())

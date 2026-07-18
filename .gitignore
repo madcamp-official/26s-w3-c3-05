@@ -34,4 +34,5 @@ models/*.pt
 data/raw/
 data/traces/
 data/calibration/
+data/evaluation/gaze_samples.json
 artifacts/

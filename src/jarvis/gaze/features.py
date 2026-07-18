@@ -42,6 +42,8 @@ class FaceObservation:
     eye_tracking_confidence: float
     face_tracking_confidence: float
     face_detected: bool
+    left_eye_center_normalized: tuple[float, float] | None = None
+    right_eye_center_normalized: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         if self.timestamp_ms < 0 or self.frame_id < 0:
@@ -63,6 +65,14 @@ class FaceObservation:
             raise ValueError("eye_tracking_confidence must be within [0, 1]")
         if not 0.0 <= self.face_tracking_confidence <= 1.0:
             raise ValueError("face_tracking_confidence must be within [0, 1]")
+        for name, center in (
+            ("left_eye_center_normalized", self.left_eye_center_normalized),
+            ("right_eye_center_normalized", self.right_eye_center_normalized),
+        ):
+            if center is None:
+                continue
+            if not all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in center):
+                raise ValueError(f"{name} must contain normalized coordinates within [0, 1]")
 
 
 @dataclass(frozen=True, slots=True)

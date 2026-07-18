@@ -35,6 +35,8 @@ jarvis-monitor --camera 1         # 카메라 장치 인덱스 지정
 - **실시간 탭**: 가운데 라이브 웹캠(FPS·해상도 HUD 오버레이), 오른쪽 사이드바에
   인식된 제스처 목록, 하단에 시스템 메시지 패널. 모델이 있으면 gaze 방향 화살표,
   head pose, 양쪽 iris offset, target·확률·stability·Gaze Lock을 함께 표시한다.
+  `시선 샘플 저장` 버튼은 현재 벡터와 관련 값을 최대 10개까지
+  `data/evaluation/gaze_samples.json`에 저장하며 버튼 아래 목록에서 즉시 확인할 수 있다.
 - **파이프라인 탭**: 단계별(Capture·Gaze·Gesture·Fusion·Protocol·Adapters) 실제
   실행 가능 여부 카드. `LIVE`(초록)/`DEGRADED`(호박, 의존성·모델·설정 부족)/
   `UNAVAILABLE`(회색, 미구현)/`ERROR`(빨강)로 정직하게 표시한다.

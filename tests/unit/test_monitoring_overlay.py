@@ -8,7 +8,8 @@ import pytest
 cv2 = pytest.importorskip("cv2")
 
 from jarvis.contracts import TargetEstimate  # noqa: E402
-from jarvis.gaze.features import FaceObservation, GazeVector  # noqa: E402
+from jarvis.gaze.features import FaceObservation  # noqa: E402
+from jarvis.gaze.smoothing import SmoothedGaze  # noqa: E402
 from jarvis.monitoring.gaze_source import GazeSnapshot  # noqa: E402
 from jarvis.monitoring.overlay import draw_gaze_overlay, draw_hud, placeholder_frame  # noqa: E402
 
@@ -48,10 +49,12 @@ def test_draw_gaze_overlay_uses_real_snapshot() -> None:
         eye_tracking_confidence=1.0,
         face_tracking_confidence=1.0,
         face_detected=True,
+        left_eye_center_normalized=(0.40, 0.35),
+        right_eye_center_normalized=(0.60, 0.35),
     )
     snapshot = GazeSnapshot(
         observation=observation,
-        gaze_vector=GazeVector(np.array([0.2, 0.0, 0.9797959]), 1.0, 100, 3),
+        gaze_vector=SmoothedGaze(np.array([0.2, 0.0, 0.9797959]), 1.0, 100, 3),
         estimate=TargetEstimate(100, 3, "UNKNOWN", 0.0, 0.0, 1.0),
         lock_state="SEARCHING",
     )
@@ -59,3 +62,5 @@ def test_draw_gaze_overlay_uses_real_snapshot() -> None:
     draw_gaze_overlay(frame, snapshot)
 
     assert frame.any()
+    # 양쪽 눈 중간점: normalized (0.5, 0.35) → pixel (160, 84).
+    assert frame[84, 160].any()

@@ -1,0 +1,94 @@
+"""User-triggered gaze sample persistence."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from jarvis.contracts import TargetEstimate
+from jarvis.gaze.features import FaceObservation
+from jarvis.gaze.smoothing import SmoothedGaze
+from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
+from jarvis.monitoring.gaze_source import GazeSnapshot
+
+
+def _snapshot(frame_id: int = 1) -> GazeSnapshot:
+    observation = FaceObservation(
+        timestamp_ms=frame_id * 33,
+        frame_id=frame_id,
+        left_iris_relative=(0.1, -0.2),
+        right_iris_relative=(0.2, -0.1),
+        head_yaw_deg=3.0,
+        head_pitch_deg=-4.0,
+        head_roll_deg=1.0,
+        eye_tracking_confidence=1.0,
+        face_tracking_confidence=1.0,
+        face_detected=True,
+        left_eye_center_normalized=(0.4, 0.3),
+        right_eye_center_normalized=(0.6, 0.3),
+    )
+    return GazeSnapshot(
+        observation,
+        SmoothedGaze(np.array([0.0, 0.0, 1.0]), 1.0, frame_id * 33, frame_id),
+        TargetEstimate(frame_id * 33, frame_id, "UNKNOWN", 0.0, 0.0, 1.0),
+        "SEARCHING",
+    )
+
+
+def test_store_persists_snapshot_as_json(tmp_path: Path) -> None:
+    path = tmp_path / "gaze_samples.json"
+    store = GazeSampleStore(path)
+
+    sample = store.add(_snapshot())
+
+    assert sample["gaze_direction"] == [0.0, 0.0, 1.0]
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload[0]["head_pose_deg"]["pitch"] == -4.0
+    assert payload[0]["left_iris_relative"] == [0.1, -0.2]
+
+
+def test_store_enforces_capacity_across_reloads(tmp_path: Path) -> None:
+    path = tmp_path / "gaze_samples.json"
+    store = GazeSampleStore(path, capacity=2)
+    store.add(_snapshot(1))
+    store.add(_snapshot(2))
+
+    reloaded = GazeSampleStore(path, capacity=2)
+    assert reloaded.full
+    with pytest.raises(ValueError, match="capacity"):
+        reloaded.add(_snapshot(3))
+
+
+def test_format_sample_shows_vector_head_and_target(tmp_path: Path) -> None:
+    store = GazeSampleStore(tmp_path / "samples.json")
+    rendered = format_gaze_sample(store.add(_snapshot()))
+
+    assert "#1 [1f]" in rendered
+    assert "gaze=(+0.000, +0.000, +1.000)" in rendered
+    assert "head=(+3.0, -4.0, +1.0)" in rendered
+    assert "target=UNKNOWN P=0.00" in rendered
+
+
+def test_window_averages_multiple_smoothed_frames(tmp_path: Path) -> None:
+    store = GazeSampleStore(tmp_path / "samples.json")
+    snapshots = [_snapshot(frame_id) for frame_id in range(1, 6)]
+
+    sample = store.add_window(snapshots)
+
+    assert sample["window_frame_count"] == 5
+    assert sample["window_duration_ms"] == 132
+    assert sample["gaze_direction"] == [0.0, 0.0, 1.0]
+
+
+def test_clear_empties_memory_and_persisted_file(tmp_path: Path) -> None:
+    path = tmp_path / "samples.json"
+    store = GazeSampleStore(path)
+    store.add(_snapshot())
+
+    store.clear()
+
+    assert store.count == 0
+    assert json.loads(path.read_text(encoding="utf-8")) == []

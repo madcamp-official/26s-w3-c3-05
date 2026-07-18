@@ -49,7 +49,15 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
 
     if snapshot.gaze_vector is not None:
         direction = snapshot.gaze_vector.direction
-        origin = (width // 2, height // 2)
+        left_eye = observation.left_eye_center_normalized
+        right_eye = observation.right_eye_center_normalized
+        if left_eye is not None and right_eye is not None:
+            origin = (
+                int((left_eye[0] + right_eye[0]) * 0.5 * width),
+                int((left_eye[1] + right_eye[1]) * 0.5 * height),
+            )
+        else:
+            origin = (width // 2, height // 2)
         endpoint = (
             int(origin[0] + float(direction[0]) * width * 0.28),
             int(origin[1] + float(direction[1]) * height * 0.28),

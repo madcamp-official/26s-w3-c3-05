@@ -5,12 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from jarvis.contracts import TargetEstimate
-from jarvis.gaze.features import FaceObservation, GazeVector
+from jarvis.gaze.features import FaceObservation
+from jarvis.gaze.smoothing import SmoothedGaze
 
 
 @dataclass(frozen=True, slots=True)
 class GazeSnapshot:
     observation: FaceObservation
-    gaze_vector: GazeVector | None
+    gaze_vector: SmoothedGaze | None
     estimate: TargetEstimate
     lock_state: str

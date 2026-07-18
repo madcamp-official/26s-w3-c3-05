@@ -16,7 +16,6 @@ from PySide6.QtCore import QThread, Signal
 
 from jarvis.calibration.profiles import load_profiles
 from jarvis.gaze.engine import GazeTargetingEngine
-from jarvis.gaze.features import compose_gaze_vector
 from jarvis.gaze.landmarks import FaceLandmarkerAdapter, RgbFrame
 from jarvis.monitoring.gaze_source import GazeSnapshot
 
@@ -75,7 +74,7 @@ class CameraWorker(QThread):
                     self.gaze_ready.emit(
                         GazeSnapshot(
                             observation=observation,
-                            gaze_vector=compose_gaze_vector(observation),
+                            gaze_vector=gaze_engine.last_smoothed_gaze,
                             estimate=estimate,
                             lock_state=str(gaze_engine.lock_state),
                         )

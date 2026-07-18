@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QMainWindow,
+    QPushButton,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_source import GazeSnapshot
+from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
 from jarvis.monitoring.gesture_source import GestureSource, NullGestureSource
 from jarvis.monitoring.messages import MessageLevel, MessageLog
 from jarvis.monitoring.overlay import Frame, draw_gaze_overlay, draw_hud, placeholder_frame
@@ -182,6 +184,7 @@ class MainWindow(QMainWindow):
         env: dict[str, str] | None = None,
         model_path: Path | None = None,
         profiles_path: Path | None = None,
+        samples_path: Path | None = None,
         start_camera: bool = True,
     ) -> None:
         super().__init__()
@@ -192,6 +195,11 @@ class MainWindow(QMainWindow):
         self._env = env if env is not None else _load_env()
         self._model_path = model_path or Path("models/face_landmarker.task")
         self._profiles_path = profiles_path or Path("data/calibration/profiles.json")
+        self._latest_gaze: GazeSnapshot | None = None
+        self._gaze_history: deque[GazeSnapshot] = deque()
+        self._sample_store = GazeSampleStore(
+            samples_path or Path("data/evaluation/gaze_samples.json")
+        )
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
@@ -228,6 +236,21 @@ class MainWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(split)
+        self._sample_button = QPushButton()
+        self._sample_button.clicked.connect(self._save_gaze_sample)
+        self._clear_samples_button = QPushButton("샘플 초기화")
+        self._clear_samples_button.clicked.connect(self._clear_gaze_samples)
+        self._refresh_sample_button()
+        sample_controls = QHBoxLayout()
+        sample_controls.addWidget(self._sample_button, 1)
+        sample_controls.addWidget(self._clear_samples_button)
+        layout.addLayout(sample_controls)
+        self._sample_list = QListWidget()
+        self._sample_list.setMaximumHeight(130)
+        self._sample_list.setStyleSheet("font-family:Consolas,monospace; font-size:12px;")
+        for sample in self._sample_store.samples:
+            self._sample_list.addItem(format_gaze_sample(sample))
+        layout.addWidget(self._sample_list)
         return container
 
     def _build_pipeline_tab(self) -> QWidget:
@@ -256,7 +279,43 @@ class MainWindow(QMainWindow):
         self._video.show_frame(frame)
 
     def _on_gaze(self, snapshot: GazeSnapshot) -> None:
+        self._latest_gaze = snapshot
+        self._gaze_history.append(snapshot)
+        cutoff_ms = snapshot.observation.timestamp_ms - 500
+        while (
+            self._gaze_history
+            and self._gaze_history[0].observation.timestamp_ms < cutoff_ms
+        ):
+            self._gaze_history.popleft()
         self._video.update_gaze(snapshot)
+
+    def _save_gaze_sample(self) -> None:
+        if self._latest_gaze is None:
+            self._log.warn("저장할 Gaze 값이 아직 없습니다")
+            return
+        try:
+            sample = self._sample_store.add_window(list(self._gaze_history))
+        except ValueError as exc:
+            self._log.warn(f"Gaze 샘플 저장 실패: {exc}")
+            return
+        self._log.info(
+            f"Gaze 샘플 {sample['sample_index']}/{self._sample_store.capacity} 저장"
+        )
+        self._sample_list.addItem(format_gaze_sample(sample))
+        self._sample_list.scrollToBottom()
+        self._refresh_sample_button()
+
+    def _refresh_sample_button(self) -> None:
+        self._sample_button.setText(
+            f"시선 샘플 저장 ({self._sample_store.count}/{self._sample_store.capacity})"
+        )
+        self._sample_button.setEnabled(not self._sample_store.full)
+
+    def _clear_gaze_samples(self) -> None:
+        self._sample_store.clear()
+        self._sample_list.clear()
+        self._refresh_sample_button()
+        self._log.info("저장된 Gaze 샘플 초기화")
 
     def _on_gaze_failed(self, message: str) -> None:
         self._log.error(message)
