@@ -29,6 +29,15 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 
 ## 설계 노트
 
+### telemetry/ (청크 4)
+
+관찰 가능성 프리미티브. 상태 전이·오류·latency를 공통 correlation id와 shared-clock timestamp로 추적하고, 영상·비밀값은 남기지 않는다(원칙 5.5).
+
+- `events.py`: `TraceEvent`(timestamp_ms·kind·correlation_id·detail) + `EventKind`(TRACKING_LOST/QUEUE_DROP/LOCK_TRANSITION/INTENT_COMMIT/INTENT_REJECT/COMMAND_STATE, 원칙 5.5 목록) + `TraceSink`(Protocol) + `InMemoryTraceSink`(테스트·replay·monitoring용, correlation별 조회) + `Tracer`(shared clock으로 stamp 후 sink에 기록). detail은 호출자가 넘긴 짧은 문자열만 저장 — 토큰·프레임은 담지 않는다(adapter가 이미 비밀 마스킹).
+- `latency.py`: `LatencyStage`(capture→inference / gesture_end→commit / commit→dispatch / dispatch→ACK / end_to_end, 원칙 5.4·README 13) + `span_ms`(음수 span은 out-of-order 버그라 raise) + `percentile`(nearest-rank) + `LatencyAggregator`(stage별 샘플 수집, p50/p95/p99/max/mean). p95 목표(노트북 ≤150ms, 전구 ≤1000ms)를 재현 가능한 실제 샘플로 평가(원칙 1.4, 손으로 만든 숫자 금지).
+- **통합(emit 지점 배선)은 별도 후속 작업**: capture/protocol/adapter가 실제로 이 tracer/aggregator를 호출하도록 composition root에서 배선하는 것은 이번 범위 밖. telemetry는 monitoring(공동 소유)이 소비할 안정적 프리미티브만 제공.
+- 테스트 14개: tracer stamp·순서·correlation 조회·snapshot 격리, span 음수 거부, percentile nearest-rank·빈 입력·비정렬, aggregator 음수 거부·stage 독립·집계.
+
 ### adapters/ (청크 3b — SmartThings)
 
 전구 실제 실행 경계. 실제 상태를 되읽어 확인하고 성공을 위조하지 않는다(원칙 1.1).
@@ -83,7 +92,8 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 - [x] 청크 2: protocol/ 구현 + 단위 테스트 35개
 - [x] 청크 3a: adapters/base + DispatchCoordinator + Windows adapter (리뷰 수정 후 76개). Command.device_id 계약 보강 + dispatch 순서·idempotency 수정 + Command contract test 포함
 - [x] 청크 3b: adapters/ SmartThings + http transport + config/secrets + `.env.example` + 테스트 18개 (누적 94개, pytest/mypy/ruff 통과)
-- [ ] 청크 4: telemetry/
+- [x] 청크 4: telemetry/ events + latency 프리미티브 + 테스트 14개 (누적 108개, pytest/mypy/ruff 통과)
+- [ ] 후속: composition root(전체 배선) + telemetry emit 지점 통합 + 실물 검증(전구 UUID·Win32)
 
 ## 이슈 / 의사결정 필요 사항
 
