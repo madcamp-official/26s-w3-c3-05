@@ -138,12 +138,17 @@ class MediaPipeHandLandmarker:
 
     @staticmethod
     def _primary_handedness(result: object, index: int) -> tuple[str, float]:
-        """선택한 손의 handedness 라벨과 score를 꺼낸다."""
+        """선택한 손의 handedness 라벨과 score를 꺼낸다.
+
+        handedness 정보가 없으면 score를 0.0으로 돌려준다 — 신호가 없을 때 최대
+        신뢰도를 지어내지 않는다(development-principles.md 2절). 이 값은 검출
+        신뢰도의 프록시로도 쓰이므로, 0.0이면 normalize_hand가 추적 손실로 처리한다.
+        """
         handedness_list = getattr(result, "handedness", None)
         if not handedness_list or index >= len(handedness_list):
-            return "", 1.0
+            return "", 0.0
         categories = handedness_list[index]
         if not categories:
-            return "", 1.0
+            return "", 0.0
         top = categories[0]
         return str(top.category_name), float(top.score)
