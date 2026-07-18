@@ -7,7 +7,40 @@ import pytest
 
 cv2 = pytest.importorskip("cv2")
 
-from jarvis.monitoring.overlay import draw_hud, placeholder_frame  # noqa: E402
+from jarvis.gaze.config import GazeConfig  # noqa: E402
+from jarvis.gaze.classifier import TargetClassifier  # noqa: E402
+from jarvis.gaze.features import FaceObservation  # noqa: E402
+from jarvis.gaze.lock import GazeLockStateMachine  # noqa: E402
+from jarvis.gaze.smoothing import GazeSmoother  # noqa: E402
+from jarvis.monitoring.gaze_probe import GazeSnapshot, evaluate  # noqa: E402
+from jarvis.monitoring.overlay import (  # noqa: E402
+    draw_gaze_overlay,
+    draw_hud,
+    placeholder_frame,
+)
+
+
+def _snapshot(*, detected: bool) -> GazeSnapshot:
+    config = GazeConfig()
+    observation = FaceObservation(
+        timestamp_ms=0,
+        frame_id=0,
+        left_iris_relative=(0.1, -0.1),
+        right_iris_relative=(0.1, -0.1),
+        head_yaw_deg=8.0,
+        head_pitch_deg=-4.0,
+        head_roll_deg=0.0,
+        eye_tracking_confidence=1.0,
+        face_tracking_confidence=1.0,
+        face_detected=detected,
+    )
+    return evaluate(
+        observation,
+        smoother=GazeSmoother(config),
+        classifier=TargetClassifier(config),
+        lock=GazeLockStateMachine(config),
+        config=config,
+    )
 
 
 def test_draw_hud_modifies_frame() -> None:
@@ -23,6 +56,24 @@ def test_draw_hud_no_lines_is_noop() -> None:
     before = frame.copy()
     draw_hud(frame, [])
     assert np.array_equal(before, frame)
+
+
+def test_draw_gaze_overlay_draws_when_tracking() -> None:
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    before = frame.copy()
+    draw_gaze_overlay(frame, _snapshot(detected=True))
+    assert not np.array_equal(before, frame)  # ray + HUD drawn
+    assert frame.shape == (240, 320, 3)
+
+
+def test_draw_gaze_overlay_shows_tracking_lost_banner() -> None:
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    before = frame.copy()
+    snapshot = _snapshot(detected=False)
+    assert snapshot.tracking_lost is True
+    draw_gaze_overlay(frame, snapshot)
+    # the banner is drawn along the bottom strip
+    assert not np.array_equal(before[-30:], frame[-30:])
 
 
 def test_placeholder_frame_shape_and_content() -> None:
