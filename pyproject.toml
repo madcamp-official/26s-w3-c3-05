@@ -35,3 +35,9 @@ python_version = "3.11"
 strict = true
 packages = ["jarvis"]
 
+# cv2 (OpenCV) is an optional `vision` extra and ships no type stubs; treat its
+# imports as untyped whether or not it is installed in the current environment.
+[[tool.mypy.overrides]]
+module = ["cv2"]
+ignore_missing_imports = true
+
