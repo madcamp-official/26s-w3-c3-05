@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import math
 
 import numpy as np
 
@@ -36,10 +37,27 @@ class GazeSmoother:
     def __init__(self, config: GazeConfig = GazeConfig()) -> None:
         self._config = config
         self._buffer: deque[GazeVector] = deque(maxlen=config.smoothing_window_frames)
+        self._last_result: SmoothedGaze | None = None
 
     def reset(self) -> None:
         """추적 손실 시 버퍼를 비운다."""
         self._buffer.clear()
+        self._last_result = None
+
+    def hold(self, timestamp_ms: int, frame_id: int) -> SmoothedGaze | None:
+        """Return the last result during a short blink without updating the buffer."""
+        if self._last_result is None:
+            return None
+        if timestamp_ms - self._last_result.timestamp_ms > self._config.blink_hold_ms:
+            self.reset()
+            return None
+        self._last_result = SmoothedGaze(
+            direction=self._last_result.direction,
+            stability=self._last_result.stability,
+            timestamp_ms=timestamp_ms,
+            frame_id=frame_id,
+        )
+        return self._last_result
 
     def update(self, gaze_vector: GazeVector | None) -> SmoothedGaze | None:
         """새 프레임을 반영하고 평활화된 결과를 반환한다.
@@ -76,10 +94,17 @@ class GazeSmoother:
         stability = float((cosine_similarities * weights).sum() / weight_sum)
         stability = max(0.0, min(1.0, stability))
 
+        if self._last_result is not None and self._config.small_motion_deadzone_deg > 0.0:
+            similarity = float(np.clip(mean_direction @ self._last_result.direction, -1.0, 1.0))
+            angle_deg = math.degrees(math.acos(similarity))
+            if angle_deg < self._config.small_motion_deadzone_deg:
+                mean_direction = self._last_result.direction
+
         latest = self._buffer[-1]
-        return SmoothedGaze(
+        self._last_result = SmoothedGaze(
             direction=mean_direction,
             stability=stability,
             timestamp_ms=latest.timestamp_ms,
             frame_id=latest.frame_id,
         )
+        return self._last_result

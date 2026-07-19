@@ -62,11 +62,19 @@ class GazeConfig:
     ema_max_alpha: float = 0.65
     """높은 confidence 프레임에 적용할 EMA 반영률."""
 
+    blink_hold_ms: int = 180
+    """Short eye-closed intervals keep the last stable gaze instead of jumping."""
+
+    small_motion_deadzone_deg: float = 2.0
+    """Ignore tiny smoothed-gaze changes below this angle to reduce jitter."""
+
     UNKNOWN_TARGET: str = "UNKNOWN"
 
     def __post_init__(self) -> None:
         if self.dwell_time_ms < 0 or self.target_lock_ttl_ms <= 0:
             raise ValueError("Gaze timing thresholds must be non-negative and TTL must be positive")
+        if self.blink_hold_ms < 0:
+            raise ValueError("blink_hold_ms must be non-negative")
         if self.smoothing_window_frames <= 0:
             raise ValueError("smoothing_window_frames must be positive")
         probability_fields = {
@@ -86,6 +94,11 @@ class GazeConfig:
             raise ValueError("max_eye_offset_deg must be finite and positive")
         if not math.isfinite(self.unknown_max_angle_deg) or not 0.0 < self.unknown_max_angle_deg <= 180.0:
             raise ValueError("unknown_max_angle_deg must be finite and within (0, 180]")
+        if (
+            not math.isfinite(self.small_motion_deadzone_deg)
+            or self.small_motion_deadzone_deg < 0.0
+        ):
+            raise ValueError("small_motion_deadzone_deg must be finite and non-negative")
         if not self.UNKNOWN_TARGET:
             raise ValueError("UNKNOWN_TARGET must not be empty")
 

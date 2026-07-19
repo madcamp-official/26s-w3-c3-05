@@ -53,6 +53,33 @@ def test_tracking_loss_resets_buffer() -> None:
     assert result.stability == pytest.approx(1.0)
 
 
+def test_short_blink_holds_last_smoothed_gaze() -> None:
+    smoother = GazeSmoother(GazeConfig(blink_hold_ms=200))
+    original = smoother.update(_vector(np.array([0.0, 0.0, 1.0]), frame_id=0))
+    held = smoother.hold(1_050, 50)
+
+    assert original is not None and held is not None
+    np.testing.assert_allclose(held.direction, original.direction)
+    assert held.timestamp_ms == 1_050
+    assert held.frame_id == 50
+
+
+def test_long_eye_closed_interval_expires_hold() -> None:
+    smoother = GazeSmoother(GazeConfig(blink_hold_ms=20))
+    assert smoother.update(_vector(np.array([0.0, 0.0, 1.0]), frame_id=0)) is not None
+
+    assert smoother.hold(1_100, 100) is None
+
+
+def test_small_motion_deadzone_ignores_tiny_changes() -> None:
+    smoother = GazeSmoother(GazeConfig(smoothing_window_frames=1, small_motion_deadzone_deg=5.0))
+    first = smoother.update(_vector(np.array([0.0, 0.0, 1.0]), frame_id=0))
+    tiny = smoother.update(_vector(np.array([0.03, 0.0, 1.0]), frame_id=1))
+
+    assert first is not None and tiny is not None
+    np.testing.assert_allclose(tiny.direction, first.direction)
+
+
 def test_window_only_retains_recent_frames() -> None:
     config = GazeConfig(smoothing_window_frames=3)
     smoother = GazeSmoother(config)

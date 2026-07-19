@@ -83,6 +83,8 @@ Implemented files:
 - `src/jarvis/gaze/classifier.py`: registered target matching uses cosine similarity normalized by stored variance,
   then rejects `UNKNOWN` when the nearest registered direction is too far or the first/second target margin is too small.
 - `src/jarvis/gaze/smoothing.py`: confidence-aware EMA smoothing is enabled before classification.
+- `src/jarvis/gaze/smoothing.py`: short blinks hold the last stable gaze briefly, and tiny gaze changes are absorbed by a
+  small angular deadzone to reduce jitter.
 - `src/jarvis/gaze/lock.py`: 300-500 ms dwell-based lock and hysteresis are handled by the existing state machine.
 - `src/jarvis/monitoring/`: debug UI can register/reregister/rename/delete targets and show the live gaze ray,
   candidate/lock state, and pipeline diagnostics without drawing artificial target-area circles.

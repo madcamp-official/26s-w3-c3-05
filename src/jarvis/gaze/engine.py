@@ -66,7 +66,11 @@ class GazeTargetingEngine:
         stability는 0.0이다(성공을 지어내지 않는다, development-principles.md 1절).
         """
         gaze_vector = compose_gaze_vector(observation, self._config)
-        smoothed = self._smoother.update(gaze_vector)
+        smoothed = (
+            self._smoother.hold(observation.timestamp_ms, observation.frame_id)
+            if observation.face_detected and not observation.eyes_open
+            else self._smoother.update(gaze_vector)
+        )
         self._last_smoothed_gaze = smoothed
 
         if smoothed is None:

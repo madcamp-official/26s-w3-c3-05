@@ -187,7 +187,11 @@ def evaluate(
     only addition is that the intermediate values are kept for display.
     """
     gaze_vector = compose_gaze_vector(observation, config)
-    smoothed = smoother.update(gaze_vector)
+    smoothed = (
+        smoother.hold(observation.timestamp_ms, observation.frame_id)
+        if observation.face_detected and not observation.eyes_open
+        else smoother.update(gaze_vector)
+    )
 
     gaze_direction: tuple[float, float, float] | None = None
     gaze_confidence: float | None = None
