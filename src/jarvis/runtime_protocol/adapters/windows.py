@@ -13,10 +13,18 @@ not know how to translate is a ``FAILED`` result, not a guess.
 The continuous cursor path (Cursor Control Mapper, README 6장) is a separate
 concern that will reuse :meth:`InputSink.move_cursor`; this adapter handles only
 the discrete command path from the protocol.
+
+``WindowsAdapter`` itself only calls :class:`InputSink` methods, so it is not
+actually OS-specific — only the sink implementation is. :func:`default_input_sink`
+picks :class:`Win32InputSink` on Windows (unchanged) or
+:class:`jarvis.runtime_protocol.adapters.macos.MacOSInputSink` on macOS (`macos`
+extra), so the same adapter and command mapping run on both without duplicating
+the scroll/volume/media logic.
 """
 
 from __future__ import annotations
 
+import sys
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -47,6 +55,14 @@ class InputSink(Protocol):
 
     def move_cursor(self, dx: int, dy: int) -> None:
         """Move the cursor by a relative delta (used by the future pointer path)."""
+        ...
+
+    def switch_window(self, forward: bool, repeat: int) -> None:
+        """Switch between application windows ``repeat`` times.
+
+        ``forward`` advances to the next window (Alt+Tab / Cmd+Tab), else the
+        previous one. The modifier-chord details live in each OS implementation.
+        """
         ...
 
 
@@ -84,6 +100,8 @@ class WindowsAdapter:
             return self._volume(command)
         if command.capability == "media":
             return self._media(command)
+        if command.capability == "window_switch":
+            return self._window_switch(command)
         return AdapterResult(
             AdapterStatus.FAILED,
             f"windows adapter does not handle capability {command.capability!r}",
@@ -127,6 +145,24 @@ class WindowsAdapter:
         self._sink.tap_key(InputKey.PLAY_PAUSE)
         return AdapterResult(AdapterStatus.ACKNOWLEDGED, "media play/pause toggled")
 
+    def _window_switch(self, command: Command) -> AdapterResult:
+        count = _as_count(command.value)
+        if count is None:
+            return AdapterResult(
+                AdapterStatus.FAILED, f"invalid window_switch count {command.value!r}"
+            )
+        if command.operation == "increment":
+            forward = True
+        elif command.operation == "decrement":
+            forward = False
+        else:
+            return AdapterResult(
+                AdapterStatus.FAILED, f"window_switch does not support {command.operation!r}"
+            )
+        self._sink.switch_window(forward, count)
+        direction = "next" if forward else "previous"
+        return AdapterResult(AdapterStatus.ACKNOWLEDGED, f"window switch {direction} x{count}")
+
 
 # --- Hardware boundary ------------------------------------------------------
 
@@ -139,6 +175,9 @@ _VK = {
 _KEYEVENTF_KEYUP = 0x0002
 _MOUSEEVENTF_WHEEL = 0x0800
 _WHEEL_DELTA = 120
+_VK_TAB = 0x09
+_VK_MENU = 0x12  # ALT
+_VK_SHIFT = 0x10
 
 
 class Win32InputSink:
@@ -153,8 +192,11 @@ class Win32InputSink:
         import ctypes
 
         # ctypes function pointers are resolved dynamically at call time; typing
-        # the handle as Any is the honest description of this boundary.
-        return ctypes.windll.user32
+        # the handle as Any is the honest description of this boundary. `windll`
+        # only exists on Windows, so reach it via getattr — a static
+        # ``ctypes.windll`` trips [attr-defined] when mypy runs on a non-Windows
+        # host (a per-line ignore would flip to unused when checked on Windows).
+        return getattr(ctypes, "windll").user32
 
     def scroll(self, ticks: int) -> None:
         self._user32().mouse_event(_MOUSEEVENTF_WHEEL, 0, 0, ticks * _WHEEL_DELTA, 0)
@@ -168,3 +210,39 @@ class Win32InputSink:
     def move_cursor(self, dx: int, dy: int) -> None:
         # MOUSEEVENTF_MOVE (0x0001) moves relative to the current cursor position.
         self._user32().mouse_event(0x0001, dx, dy, 0, 0)
+
+    def switch_window(self, forward: bool, repeat: int) -> None:
+        # Alt+Tab (forward) / Alt+Shift+Tab (backward). Hold Alt for the whole
+        # sequence so the window switcher stays up across repeated Tab taps.
+        user32 = self._user32()
+        user32.keybd_event(_VK_MENU, 0, 0, 0)
+        if not forward:
+            user32.keybd_event(_VK_SHIFT, 0, 0, 0)
+        for _ in range(repeat):
+            user32.keybd_event(_VK_TAB, 0, 0, 0)
+            user32.keybd_event(_VK_TAB, 0, _KEYEVENTF_KEYUP, 0)
+        if not forward:
+            user32.keybd_event(_VK_SHIFT, 0, _KEYEVENTF_KEYUP, 0)
+        user32.keybd_event(_VK_MENU, 0, _KEYEVENTF_KEYUP, 0)
+
+
+def default_input_sink() -> InputSink:
+    """이 프로세스가 돌고 있는 OS에 맞는 실제 `InputSink`를 고른다.
+
+    Windows에서는 지금까지와 똑같이 `Win32InputSink`를 반환한다(이 함수 도입으로
+    Windows 쪽 동작·의존성은 전혀 바뀌지 않는다). macOS는 `adapters.macos.
+    MacOSInputSink`를 지연 import해 반환한다 — `macos` extra가 없는 환경에서는
+    이 브랜치를 타지 않는 한(=macOS가 아닌 한) import 자체가 실패하지 않는다.
+    지원하지 않는 OS(Linux 등)는 추측 대신 `RuntimeError`로 정직하게 실패한다
+    (development-principles.md 1.1: 성공을 가장하지 않는다).
+    """
+    if sys.platform == "win32":
+        return Win32InputSink()
+    if sys.platform == "darwin":
+        from jarvis.runtime_protocol.adapters.macos import MacOSInputSink
+
+        return MacOSInputSink()
+    raise RuntimeError(
+        f"no InputSink implementation for platform {sys.platform!r} "
+        "(supported: win32, darwin)"
+    )

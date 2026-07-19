@@ -11,15 +11,21 @@ def main(argv: list[str] | None = None) -> int:
         prog="jarvis-monitor",
         description="JARVIS 실시간 파이프라인 모니터 (데스크탑 앱)",
     )
+    parser.add_argument("--camera", type=int, default=0, help="카메라 장치 인덱스 (기본 0)")
     parser.add_argument(
-        "--camera", type=int, default=0, help="카메라 장치 인덱스 (기본 0)"
+        "--model",
+        default="models/face_landmarker.task",
+        help="face_landmarker.task 경로 (gaze 파이프라인 라이브에 필요)",
     )
-    parser.add_argument("--model", type=Path, default=Path("models/face_landmarker.task"))
     parser.add_argument(
-        "--profiles", type=Path, default=Path("data/calibration/profiles.json")
+        "--profiles",
+        default="data/calibration/profiles.json",
+        help="calibration 프로파일 JSON 경로 (Target 분류에 필요)",
     )
     parser.add_argument(
-        "--samples", type=Path, default=Path("data/evaluation/gaze_samples.json")
+        "--hand-model",
+        default="models/hand_landmarker.task",
+        help="hand_landmarker.task 경로 (손 추적 라이브에 필요)",
     )
     args = parser.parse_args(argv)
 
@@ -35,9 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(
         device_index=args.camera,
-        model_path=args.model,
-        profiles_path=args.profiles,
-        samples_path=args.samples,
+        model_path=Path(args.model),
+        profiles_path=Path(args.profiles),
+        hand_model_path=Path(args.hand_model),
     )
     window.show()
     return int(app.exec())

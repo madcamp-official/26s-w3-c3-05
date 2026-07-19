@@ -17,6 +17,7 @@ class RecordingSink:
         self.scrolls: list[int] = []
         self.keys: list[InputKey] = []
         self.moves: list[tuple[int, int]] = []
+        self.window_switches: list[tuple[bool, int]] = []
         self.raise_on_scroll = False
 
     def scroll(self, ticks: int) -> None:
@@ -29,6 +30,9 @@ class RecordingSink:
 
     def move_cursor(self, dx: int, dy: int) -> None:
         self.moves.append((dx, dy))
+
+    def switch_window(self, forward: bool, repeat: int) -> None:
+        self.window_switches.append((forward, repeat))
 
 
 def _command(capability: str, operation: str, value: int | float | bool) -> Command:
@@ -96,3 +100,30 @@ def test_sink_error_reported_as_failed_not_raised() -> None:
     result = WindowsAdapter(sink).execute(_command("scroll", "increment", 1), _LAPTOP)
     assert result.status == AdapterStatus.FAILED
     assert "user32 failure" in result.detail
+
+
+def test_window_switch_increment_goes_forward() -> None:
+    sink = RecordingSink()
+    result = WindowsAdapter(sink).execute(_command("window_switch", "increment", 1), _LAPTOP)
+    assert result.status == AdapterStatus.ACKNOWLEDGED
+    assert sink.window_switches == [(True, 1)]
+
+
+def test_window_switch_decrement_goes_backward_with_repeat() -> None:
+    sink = RecordingSink()
+    WindowsAdapter(sink).execute(_command("window_switch", "decrement", 2), _LAPTOP)
+    assert sink.window_switches == [(False, 2)]
+
+
+def test_window_switch_rejects_unsupported_operation() -> None:
+    sink = RecordingSink()
+    result = WindowsAdapter(sink).execute(_command("window_switch", "toggle", 1), _LAPTOP)
+    assert result.status == AdapterStatus.FAILED
+    assert sink.window_switches == []
+
+
+def test_window_switch_rejects_invalid_count() -> None:
+    sink = RecordingSink()
+    result = WindowsAdapter(sink).execute(_command("window_switch", "increment", 0), _LAPTOP)
+    assert result.status == AdapterStatus.FAILED
+    assert sink.window_switches == []

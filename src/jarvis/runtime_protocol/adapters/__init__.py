@@ -26,6 +26,7 @@ from jarvis.runtime_protocol.adapters.windows import (
     InputSink,
     Win32InputSink,
     WindowsAdapter,
+    default_input_sink,
 )
 
 __all__ = [
@@ -48,4 +49,5 @@ __all__ = [
     "UrllibTransport",
     "Win32InputSink",
     "WindowsAdapter",
+    "default_input_sink",
 ]

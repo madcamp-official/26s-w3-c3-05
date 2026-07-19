@@ -49,3 +49,21 @@ class NullGestureSource:
 
     def poll(self) -> list[RecognizedGesture]:
         return []
+
+
+class UntrainedGestureSource:
+    """Honest source for when the Gesture pipeline exists but its model is untrained.
+
+    The dev-2 pipeline (spotting/fusion) is now implemented, but its Causal TCN
+    classifier ships with random, untrained weights (``ModelMetadata.trained=
+    False``). Emitting its output as a "recognized gesture" would fabricate a
+    result, so this source stays ``available=False`` and yields nothing — the
+    sidebar shows the honest reason instead of invented detections. When the model
+    is trained, a real source that adapts ``GestureEstimate`` replaces this.
+    """
+
+    available = False
+    status_text = "제스처 파이프라인 구현됨 · 모델 미학습(무작위) — 인식 비활성"
+
+    def poll(self) -> list[RecognizedGesture]:
+        return []
