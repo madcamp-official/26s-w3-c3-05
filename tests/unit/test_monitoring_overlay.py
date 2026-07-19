@@ -24,6 +24,7 @@ from jarvis.monitoring.overlay import (  # noqa: E402
 
 def _hand_snapshot(*, detected: bool) -> HandSnapshot:
     points = tuple((0.4 + 0.01 * i, 0.4 + 0.01 * i) for i in range(21)) if detected else None
+    model = tuple((0.1 * i - 1.0, 0.1 * i - 1.0) for i in range(21)) if detected else None
     return HandSnapshot(
         timestamp_ms=0,
         frame_id=0,
@@ -33,6 +34,8 @@ def _hand_snapshot(*, detected: bool) -> HandSnapshot:
         detection_confidence=0.9 if detected else 0.0,
         palm_scale=0.2 if detected else 0.0,
         image_points=points,
+        model_points=model,
+        model_points_raw=model,
         landmark_count=21 if detected else 0,
         inference_ms=7.0,
         smoothed=True,
@@ -108,6 +111,22 @@ def test_draw_hand_overlay_noop_when_no_hand() -> None:
     before = frame.copy()
     draw_hand_overlay(frame, _hand_snapshot(detected=False))
     assert np.array_equal(before, frame)  # nothing drawn for a lost hand
+
+
+def test_render_normalized_hand_draws_skeleton() -> None:
+    from jarvis.monitoring.overlay import render_normalized_hand
+
+    points = tuple((0.1 * i - 1.0, 0.05 * i) for i in range(21))
+    canvas = render_normalized_hand(points, size=200)
+    assert canvas.shape == (200, 200, 3)
+    assert canvas.any()  # something drawn
+
+
+def test_render_normalized_hand_handles_no_hand() -> None:
+    from jarvis.monitoring.overlay import render_normalized_hand
+
+    canvas = render_normalized_hand(None, size=120)
+    assert canvas.shape == (120, 120, 3)
 
 
 def test_placeholder_frame_shape_and_content() -> None:

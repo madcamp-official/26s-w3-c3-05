@@ -234,6 +234,22 @@ def test_smoothing_reduces_velocity_noise_on_a_still_hand() -> None:
     assert smooth_energy < raw_energy * 0.5
 
 
+def test_last_landmarks_exposes_the_model_input() -> None:
+    """last_landmarks는 모델에 실제로 들어간 (평활화된) 정점과 같아야 한다."""
+    extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=True))
+    assert extractor.last_landmarks is None  # 첫 push 전
+    lm = _zeros()
+    lm[0] = [0.2, 0.1, 0.0]
+    features = extractor.push(_obs(lm, timestamp_ms=1000, frame_id=1))
+    exposed = extractor.last_landmarks
+    assert exposed is not None and exposed.shape == (21, 3)
+    # feature 벡터의 위치 블록(모델 입력)과 동일해야 한다.
+    np.testing.assert_allclose(exposed.reshape(-1), features.vector[:_POSITION_DIMS])
+    # 추적 손실 뒤에는 다시 None.
+    extractor.push(_obs(_zeros(), timestamp_ms=1033, frame_id=2, hand_detected=False))
+    assert extractor.last_landmarks is None
+
+
 def test_smoothing_resets_on_tracking_loss() -> None:
     """추적 손실 뒤 첫 프레임은 평활화 상태가 리셋되어 속도 0(공백 미연결)."""
     extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=True))

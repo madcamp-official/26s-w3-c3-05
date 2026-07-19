@@ -149,16 +149,53 @@ def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot) -> Frame:
         cv2.circle(frame, (px, py), 3, (235, 235, 235), thickness=-1)
 
     label = snapshot.handedness or "?"
-    mode = "smoothed" if snapshot.smoothed else "raw"
     _text_block(
         frame,
         [
-            (f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [{mode}]", color),
+            # image-space raw detection — where the hand is, not the model input
+            (f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [raw 검출]", color),
             (f"palm scale  {snapshot.palm_scale:.3f}", (170, 170, 170)),
         ],
         (8, 58),  # below the FPS HUD (top-left) so they do not overlap
     )
     return frame
+
+
+def render_normalized_hand(
+    points: tuple[tuple[float, float], ...] | None,
+    *,
+    size: int = 260,
+    smoothed: bool = True,
+) -> Frame:
+    """Render normalized (wrist-origin, palm-scaled) landmarks into a square canvas.
+
+    This is the faithful "what the model sees" view: the same normalized landmark
+    coordinates the model consumes, drawn in their own space (not the webcam).
+    ``points`` are the (x, y) of the normalized landmarks; ``None`` draws an empty
+    canvas with a "no hand" note.
+    """
+    canvas: Frame = np.zeros((size, size, 3), dtype=np.uint8)
+    canvas[:] = (18, 20, 26)
+    color = (80, 200, 80) if smoothed else (120, 120, 120)
+    tag = "모델 입력 (정규화" + ("·스무딩)" if smoothed else "·raw)")
+    cv2.putText(canvas, tag, (8, 18), _FONT, 0.45, (150, 150, 150), 1, cv2.LINE_AA)
+
+    if points is None or len(points) != 21:
+        cv2.putText(canvas, "no hand", (size // 2 - 34, size // 2), _FONT, 0.6,
+                    (90, 90, 100), 1, cv2.LINE_AA)
+        return canvas
+
+    # Map normalized coords (roughly ±3 units around the wrist origin) into the
+    # canvas: centered, y flipped (image y grows downward), fixed scale.
+    cx, cy = size // 2, int(size * 0.6)
+    scale = size * 0.16
+    px = [(int(cx + x * scale), int(cy - y * scale)) for x, y in points]
+    for a, b in _HAND_CONNECTIONS:
+        cv2.line(canvas, px[a], px[b], color, 2, cv2.LINE_AA)
+    for x, y in px:
+        cv2.circle(canvas, (x, y), 3, (235, 235, 235), thickness=-1)
+    cv2.circle(canvas, px[0], 5, (60, 150, 230), thickness=-1)  # wrist (origin)
+    return canvas
 
 
 def placeholder_frame(width: int = 640, height: int = 480, text: str = "NO CAMERA") -> Frame:

@@ -58,6 +58,7 @@ from jarvis.monitoring.overlay import (
     draw_hand_overlay,
     draw_hud,
     placeholder_frame,
+    render_normalized_hand,
 )
 from jarvis.monitoring.pipeline_status import StageState, StageStatus, detect_pipeline_status
 from jarvis.runtime_protocol.config import read_env_file
@@ -278,8 +279,15 @@ class HandPanel(QScrollArea):
         self._status.setStyleSheet("color:#d29922; padding:2px 0;")
         layout.addWidget(self._status)
 
-        # Toggle: show the One-Euro–smoothed landmarks (default) or raw, to compare.
-        self._smooth_toggle = QCheckBox("One-Euro 스무딩 (표시용 · 끄면 raw 정점)")
+        # The faithful debug view: the exact normalized landmarks the model consumes.
+        layout.addWidget(_header("모델 입력 정점 (실제 · 정규화 좌표)"))
+        self._model_canvas = QLabel()
+        self._model_canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._model_canvas.setStyleSheet("background:#12141a; border:1px solid #30363d;")
+        layout.addWidget(self._model_canvas)
+
+        # Toggle: show the model input smoothed (real, default) or raw, to compare.
+        self._smooth_toggle = QCheckBox("스무딩 적용 (모델이 실제로 쓰는 입력 · 끄면 raw 정규화 정점)")
         self._smooth_toggle.setChecked(smoothing)
         if on_smoothing_toggled is not None:
             self._smooth_toggle.toggled.connect(on_smoothing_toggled)
@@ -305,9 +313,10 @@ class HandPanel(QScrollArea):
         layout.addWidget(self._numeric)
 
         note = QLabel(
-            "여기 보이는 손 랜드마크는 실제 검출 결과다. 제스처 이름·phase는 분류 모델이 "
-            "학습된 뒤에만 의미가 있으므로 지금은 표시하지 않는다(무작위 출력을 인식으로 "
-            "가장하지 않음)."
+            "위 캔버스는 모델이 실제로 소비하는 정점(정규화·손목 원점)을 그대로 그린다 — "
+            "웹캠 스켈레톤(raw 검출 위치)과 달리 이게 모델 입력이다. 손목이 원점(파란 점)이라 "
+            "절대 위치는 빠져 있고, 그래서 웹캠은 흔들려도 이 캔버스는 안정적이다. "
+            "제스처 이름·phase는 분류 모델 학습 후에만 의미가 있어 지금은 표시하지 않는다."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#6e7681; padding-top:8px;")
@@ -325,16 +334,25 @@ class HandPanel(QScrollArea):
         self._det_conf.set_value(
             s.detection_confidence if s.hand_detected else 0.0, color="#58a6ff"
         )
+
+        # Render the actual model input: smoothed (real) or raw normalized per toggle.
+        points = s.model_points if s.smoothed else s.model_points_raw
+        canvas = render_normalized_hand(points, smoothed=s.smoothed)
+        rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        image = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+        self._model_canvas.setPixmap(QPixmap.fromImage(image))
+
         if s.hand_detected:
-            mode = "One-Euro 스무딩됨" if s.smoothed else "raw (스무딩 꺼짐)"
+            mode = "스무딩됨 (모델 실제 입력)" if s.smoothed else "raw (스무딩 꺼짐)"
             self._numeric.setText(
-                f"landmark 표시 : {mode}\n"
-                f"palm scale   : {s.palm_scale:.4f}\n"
-                f"landmarks    : {s.landmark_count} points\n"
-                f"handedness   : {s.handedness}  score {s.handedness_score:.3f}"
+                f"모델 입력   : {mode}\n"
+                f"palm scale  : {s.palm_scale:.4f}\n"
+                f"landmarks   : {s.landmark_count} points (정규화·손목 원점)\n"
+                f"handedness  : {s.handedness}  score {s.handedness_score:.3f}"
             )
         else:
-            self._numeric.setText("손 없음 (추적 손실) — 스켈레톤 미표시")
+            self._numeric.setText("손 없음 (추적 손실)")
 
 
 class ContractPanel(QFrame):

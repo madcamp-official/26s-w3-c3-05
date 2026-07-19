@@ -112,6 +112,11 @@ class HandFeatureExtractor:
         self._prev_landmarks: FloatArray | None = None
         self._prev_velocity: FloatArray | None = None
         self._prev_timestamp_ms: int | None = None
+        # The exact (smoothed, if enabled) landmarks fed to the model this frame,
+        # exposed read-only so a debugging view can show the real model input
+        # rather than a separate approximation. None until the first valid frame
+        # and after a reset/tracking loss.
+        self._last_landmarks: FloatArray | None = None
         # Smooth the landmark positions before differencing so per-frame jitter
         # is not amplified into the velocity/acceleration features. Disabled by
         # config for tests that isolate the raw differentiation math.
@@ -129,11 +134,21 @@ class HandFeatureExtractor:
     def dimension(self) -> int:
         return self._dimension
 
+    @property
+    def last_landmarks(self) -> FloatArray | None:
+        """이 프레임 모델에 실제로 들어간 (평활화 여부 반영) 정규화 랜드마크 (21, 3).
+
+        추적 손실·리셋 이후에는 None이다. 디버깅 뷰가 "모델이 실제로 보는 정점"을
+        그대로 표시하는 데 쓴다(별도 근사가 아니라 같은 값).
+        """
+        return None if self._last_landmarks is None else self._last_landmarks.copy()
+
     def reset(self) -> None:
         """속도·가속도 history와 평활화 상태를 비운다(추적 손실·시퀀스 경계에서 호출)."""
         self._prev_landmarks = None
         self._prev_velocity = None
         self._prev_timestamp_ms = None
+        self._last_landmarks = None
         if self._smoother is not None:
             self._smoother.reset()
 
@@ -167,6 +182,7 @@ class HandFeatureExtractor:
         self._prev_landmarks = flat
         self._prev_velocity = velocity
         self._prev_timestamp_ms = observation.timestamp_ms
+        self._last_landmarks = landmarks
 
         return FrameFeatures(
             timestamp_ms=observation.timestamp_ms,
