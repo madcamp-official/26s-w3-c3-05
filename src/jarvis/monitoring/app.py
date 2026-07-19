@@ -9,6 +9,12 @@ Tabs:
 - 파이프라인: a card per stage's real availability + the message contracts.
 - 지연·어댑터: measured per-stage latency and device-adapter readiness.
 
+Display convention — the 실시간 and 손 추적 tabs render a horizontally-flipped
+(selfie/거울상) view so the hand mirrors the user's real hand. This is a **display
+concern only**: the frames and landmarks fed to MediaPipe, the model, and any
+training-data logging are the un-flipped originals. Only the drawing is mirrored
+(``cv2.flip`` on a display copy; overlays drawn with ``mirror=True``).
+
 The window wires the parts that exist today (webcam capture, the gaze pipeline
 when mediapipe+model+calibration are present, hand tracking when the hand model is
 present, adapter/config detection) and honestly marks the parts that do not. No
@@ -24,7 +30,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -297,14 +303,15 @@ class _AxisBar(QWidget):
 
 
 class VectorView(QWidget):
-    """A titled 3-component (x/y/z) vector display — one model-input signal.
+    """A titled 2-component (x/y) vector display — one model-input signal.
 
-    Bars are scaled by a running maximum magnitude (per view), so both the small
-    velocities of a still hand and the large ones of a fast swipe stay readable
-    without hardcoding a scale that only fits the demo.
+    z(depth) is dropped from the pipeline (config.LANDMARK_DIMS), so wrist
+    translation is an in-plane (x, y) signal. Bars are scaled by a running maximum
+    magnitude (per view), so both the small velocities of a still hand and the large
+    ones of a fast swipe stay readable without hardcoding a scale that only fits the demo.
     """
 
-    _AXES = ("x", "y", "z")
+    _AXES = ("x", "y")
 
     def __init__(self, title: str, subtitle: str) -> None:
         super().__init__()
@@ -327,13 +334,13 @@ class VectorView(QWidget):
         layout.addStretch(1)
         self._scale = 1e-6  # running max component magnitude, floors bar scaling
 
-    def set_vector(self, vec: tuple[float, float, float] | None) -> None:
+    def set_vector(self, vec: tuple[float, float] | None) -> None:
         if vec is None:
             for bar in self._axes.values():
                 bar.set_value(None, self._scale)
             self._magnitude.setText("‖·‖    --   (히스토리 없음)")
             return
-        self._scale = max(self._scale, abs(vec[0]), abs(vec[1]), abs(vec[2]))
+        self._scale = max(self._scale, abs(vec[0]), abs(vec[1]))
         for axis, value in zip(self._AXES, vec, strict=True):
             self._axes[axis].set_value(value, self._scale)
         magnitude = math.sqrt(sum(component * component for component in vec))
@@ -369,7 +376,7 @@ class HandPanel(QScrollArea):
 
         self._velocity_view = VectorView(
             "손목 이동 속도 (모델 입력)",
-            "정규화 손목 평행이동의 속도 (palm-width/s · x·y·z). 손목 원점 정규화로 "
+            "정규화 손목 평행이동의 속도 (palm-width/s · x·y). 손목 원점 정규화로 "
             "landmark 블록에서 지워지는 swipe 신호를 이 벡터가 담아 모델에 넣는다.",
         )
         columns.addWidget(self._velocity_view, 0)
@@ -413,10 +420,12 @@ class HandPanel(QScrollArea):
 
         note = QLabel(
             "위 캔버스는 모델이 실제로 소비하는 정점(정규화·손목 원점)을 그대로 그린다 — "
-            "웹캠 스켈레톤(raw 검출 위치)과 달리 이게 모델 입력이다. 손목이 원점(파란 점)이라 "
+            "웹캠 스켈레톤(이미지 좌표)과 달리 이게 모델 입력이다. 손목이 원점(파란 점)이라 "
             "이 캔버스에서 빠지는 손 전체의 평행이동(swipe)은 양옆의 손목 이동 속도·가속도 "
-            "벡터가 대신 담아 모델에 함께 들어간다. 그래서 웹캠은 흔들려도 이 캔버스는 "
-            "안정적이다. 제스처 이름·phase는 분류 모델 학습 후에만 의미가 있어 지금은 표시하지 않는다."
+            "벡터가 대신 담아 모델에 함께 들어간다. 그래서 웹캠이 흔들려도 이 캔버스는 안정적이다. "
+            "표시는 웹캠과 맞춘 거울상(좌우 반전)이지만 이는 화면 표시 전용이며 "
+            "모델 입력·학습 데이터는 반전하지 않은 원본이다. "
+            "제스처 이름·phase는 분류 모델 학습 후에만 의미가 있어 지금은 표시하지 않는다."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#6e7681; padding-top:8px;")
@@ -426,7 +435,7 @@ class HandPanel(QScrollArea):
 
         self._accel_view = VectorView(
             "손목 이동 가속도 (모델 입력)",
-            "손목 이동 속도의 프레임 간 변화 (palm-width/s² · x·y·z). swipe의 시작·끝 "
+            "손목 이동 속도의 프레임 간 변화 (palm-width/s² · x·y). swipe의 시작·끝 "
             "(가속·감속) 순간을 드러내 onset/ending 판정을 돕는다.",
         )
         columns.addWidget(self._accel_view, 0)
@@ -448,7 +457,8 @@ class HandPanel(QScrollArea):
 
         # Render the actual model input: smoothed (real) or raw normalized per toggle.
         points = s.model_points if s.smoothed else s.model_points_raw
-        canvas = render_normalized_hand(points, smoothed=s.smoothed)
+        # Mirror to match the selfie (거울상) webcam view — display only; points unchanged.
+        canvas = render_normalized_hand(points, smoothed=s.smoothed, mirror=True)
         rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         image = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
@@ -642,13 +652,18 @@ class VideoView(QLabel):
         self._fps_times.append(now)
         self._frame_count += 1
         fps = self._current_fps()
-        h, w = frame.shape[:2]
-        draw_hud(frame, [f"{w}x{h}  {fps:4.1f} FPS", f"frame #{self._frame_count}"])
+        # Mirror to a selfie (거울상) view for display only. cv2.flip returns a new
+        # array, so the original frame handed to MediaPipe / training stays un-flipped;
+        # overlays are drawn with mirror=True to line up, and text stays readable since
+        # it is drawn onto the already-flipped frame at un-mirrored positions.
+        display = cast("Frame", cv2.flip(frame, 1))
+        h, w = display.shape[:2]
+        draw_hud(display, [f"{w}x{h}  {fps:4.1f} FPS", f"frame #{self._frame_count}"])
         if self._gaze is not None:
-            draw_gaze_overlay(frame, self._gaze)
+            draw_gaze_overlay(display, self._gaze, mirror=True)
         if self._hand is not None:
-            draw_hand_overlay(frame, self._hand)
-        self._render(frame)
+            draw_hand_overlay(display, self._hand, mirror=True)
+        self._render(display)
 
     def _current_fps(self) -> float:
         if len(self._fps_times) < 2:

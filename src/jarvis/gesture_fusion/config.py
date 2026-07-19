@@ -173,6 +173,14 @@ class GestureConfig:
 # 참고: https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker
 HAND_LANDMARK_COUNT = 21
 
+# 각 랜드마크의 좌표 차원. MediaPipe는 (x, y, z)를 주지만 z(깊이)는 단안 웹캠에서
+# 추정한 값이라 노이즈가 크고 프레임마다 크게 흔들린다(특히 손가락이 카메라 쪽으로
+# 접히는 주먹류 동작). 검출 안정성을 위해 x·y 2D만 사용한다. 이 값 하나가 원시 좌표
+# 추출(mediapipe_hands·hand_probe)부터 정규화(landmarks)·feature 차원(features)까지
+# 전 파이프라인의 좌표 차원을 결정한다 — 3으로 되돌리면 다시 z를 포함하지만, 학습
+# 데이터도 같은 차원으로 전처리해야 하므로(모델 재현성) 변경 시 반드시 재학습한다.
+LANDMARK_DIMS = 2
+
 WRIST = 0
 THUMB_CMC = 1
 THUMB_MCP = 2

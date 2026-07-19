@@ -26,6 +26,7 @@ import numpy.typing as npt
 
 from jarvis.gesture_fusion.config import (
     HAND_LANDMARK_COUNT,
+    LANDMARK_DIMS,
     DEFAULT_GESTURE_CONFIG,
     GestureConfig,
 )
@@ -37,9 +38,10 @@ FloatArray = npt.NDArray[np.float64]
 class RawHandLandmarks:
     """landmark 소스가 내는 원시(정규화 전) 손 랜드마크.
 
-    `points`는 (21, 3) 배열로, MediaPipe Hand Landmarker의 이미지 정규화 좌표
-    (x, y ∈ 대략 [0, 1], z는 손목 평면 기준 상대 깊이)를 그대로 담는다. 좌표계
-    변환·스케일 정규화는 이 값이 아니라 `normalize_hand`에서 수행한다.
+    `points`는 (21, 2) 배열로, MediaPipe Hand Landmarker의 이미지 정규화 좌표
+    (x, y ∈ 대략 [0, 1])를 그대로 담는다. z(깊이)는 단안 웹캠 추정값이라 노이즈가
+    커 사용하지 않는다(config.LANDMARK_DIMS). 좌표계 변환·스케일 정규화는 이 값이
+    아니라 `normalize_hand`에서 수행한다.
 
     `handedness`는 소스가 보고한 "Left"/"Right" 문자열이다(셀피 미러 뷰에서는
     좌우가 뒤집혀 보일 수 있으므로 소스 보고값을 가공 없이 보존한다).
@@ -62,9 +64,9 @@ class RawHandLandmarks:
     def __post_init__(self) -> None:
         if self.timestamp_ms < 0 or self.frame_id < 0:
             raise ValueError("timestamp_ms and frame_id must be non-negative")
-        if self.points.shape != (HAND_LANDMARK_COUNT, 3):
+        if self.points.shape != (HAND_LANDMARK_COUNT, LANDMARK_DIMS):
             raise ValueError(
-                f"points must have shape ({HAND_LANDMARK_COUNT}, 3), got {self.points.shape}"
+                f"points must have shape ({HAND_LANDMARK_COUNT}, {LANDMARK_DIMS}), got {self.points.shape}"
             )
         if not np.all(np.isfinite(self.points)):
             raise ValueError("raw landmark points must all be finite")
@@ -78,12 +80,12 @@ class RawHandLandmarks:
 class HandObservation:
     """단일 프레임의 정규화된 손 관측값 (README 8장 처리 과정 2·3단계 완료 상태).
 
-    좌표계: `landmarks`는 (21, 3) 배열로, `config.origin_index`(기본: 손목)를
+    좌표계: `landmarks`는 (21, 2) 배열로, `config.origin_index`(기본: 손목)를
     원점으로 옮기고 손바닥 크기(config의 root→tip 거리)로 나눠 스케일을 제거한
     좌표다. 따라서 카메라와의 거리·프레임 내 위치와 무관하게 같은 손 모양이면 거의
     같은 값이 나온다. 회전은 보존된다(손목 회전 제스처용).
 
-    `wrist_position`은 (3,) 배열로, 원점화하지 **않고** palm_scale로만 나눈 손목 좌표다
+    `wrist_position`은 (2,) 배열로, 원점화하지 **않고** palm_scale로만 나눈 손목 좌표다
     — `landmarks`가 매 프레임 손목을 (0,0,0)으로 지워 잃어버리는 손 전체의 평행이동
     신호를 보존한다. palm_scale로 정규화해 카메라 거리에는 독립이다. feature 계층이
     이를 causal 차분해 손목 이동 속도·가속도(swipe 판별 신호)를 만든다
@@ -109,21 +111,21 @@ class HandObservation:
     # palm_scale로만 정규화한(원점화 없는) 손목 좌표. 기본값 0벡터 = 평행이동 신호 없음.
     # 실사용 경로(normalize_hand)는 항상 실제 값을 채운다.
     wrist_position: FloatArray = field(
-        default_factory=lambda: np.zeros(3, dtype=np.float64)
+        default_factory=lambda: np.zeros(LANDMARK_DIMS, dtype=np.float64)
     )
 
     def __post_init__(self) -> None:
         if self.timestamp_ms < 0 or self.frame_id < 0:
             raise ValueError("timestamp_ms and frame_id must be non-negative")
-        if self.landmarks.shape != (HAND_LANDMARK_COUNT, 3):
+        if self.landmarks.shape != (HAND_LANDMARK_COUNT, LANDMARK_DIMS):
             raise ValueError(
-                f"landmarks must have shape ({HAND_LANDMARK_COUNT}, 3), got {self.landmarks.shape}"
+                f"landmarks must have shape ({HAND_LANDMARK_COUNT}, {LANDMARK_DIMS}), got {self.landmarks.shape}"
             )
         if not np.all(np.isfinite(self.landmarks)):
             raise ValueError("normalized landmarks must all be finite")
-        if self.wrist_position.shape != (3,):
+        if self.wrist_position.shape != (LANDMARK_DIMS,):
             raise ValueError(
-                f"wrist_position must have shape (3,), got {self.wrist_position.shape}"
+                f"wrist_position must have shape ({LANDMARK_DIMS},), got {self.wrist_position.shape}"
             )
         if not np.all(np.isfinite(self.wrist_position)):
             raise ValueError("wrist_position must be finite")
@@ -140,13 +142,13 @@ def _lost_tracking_observation(timestamp_ms: int, frame_id: int) -> HandObservat
     return HandObservation(
         timestamp_ms=timestamp_ms,
         frame_id=frame_id,
-        landmarks=np.zeros((HAND_LANDMARK_COUNT, 3), dtype=np.float64),
+        landmarks=np.zeros((HAND_LANDMARK_COUNT, LANDMARK_DIMS), dtype=np.float64),
         handedness="",
         palm_scale=0.0,
         detection_confidence=0.0,
         handedness_score=0.0,
         hand_detected=False,
-        wrist_position=np.zeros(3, dtype=np.float64),
+        wrist_position=np.zeros(LANDMARK_DIMS, dtype=np.float64),
     )
 
 

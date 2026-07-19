@@ -63,8 +63,8 @@ def test_hand_panel_renders_wrist_vectors_and_tracking_loss() -> None:
             landmark_count=21,
             inference_ms=5.0,
             smoothed=True,
-            wrist_velocity=(2.0, -1.0, 0.3),
-            wrist_acceleration=(0.5, 0.1, 0.0),
+            wrist_velocity=(2.0, -1.0),
+            wrist_acceleration=(0.5, 0.1),
         )
         panel.update_snapshot(detected)
         assert "‖·‖" in panel._velocity_view._magnitude.text()

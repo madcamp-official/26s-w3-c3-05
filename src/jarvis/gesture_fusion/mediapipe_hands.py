@@ -27,6 +27,7 @@ import numpy.typing as npt
 
 from jarvis.gesture_fusion.config import (
     HAND_LANDMARK_COUNT,
+    LANDMARK_DIMS,
     DEFAULT_GESTURE_CONFIG,
     GestureConfig,
 )
@@ -112,8 +113,9 @@ class MediaPipeHandLandmarker:
 
         best_index = self._select_primary_hand(result)
         landmarks = result.hand_landmarks[best_index]
-        points = np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float64)
-        if points.shape != (HAND_LANDMARK_COUNT, 3):
+        # z(깊이)는 단안 웹캠 추정값이라 노이즈가 커 버리고 x·y만 쓴다(config.LANDMARK_DIMS).
+        points = np.array([[lm.x, lm.y] for lm in landmarks], dtype=np.float64)
+        if points.shape != (HAND_LANDMARK_COUNT, LANDMARK_DIMS):
             # 모델이 21점을 채우지 못한 비정상 프레임은 추적 손실로 처리한다.
             return _lost_tracking_observation(timestamp_ms, frame_id)
 

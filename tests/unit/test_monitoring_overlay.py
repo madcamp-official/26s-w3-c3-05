@@ -39,8 +39,8 @@ def _hand_snapshot(*, detected: bool) -> HandSnapshot:
         landmark_count=21 if detected else 0,
         inference_ms=7.0,
         smoothed=True,
-        wrist_velocity=(1.5, -0.5, 0.0) if detected else None,
-        wrist_acceleration=(0.2, 0.1, 0.0) if detected else None,
+        wrist_velocity=(1.5, -0.5) if detected else None,
+        wrist_acceleration=(0.2, 0.1) if detected else None,
     )
 
 

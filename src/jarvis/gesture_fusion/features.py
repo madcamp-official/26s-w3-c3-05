@@ -27,6 +27,7 @@ from jarvis.gesture_fusion.config import (
     DEFAULT_GESTURE_CONFIG,
     HAND_LANDMARK_COUNT,
     JOINT_ANGLE_TRIPLETS,
+    LANDMARK_DIMS,
     GestureConfig,
 )
 from jarvis.gesture_fusion.landmarks import HandObservation
@@ -34,8 +35,8 @@ from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 FloatArray = npt.NDArray[np.float64]
 
-_POSITION_DIMS = HAND_LANDMARK_COUNT * 3
-_WRIST_DIMS = 3  # 손목 평행이동 벡터(x, y, z) 한 개의 차원
+_POSITION_DIMS = HAND_LANDMARK_COUNT * LANDMARK_DIMS
+_WRIST_DIMS = LANDMARK_DIMS  # 손목 평행이동 벡터(x, y) 한 개의 차원 (z 제외)
 
 
 def compute_joint_angles(
@@ -143,7 +144,7 @@ class HandFeatureExtractor:
         )
         # A separate One-Euro state for the wrist translation signal: it must be
         # smoothed before differencing for the same reason as the landmarks (palm_scale
-        # and the wrist point both jitter), but it is a different (3,) signal so it
+        # and the wrist point both jitter), but it is a different (2,) signal so it
         # cannot share the landmark filter's per-coordinate state.
         self._wrist_smoother: OneEuroFilter | None = (
             OneEuroFilter(
@@ -161,7 +162,7 @@ class HandFeatureExtractor:
 
     @property
     def last_landmarks(self) -> FloatArray | None:
-        """이 프레임 모델에 실제로 들어간 (평활화 여부 반영) 정규화 랜드마크 (21, 3).
+        """이 프레임 모델에 실제로 들어간 (평활화 여부 반영) 정규화 랜드마크 (21, 2).
 
         추적 손실·리셋 이후에는 None이다. 디버깅 뷰가 "모델이 실제로 보는 정점"을
         그대로 표시하는 데 쓴다(별도 근사가 아니라 같은 값).
@@ -170,7 +171,7 @@ class HandFeatureExtractor:
 
     @property
     def last_wrist_velocity(self) -> FloatArray | None:
-        """이 프레임 모델에 들어간 손목 평행이동 속도 (3,). 추적 손실·리셋 후 None.
+        """이 프레임 모델에 들어간 손목 평행이동 속도 (2,). 추적 손실·리셋 후 None.
 
         `last_landmarks`와 같은 목적 — 디버깅 뷰가 "모델이 실제로 보는 손목 이동 속도"를
         그대로 표시한다(평활화 여부 반영). `include_wrist_translation`가 꺼져 있어도
@@ -180,7 +181,7 @@ class HandFeatureExtractor:
 
     @property
     def last_wrist_acceleration(self) -> FloatArray | None:
-        """이 프레임 모델에 들어간 손목 평행이동 가속도 (3,). 추적 손실·리셋 후 None."""
+        """이 프레임 모델에 들어간 손목 평행이동 가속도 (2,). 추적 손실·리셋 후 None."""
         return (
             None
             if self._last_wrist_acceleration is None
