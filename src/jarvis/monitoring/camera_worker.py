@@ -1,126 +1,88 @@
-"""Background camera thread feeding frames to the UI.
+"""Background camera thread feeding frames (and gaze snapshots) to the UI.
 
 Reads real webcam frames off the UI thread via the runtime's
 ``OpenCVCameraSource`` (the same capture boundary the pipeline uses) and emits
-each frame as a Qt signal. Camera open failures are surfaced honestly rather than
-silently showing a frozen image.
+each frame as a Qt signal. When a :class:`GazeProbe` is attached, each frame is
+also run through the real gaze pipeline here (off the UI thread, since MediaPipe
+inference is heavy) and the resulting snapshot is emitted. Camera open failures
+are surfaced honestly rather than silently showing a frozen image.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from queue import Empty, SimpleQueue
-from typing import cast
+import time
 
-import cv2
 from PySide6.QtCore import QThread, Signal
 
-from jarvis.calibration.profiles import load_profiles
-from jarvis.gaze.engine import GazeTargetingEngine
-from jarvis.gaze.classifier import DeviceGazeProfile
-from jarvis.gaze.direction import CalibratedGaze, direction_to_yaw_pitch
-from jarvis.gaze.landmarks import FaceLandmarkerAdapter, RgbFrame
-from jarvis.monitoring.gaze_source import GazeSnapshot
+from jarvis.monitoring.gaze_probe import GazeProbe
+from jarvis.monitoring.hand_probe import HandProbe
+from jarvis.runtime_protocol.capture.source import OpenCVCameraSource
 
 
 class CameraWorker(QThread):
     frame_ready = Signal(object)  # numpy BGR frame
-    gaze_ready = Signal(object)  # GazeSnapshot
+    gaze_ready = Signal(object)  # GazeSnapshot (only when a gaze probe is attached)
+    hand_ready = Signal(object)  # HandSnapshot (only when a hand probe is attached)
     failed = Signal(str)
-    gaze_failed = Signal(str)
 
     def __init__(
         self,
         device_index: int = 0,
-        *,
-        model_path: Path | None = None,
-        profiles_path: Path | None = None,
+        probe: GazeProbe | None = None,
+        hand_probe: HandProbe | None = None,
     ) -> None:
         super().__init__()
         self._device_index = device_index
-        self._model_path = model_path
-        self._profiles_path = profiles_path
+        self._probe = probe
+        self._hand_probe = hand_probe
         self._running = False
-        self._profile_updates: SimpleQueue[tuple[str, DeviceGazeProfile | str]] = SimpleQueue()
-
-    def register_profile(self, profile: DeviceGazeProfile) -> None:
-        self._profile_updates.put(("upsert", profile))
-
-    def unregister_profile(self, target_id: str) -> None:
-        self._profile_updates.put(("remove", target_id))
-
-    def _apply_profile_updates(self, engine: GazeTargetingEngine) -> None:
-        while True:
-            try:
-                action, profile = self._profile_updates.get_nowait()
-            except Empty:
-                return
-            if action == "upsert" and isinstance(profile, DeviceGazeProfile):
-                engine.register_device(profile)
-            elif isinstance(profile, str):
-                engine.unregister_device(profile)
 
     def run(self) -> None:
         self._running = True
-        source = cv2.VideoCapture(self._device_index)
-        if not source.isOpened():
-            source.release()
-            self.failed.emit(f"카메라 {self._device_index}번을 열 수 없습니다")
-            return
-        gaze_adapter: FaceLandmarkerAdapter | None = None
-        gaze_engine: GazeTargetingEngine | None = None
-        if self._model_path is not None:
-            try:
-                gaze_adapter = FaceLandmarkerAdapter(self._model_path)
-                gaze_engine = GazeTargetingEngine()
-                if self._profiles_path is not None and self._profiles_path.is_file():
-                    for profile in load_profiles(self._profiles_path):
-                        gaze_engine.register_device(profile)
-            except Exception as exc:  # noqa: BLE001 - keep camera alive, report gaze failure
-                self.gaze_failed.emit(f"Gaze 초기화 실패: {exc}")
-                gaze_adapter = None
-                gaze_engine = None
+        source = OpenCVCameraSource(self._device_index)
         try:
-            frame_id = 0
+            source.__enter__()
+        except Exception as exc:  # noqa: BLE001 - report any open failure to the UI
+            self.failed.emit(f"카메라 {self._device_index}번을 열 수 없습니다: {exc}")
+            return
+        start = time.monotonic()
+        frame_id = 0
+        try:
             while self._running:
-                ok, image = source.read()
-                if not ok:
+                image = source.read()
+                if image is None:
                     self.msleep(5)
                     continue
-                if gaze_adapter is not None and gaze_engine is not None:
-                    self._apply_profile_updates(gaze_engine)
-                    timestamp_ms = frame_id * 33
-                    rgb_frame = cast(RgbFrame, cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-                    observation = gaze_adapter.process(rgb_frame, timestamp_ms, frame_id)
-                    estimate = gaze_engine.process(observation)
-                    smoothed = gaze_engine.last_smoothed_gaze
-                    calibrated = None
-                    if smoothed is not None:
-                        yaw, pitch = direction_to_yaw_pitch(smoothed.direction)
-                        calibrated = CalibratedGaze(
-                            yaw=yaw,
-                            pitch=pitch,
-                            confidence=min(
-                                observation.eye_tracking_confidence,
-                                observation.face_tracking_confidence,
-                            ),
-                            timestamp_ms=smoothed.timestamp_ms,
-                        )
-                    self.gaze_ready.emit(
-                        GazeSnapshot(
-                            observation=observation,
-                            gaze_vector=smoothed,
-                            estimate=estimate,
-                            lock_state=str(gaze_engine.lock_state),
-                            calibrated_gaze=calibrated,
-                        )
-                    )
                 self.frame_ready.emit(image)
-                frame_id += 1
+                gaze_on = self._probe is not None and self._probe.available
+                hand_on = self._hand_probe is not None and self._hand_probe.available
+                if gaze_on or hand_on:
+                    timestamp_ms = int((time.monotonic() - start) * 1000)
+                    if gaze_on:
+                        assert self._probe is not None
+                        try:
+                            gaze = self._probe.process_bgr(image, timestamp_ms, frame_id)
+                        except Exception as exc:  # noqa: BLE001 - a bad frame must not kill the thread
+                            self.failed.emit(f"gaze 처리 오류: {exc}")
+                            gaze = None
+                        if gaze is not None:
+                            self.gaze_ready.emit(gaze)
+                    if hand_on:
+                        assert self._hand_probe is not None
+                        try:
+                            hand = self._hand_probe.process_bgr(image, timestamp_ms, frame_id)
+                        except Exception as exc:  # noqa: BLE001 - a bad frame must not kill the thread
+                            self.failed.emit(f"hand 처리 오류: {exc}")
+                            hand = None
+                        if hand is not None:
+                            self.hand_ready.emit(hand)
+                    frame_id += 1
         finally:
-            if gaze_adapter is not None:
-                gaze_adapter.close()
-            source.release()
+            if self._probe is not None:
+                self._probe.close()
+            if self._hand_probe is not None:
+                self._hand_probe.close()
+            source.close()
 
     def stop(self) -> None:
         self._running = False

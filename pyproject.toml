@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "jarvis-runtime"
 version = "0.1.0"
 description = "Local gaze-grounded motion control runtime"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
   "numpy>=1.26,<3",
 ]
@@ -20,9 +20,16 @@ vision = [
   "mediapipe>=0.10,<0.11",
   "opencv-python>=4.9,<5",
 ]
+ml = [
+  "torch>=2.2,<3",
+]
 ui = [
   "PySide6>=6.6,<7",
   "opencv-python>=4.9,<5",
+]
+macos = [
+  "pyobjc-framework-Quartz>=10,<12; sys_platform == 'darwin'",
+  "pyobjc-framework-Cocoa>=10,<12; sys_platform == 'darwin'",
 ]
 dev = [
   "pytest>=8,<9",
@@ -41,10 +48,53 @@ src = ["src", "tests"]
 line-length = 100
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 packages = ["jarvis"]
 
+# cv2 (OpenCV) is an optional `vision` extra and ships no type stubs; treat its
+# imports as untyped whether or not it is installed in the current environment.
+# MediaPipe is optional for the same camera-only boundary.
 [[tool.mypy.overrides]]
-module = "mediapipe.*"
+module = ["cv2", "mediapipe.*"]
 ignore_missing_imports = true
+
+# PyObjC (Quartz/AppKit) is an optional `macos` extra isolated to
+# jarvis.runtime_protocol.adapters.macos (same import-boundary pattern as
+# mediapipe above) and ships no type stubs.
+[[tool.mypy.overrides]]
+module = ["Quartz", "Quartz.*", "AppKit", "AppKit.*"]
+ignore_missing_imports = true
+
+# torch is an optional `ml` extra isolated to jarvis.gesture_fusion.model (same
+# import-boundary pattern as mediapipe above); its bundled stubs are incomplete
+# under strict mode, so treat it as untyped rather than failing the whole build.
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
+# `ml` extra 미설치 시 torch가 Any로 잡혀 nn.Module 상속이 strict의
+# disallow_subclassing_any에 걸린다. model.py는 torch 어댑터 경계이므로 이 모듈에
+# 한해 상속 검사를 끈다 — 표준 `.[dev]`(torch 없음) 환경에서도 타입체크가 통과하도록.
+# (per-line ignore는 torch 설치 환경에서 warn_unused_ignores에 역으로 걸려 부적합.)
+[[tool.mypy.overrides]]
+module = ["jarvis.gesture_fusion.model"]
+disallow_subclassing_any = false
+
+# PySide6는 데스크탑 모니터(`jarvis.monitoring`)에서만 쓰는 GUI 의존성이라 표준
+# `.[dev]`에는 없다(cv2/torch와 같은 optional 경계). 미설치 시 스텁을 못 찾는
+# 것으로 처리한다. (설치돼 있으면 PySide6 6.6+가 번들 스텁을 제공하므로 이
+# override는 무해하다 — 스텁이 있으면 그대로 쓰인다.)
+[[tool.mypy.overrides]]
+module = ["PySide6.*"]
+ignore_missing_imports = true
+
+# PySide6 미설치 시 Qt 위젯이 Any로 잡혀 (1) QWidget/QMainWindow 등 상속이
+# disallow_subclassing_any에 걸리고 (2) PySide6 설치 환경 기준으로 달아둔
+# `# type: ignore`가 unused로 뜬다. monitoring은 GUI 경계 모듈이라 이 두 검사만
+# 여기서 끈다 — GUI extra 유무와 무관하게 타입체크가 통과하도록(model 모듈의
+# torch 상속 예외와 같은 처리).
+[[tool.mypy.overrides]]
+module = ["jarvis.monitoring.*"]
+disallow_subclassing_any = false
+warn_unused_ignores = false

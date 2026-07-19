@@ -71,15 +71,18 @@ def test_pipeline_status_lists_all_stages() -> None:
     ]
 
 
-def test_gesture_and_fusion_reported_unavailable() -> None:
+def test_gesture_and_fusion_reported_live() -> None:
+    """2인 파트(gesture spotting, task 4 / intent fusion, task 6)가 구현된 뒤로는
+    LIVE를 보고해야 한다 — 실제 상태를 가장하지 않는다는 원칙(monitoring 모듈
+    docstring)의 반대 방향: 이미 있는 걸 없다고 하지도 않는다."""
     by_name = {s.name: s for s in detect_pipeline_status(env={})}
-    assert by_name["Gesture Spotter"].state == StageState.UNAVAILABLE
-    assert by_name["Intent Fusion"].state == StageState.UNAVAILABLE
+    assert by_name["Gesture Spotter"].state == StageState.LIVE
+    assert by_name["Intent Fusion"].state == StageState.LIVE
 
 
-def test_protocol_stage_reflects_missing_runtime_on_gaze_branch() -> None:
+def test_protocol_stage_is_live() -> None:
     by_name = {s.name: s for s in detect_pipeline_status(env={})}
-    assert by_name["Protocol / Command"].state == StageState.ERROR
+    assert by_name["Protocol / Command"].state == StageState.LIVE
 
 
 def test_adapters_reflect_smartthings_token() -> None:

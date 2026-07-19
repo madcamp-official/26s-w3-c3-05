@@ -27,6 +27,9 @@ build/
 # Logs
 *.log
 
+# Claude Code local settings
+.claude/
+
 # Local model binaries and evaluation artifacts
 models/*.task
 models/*.onnx
