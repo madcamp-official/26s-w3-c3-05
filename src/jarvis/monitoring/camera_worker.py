@@ -47,6 +47,12 @@ class CameraWorker(QThread):
             return
         start = time.monotonic()
         frame_id = 0
+        # 직전에 내보낸 timestamp. monotonic 시계는 감소하지 않지만 ms 단위 절삭 때문에
+        # 프레임이 1ms 안에 연달아 오면 같은 값이 나올 수 있다. MediaPipe
+        # detect_for_video는 **엄격히 증가**하는 timestamp를 요구하고(같으면 프레임을
+        # 버리거나 에러), One-Euro 필터도 dt<=0이면 평활화를 건너뛰므로, 여기서
+        # 마지막 값보다 항상 큰 값을 보장한다(루프 속도와 무관하게 안전).
+        last_timestamp_ms = -1
         try:
             while self._running:
                 image = source.read()
@@ -57,7 +63,8 @@ class CameraWorker(QThread):
                 gaze_on = self._probe is not None and self._probe.available
                 hand_on = self._hand_probe is not None and self._hand_probe.available
                 if gaze_on or hand_on:
-                    timestamp_ms = int((time.monotonic() - start) * 1000)
+                    timestamp_ms = max(int((time.monotonic() - start) * 1000), last_timestamp_ms + 1)
+                    last_timestamp_ms = timestamp_ms
                     if gaze_on:
                         assert self._probe is not None
                         try:

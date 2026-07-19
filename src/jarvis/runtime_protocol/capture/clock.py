@@ -36,6 +36,7 @@ class RuntimeClock:
         self._time_source = time_source
         self._lock = Lock()
         self._next_frame_id = 0
+        self._last_timestamp_ms = -1
 
     def now_ms(self) -> int:
         """Current monotonic time in whole milliseconds."""
@@ -46,8 +47,17 @@ class RuntimeClock:
 
         Thread-safe: the capture thread calls this once per captured frame.
         Frame ids are strictly increasing and gapless within one process run.
+
+        The timestamp is also **strictly increasing**: the monotonic clock never
+        goes backward, but its millisecond truncation can repeat when two frames
+        fall in the same millisecond. Downstream consumers (MediaPipe's
+        ``detect_for_video``, the One-Euro filter) require a strictly increasing
+        stamp, so a repeated/earlier value is bumped to ``last + 1`` here, atomically
+        with the frame id under the lock.
         """
         with self._lock:
             frame_id = self._next_frame_id
             self._next_frame_id += 1
-        return FrameStamp(timestamp_ms=self.now_ms(), frame_id=frame_id)
+            timestamp_ms = max(self.now_ms(), self._last_timestamp_ms + 1)
+            self._last_timestamp_ms = timestamp_ms
+        return FrameStamp(timestamp_ms=timestamp_ms, frame_id=frame_id)
