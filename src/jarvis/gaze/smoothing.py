@@ -59,11 +59,18 @@ class GazeSmoother:
         if weight_sum <= 0.0:
             return None
 
-        weighted_mean = (directions * weights[:, None]).sum(axis=0) / weight_sum
-        norm = float(np.linalg.norm(weighted_mean))
-        if norm == 0.0:
-            return None
-        mean_direction = weighted_mean / norm
+        # Confidence-aware EMA is recomputed inside the bounded window. This gives
+        # low-confidence frames less influence without retaining stale state after
+        # every old frame has left the window.
+        mean_direction = directions[0]
+        alpha_range = self._config.ema_max_alpha - self._config.ema_min_alpha
+        for item in list(self._buffer)[1:]:
+            alpha = self._config.ema_min_alpha + alpha_range * item.confidence
+            blended = alpha * item.direction + (1.0 - alpha) * mean_direction
+            blended_norm = float(np.linalg.norm(blended))
+            if blended_norm == 0.0:
+                return None
+            mean_direction = blended / blended_norm
 
         cosine_similarities = directions @ mean_direction
         stability = float((cosine_similarities * weights).sum() / weight_sum)

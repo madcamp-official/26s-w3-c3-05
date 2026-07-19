@@ -56,6 +56,12 @@ class GazeConfig:
     minimum_tracking_confidence: float = 0.5
     """이 값 미만의 eye/face tracking confidence는 추적 손실로 취급한다."""
 
+    ema_min_alpha: float = 0.15
+    """낮은 confidence 프레임에 적용할 EMA 반영률."""
+
+    ema_max_alpha: float = 0.65
+    """높은 confidence 프레임에 적용할 EMA 반영률."""
+
     UNKNOWN_TARGET: str = "UNKNOWN"
 
     def __post_init__(self) -> None:
@@ -68,10 +74,14 @@ class GazeConfig:
             "minimum_margin": self.minimum_margin,
             "unknown_probability_threshold": self.unknown_probability_threshold,
             "minimum_tracking_confidence": self.minimum_tracking_confidence,
+            "ema_min_alpha": self.ema_min_alpha,
+            "ema_max_alpha": self.ema_max_alpha,
         }
         for name, value in probability_fields.items():
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
+        if self.ema_min_alpha > self.ema_max_alpha:
+            raise ValueError("ema_min_alpha must not exceed ema_max_alpha")
         if not math.isfinite(self.max_eye_offset_deg) or self.max_eye_offset_deg <= 0.0:
             raise ValueError("max_eye_offset_deg must be finite and positive")
         if not math.isfinite(self.unknown_max_angle_deg) or not 0.0 < self.unknown_max_angle_deg <= 180.0:
