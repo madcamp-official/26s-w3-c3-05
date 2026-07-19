@@ -66,3 +66,30 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
 
 - head yaw/pitch/roll 부호 규약이 실 카메라와 맞는지 아직 확인되지 않음 — Day 1 통합
   테스트에서 확인되면 여기와 models/README.md를 갱신할 것(있으면 [decisions.md](decisions.md)로 옮기기).
+## Look-to-register calibration update (2026-07-19)
+
+Demo target registration is implemented as a user-managed target registry instead of a fixed monitor-coordinate
+calibration. The user looks at a real object for about two seconds, and the system stores that object's camera-relative
+gaze direction.
+
+Implemented files:
+
+- `src/jarvis/gaze/direction.py`: `CalibratedGaze(yaw, pitch, confidence, timestamp_ms)` and vector/yaw-pitch conversion.
+- `src/jarvis/calibration/registry.py`: target add/update/rename/delete persistence, JSON auto-load, legacy profile migration,
+  and nearby-target warning data.
+- `src/jarvis/calibration/target_registration.py`: two-second robust sample collection with minimum frame count,
+  confidence filtering, closed-eye filtering, jump filtering, median center, and p90 spread with a minimum 4-degree radius.
+- `src/jarvis/gaze/classifier.py`: registered target matching uses yaw/pitch elliptical distance when per-axis spread exists,
+  rejects `UNKNOWN` when distance is greater than 1.0 or first/second target margin is too small.
+- `src/jarvis/gaze/smoothing.py`: confidence-aware EMA smoothing is enabled before classification.
+- `src/jarvis/gaze/lock.py`: 300-500 ms dwell-based lock and hysteresis are handled by the existing state machine.
+- `src/jarvis/monitoring/`: debug UI can register/reregister/rename/delete targets, show current calibrated gaze,
+  registered target circles, candidate/lock state, and live registration sample dots.
+
+Manual verification still required:
+
+- Real-camera yaw/pitch sign and scale should be checked again after the webcam position changes.
+- Face identity/profile selection and camera-moved detection are not automatic yet; the UI and docs should instruct the user
+  to reselect profile or reregister positions when those conditions change.
+- The current `CalibratedGaze` is geometric yaw/pitch from the smoothed gaze vector. A learned Ridge/MLP personal correction
+  can be added later when labeled calibration samples are available.
