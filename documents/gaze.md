@@ -86,10 +86,11 @@ Implemented files:
 - `src/jarvis/monitoring/`: debug UI can register/reregister/rename/delete targets, show current calibrated gaze,
   registered target circles, candidate/lock state, and live registration sample dots.
 
-Manual verification still required:
+MVP operating assumptions:
 
-- Real-camera yaw/pitch sign and scale should be checked again after the webcam position changes.
-- Face identity/profile selection and camera-moved detection are not automatic yet; the UI and docs should instruct the user
-  to reselect profile or reregister positions when those conditions change.
+- The camera is fixed during the demo.
+- User changes are announced manually, so automatic face identity/profile switching is out of MVP scope.
+- Objects are registered every time they are newly added or moved.
+- Real-camera yaw/pitch sign and scale still need one final fixed-camera sanity check before demo.
 - The current `CalibratedGaze` is geometric yaw/pitch from the smoothed gaze vector. A learned Ridge/MLP personal correction
   can be added later when labeled calibration samples are available.
