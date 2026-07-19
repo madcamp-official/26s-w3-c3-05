@@ -86,10 +86,8 @@ Implemented files:
 - `src/jarvis/gaze/smoothing.py`: short blinks hold the last stable gaze briefly, and tiny gaze changes are absorbed by a
   small angular deadzone to reduce jitter.
 - `src/jarvis/gaze/lock.py`: 300-500 ms dwell-based lock and hysteresis are handled by the existing state machine.
-- `src/jarvis/monitoring/`: debug UI shows the camera-relative gaze ray as yaw/pitch and compares it with each
-  registered direction profile (`mean_direction + variance`). This is intentionally not a screen-point coordinate:
-  without depth or object detection, the robust demo target is a camera-relative direction profile, not a 3D object
-  coordinate.
+- `src/jarvis/monitoring/`: debug UI can register/reregister/rename/delete targets and show the live gaze ray,
+  candidate/lock state, and pipeline diagnostics without drawing artificial target-area circles.
 
 MVP operating assumptions:
 

@@ -241,10 +241,7 @@ class GazePanel(QScrollArea):
         for d in s.device_details:
             angle = "--" if np.isnan(d.angular_distance_deg) else f"{d.angular_distance_deg:6.1f}°"
             mark = "◀ 선택" if d.is_selected else ""
-            self._devices.addItem(
-                f"{d.device_id:<16} profile yaw={d.profile_yaw_deg:+6.1f} "
-                f"pitch={d.profile_pitch_deg:+6.1f}  error={angle}  {mark}"
-            )
+            self._devices.addItem(f"{d.device_id:<16} {angle}  {mark}")
 
         self._track_conf.set_value(s.tracking_confidence, color="#58a6ff")
         self._gaze_conf.set_value(s.gaze_confidence, color="#58a6ff")
@@ -255,11 +252,6 @@ class GazePanel(QScrollArea):
             if s.gaze_direction is not None
             else "추적 손실 (None)"
         )
-        gaze_ray = (
-            f"yaw {s.gaze_ray_yaw_deg:+7.2f}  pitch {s.gaze_ray_pitch_deg:+7.2f}"
-            if s.gaze_ray_yaw_deg is not None and s.gaze_ray_pitch_deg is not None
-            else "tracking lost (None)"
-        )
         est = s.target_estimate
         self._numeric.setText(
             f"face_detected : {s.face_detected}\n"
@@ -267,7 +259,6 @@ class GazePanel(QScrollArea):
             f"roll {s.head_roll_deg:+7.2f}\n"
             f"iris L / R    : {s.left_iris_relative}  /  {s.right_iris_relative}\n"
             f"gaze vector   : {direction}\n"
-            f"camera ray    : {gaze_ray}\n"
             f"smoothing buf : {s.buffer_fill}/{s.buffer_capacity} frames\n"
             "── TargetEstimate (contract) ──────────────\n"
             f"target={est.target}  p={est.probability:.3f}  "

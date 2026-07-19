@@ -78,8 +78,6 @@ def test_no_profiles_yields_unknown_with_reason() -> None:
         config=config,
     )
     assert snapshot.gaze_direction is not None  # gaze vector still composed
-    assert snapshot.gaze_ray_yaw_deg == 0.0
-    assert snapshot.gaze_ray_pitch_deg == 0.0
     assert snapshot.target == config.UNKNOWN_TARGET
     assert snapshot.reject_reason is not None
     assert "프로파일" in snapshot.reject_reason
@@ -112,8 +110,6 @@ def test_aligned_device_is_selected_with_small_angle() -> None:
     (detail,) = snapshot.device_details
     assert detail.device_id == "laptop"
     assert detail.is_selected is True
-    assert detail.profile_yaw_deg == 0.0
-    assert detail.profile_pitch_deg == 0.0
     assert detail.angular_distance_deg < 1.0
 
 
