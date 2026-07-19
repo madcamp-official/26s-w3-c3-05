@@ -122,9 +122,24 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
         cv2.arrowedLine(frame, center, tip, ray_color, 2, cv2.LINE_AA, tipLength=0.2)
 
     stability = snapshot.smoothed_stability
+    gaze_ray = (
+        f"GAZE RAY yaw {snapshot.gaze_ray_yaw_deg:+5.1f}  pitch {snapshot.gaze_ray_pitch_deg:+5.1f}"
+        if snapshot.gaze_ray_yaw_deg is not None and snapshot.gaze_ray_pitch_deg is not None
+        else "GAZE RAY --"
+    )
+    nearest_profile = "PROFILE --"
+    if snapshot.device_details:
+        nearest = snapshot.device_details[0]
+        if np.isfinite(nearest.angular_distance_deg):
+            nearest_profile = (
+                f"PROFILE {nearest.device_id} yaw {nearest.profile_yaw_deg:+5.1f} "
+                f"pitch {nearest.profile_pitch_deg:+5.1f} err {nearest.angular_distance_deg:.1f}"
+            )
     lines: list[tuple[str, tuple[int, int, int]]] = [
         (f"LOCK  {state}", ray_color),
         (f"TARGET  {snapshot.target}  {snapshot.probability:.0%}", white),
+        (gaze_ray, white),
+        (nearest_profile, grey),
         (
             f"yaw {snapshot.head_yaw_deg:+5.0f}  pitch {snapshot.head_pitch_deg:+5.0f}"
             f"  roll {snapshot.head_roll_deg:+5.0f}",

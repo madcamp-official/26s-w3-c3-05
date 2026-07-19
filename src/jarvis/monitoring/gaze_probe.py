@@ -36,6 +36,7 @@ from jarvis.gaze.classifier import (
     cosine_similarity,
 )
 from jarvis.gaze.config import GazeConfig
+from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.features import FaceObservation, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
 from jarvis.gaze.smoothing import GazeSmoother
@@ -52,6 +53,8 @@ class DeviceGazeDetail:
     """
 
     device_id: str
+    profile_yaw_deg: float
+    profile_pitch_deg: float
     angular_distance_deg: float
     is_selected: bool
 
@@ -86,6 +89,8 @@ class GazeSnapshot:
     # 2c — temporal smoothing
     smoothed_stability: float | None
     smoothed_gaze_direction: tuple[float, float, float] | None
+    gaze_ray_yaw_deg: float | None
+    gaze_ray_pitch_deg: float | None
     buffer_fill: int
     buffer_capacity: int
 
@@ -152,8 +157,15 @@ def _device_details(
     profiles = classifier.profiles
     if not profiles or direction is None:
         return tuple(
-            DeviceGazeDetail(device_id=device_id, angular_distance_deg=math.nan, is_selected=False)
+            DeviceGazeDetail(
+                device_id=device_id,
+                profile_yaw_deg=direction_to_yaw_pitch(profile.mean_direction)[0],
+                profile_pitch_deg=direction_to_yaw_pitch(profile.mean_direction)[1],
+                angular_distance_deg=math.nan,
+                is_selected=False,
+            )
             for device_id in profiles
+            for profile in (profiles[device_id],)
         )
     gaze = np.array(direction, dtype=np.float64)
     details = []
@@ -163,6 +175,8 @@ def _device_details(
         details.append(
             DeviceGazeDetail(
                 device_id=device_id,
+                profile_yaw_deg=direction_to_yaw_pitch(profile.mean_direction)[0],
+                profile_pitch_deg=direction_to_yaw_pitch(profile.mean_direction)[1],
                 angular_distance_deg=angle_deg,
                 is_selected=(device_id == selected_target),
             )
@@ -205,6 +219,8 @@ def evaluate(
 
     smoothed_stability: float | None = None
     classify_direction: tuple[float, float, float] | None = None
+    gaze_ray_yaw_deg: float | None = None
+    gaze_ray_pitch_deg: float | None = None
     if smoothed is None:
         result = ClassificationResult(
             target=config.UNKNOWN_TARGET, probability=0.0, second_best_probability=0.0
@@ -225,6 +241,7 @@ def evaluate(
             float(smoothed.direction[1]),
             float(smoothed.direction[2]),
         )
+        gaze_ray_yaw_deg, gaze_ray_pitch_deg = direction_to_yaw_pitch(smoothed.direction)
         result = classifier.classify(smoothed.direction)
         lock.update(smoothed.timestamp_ms, result)
         estimate = TargetEstimate(
@@ -257,6 +274,8 @@ def evaluate(
         gaze_confidence=gaze_confidence,
         smoothed_stability=smoothed_stability,
         smoothed_gaze_direction=classify_direction,
+        gaze_ray_yaw_deg=gaze_ray_yaw_deg,
+        gaze_ray_pitch_deg=gaze_ray_pitch_deg,
         buffer_fill=len(smoother._buffer),  # noqa: SLF001 - diagnostic read of buffer depth
         buffer_capacity=config.smoothing_window_frames,
         target=result.target,
