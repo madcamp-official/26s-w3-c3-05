@@ -75,8 +75,17 @@ MediaPipe 번들과 달리 사전 학습된 파일을 내려받는 게 아니라
   채널 수·kernel size·dropout·gesture label 집합을 조절한다(`pyproject.toml` `ml` extra:
   `torch>=2.2,<3`). 인과성(미래 프레임 미사용)은
   `tests/unit/gesture_fusion/test_model.py::test_output_is_truly_causal`로 회귀 검증한다.
-- **로컬 경로**: 학습된 가중치는 `models/gesture_tcn.pt`에 둔다(아직 없음, `.gitignore`의
-  `models/*.pt` 규칙에 따라 커밋하지 않는다).
+- **로컬 경로**: 학습된 가중치는 `models/gesture_tcn_jester.pt`(Jester 사전학습)와
+  `models/gesture_tcn_finetuned.pt`(웹캠 파인튜닝 완료본)에 각각 둔다(아직 실제 학습 실행
+  전, `.gitignore`의 `models/*.pt` 규칙에 따라 커밋하지 않는다). 두 체크포인트를 따로
+  보관하는 이유는 파인튜닝이 소량 데이터로 과적합할 경우 사전학습 체크포인트로 롤백할
+  기준점을 남기기 위함(학습 파이프라인 인터뷰 결정).
+- **학습 파이프라인**: `training/`(이 저장소 밖, `src/jarvis` 런타임 패키지와 분리 —
+  `documents/decisions.md` 2026-07-19)이 Jester(20BN-Jester-v1) 사전학습 → 웹캠 소량
+  파인튜닝 2단계로 이 가중치를 만든다. 실행 방법은 `training/README.md` 참고. `ModelMetadata`는
+  체크포인트 파일 자체가 아니라 `<체크포인트 파일명>.metadata.json` sidecar에 기록된다 —
+  `load_weights(path, metadata)`가 metadata를 파일에서 읽지 않고 호출자가 넘겨야 하므로,
+  로드하는 쪽이 이 sidecar를 읽어 `ModelMetadata(**json)`으로 구성해 넘긴다.
 - **입력**: `jarvis.gesture_fusion.features.HandFeatureExtractor`가 만든 feature 시퀀스
   `(window_size, feature_dim)`. `window_size`는 `ModelConfig.receptive_field`(아키텍처가
   결정), `feature_dim`은 `features.feature_dimension(GestureConfig)`(전처리 설정이 결정) —

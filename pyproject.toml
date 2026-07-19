@@ -36,6 +36,14 @@ dev = [
   "ruff>=0.9,<1",
   "mypy>=1.14,<2",
 ]
+# 오프라인 학습 파이프라인(training/, src/jarvis 밖 — 런타임 패키지와 분리)만 쓰는
+# 의존성. ml(torch)·vision(mediapipe)·opencv를 자기참조로 끌어오고, 여기 전용으로
+# tensorboard(실험 추적)·pandas(Jester CSV 처리)를 추가한다.
+training = [
+  "jarvis-runtime[ml,vision]",
+  "tensorboard>=2.15,<3",
+  "pandas>=2,<3",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
