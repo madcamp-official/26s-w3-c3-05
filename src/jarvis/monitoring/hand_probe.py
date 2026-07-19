@@ -30,7 +30,7 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 
-from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG, GestureConfig
+from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG, LANDMARK_DIMS, GestureConfig
 from jarvis.gesture_fusion.features import HandFeatureExtractor
 from jarvis.gesture_fusion.landmarks import RawHandLandmarks, normalize_hand
 from jarvis.gesture_fusion.smoothing import OneEuroFilter
@@ -212,8 +212,9 @@ class HandProbe:
             return self._lost(timestamp_ms, frame_id, inference_ms)
 
         landmarks = result.hand_landmarks[0]
-        points = np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float64)
-        if points.shape != (21, 3):
+        # z(깊이)는 단안 웹캠 추정값이라 노이즈가 커 버리고 x·y만 쓴다(config.LANDMARK_DIMS).
+        points = np.array([[lm.x, lm.y] for lm in landmarks], dtype=np.float64)
+        if points.shape != (21, LANDMARK_DIMS):
             return self._lost(timestamp_ms, frame_id, inference_ms)
 
         handedness, score = self._primary_handedness(result)

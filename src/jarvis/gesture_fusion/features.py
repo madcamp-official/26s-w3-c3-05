@@ -27,6 +27,7 @@ from jarvis.gesture_fusion.config import (
     DEFAULT_GESTURE_CONFIG,
     HAND_LANDMARK_COUNT,
     JOINT_ANGLE_TRIPLETS,
+    LANDMARK_DIMS,
     GestureConfig,
 )
 from jarvis.gesture_fusion.landmarks import HandObservation
@@ -34,7 +35,7 @@ from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 FloatArray = npt.NDArray[np.float64]
 
-_POSITION_DIMS = HAND_LANDMARK_COUNT * 3
+_POSITION_DIMS = HAND_LANDMARK_COUNT * LANDMARK_DIMS
 
 
 def compute_joint_angles(
@@ -136,7 +137,7 @@ class HandFeatureExtractor:
 
     @property
     def last_landmarks(self) -> FloatArray | None:
-        """이 프레임 모델에 실제로 들어간 (평활화 여부 반영) 정규화 랜드마크 (21, 3).
+        """이 프레임 모델에 실제로 들어간 (평활화 여부 반영) 정규화 랜드마크 (21, 2).
 
         추적 손실·리셋 이후에는 None이다. 디버깅 뷰가 "모델이 실제로 보는 정점"을
         그대로 표시하는 데 쓴다(별도 근사가 아니라 같은 값).

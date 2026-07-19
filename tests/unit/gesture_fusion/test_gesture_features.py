@@ -15,6 +15,7 @@ import pytest
 from jarvis.gesture_fusion.config import (
     HAND_LANDMARK_COUNT,
     JOINT_ANGLE_TRIPLETS,
+    LANDMARK_DIMS,
     GestureConfig,
 )
 from jarvis.gesture_fusion.features import (
@@ -24,7 +25,7 @@ from jarvis.gesture_fusion.features import (
 )
 from jarvis.gesture_fusion.landmarks import HandObservation
 
-_POSITION_DIMS = HAND_LANDMARK_COUNT * 3
+_POSITION_DIMS = HAND_LANDMARK_COUNT * LANDMARK_DIMS
 
 
 def _obs(
@@ -47,7 +48,7 @@ def _obs(
 
 
 def _zeros() -> np.ndarray:
-    return np.zeros((HAND_LANDMARK_COUNT, 3), dtype=np.float64)
+    return np.zeros((HAND_LANDMARK_COUNT, LANDMARK_DIMS), dtype=np.float64)
 
 
 # --- 관절 각도 ---
@@ -57,9 +58,9 @@ def test_straight_finger_angle_is_pi() -> None:
     """일직선으로 뻗은 세 점의 꼭짓점 각은 π(180도)."""
     landmarks = _zeros()
     a, b, c = JOINT_ANGLE_TRIPLETS[0]
-    landmarks[a] = [0.0, 0.0, 0.0]
-    landmarks[b] = [1.0, 0.0, 0.0]
-    landmarks[c] = [2.0, 0.0, 0.0]
+    landmarks[a] = [0.0, 0.0]
+    landmarks[b] = [1.0, 0.0]
+    landmarks[c] = [2.0, 0.0]
     angles = compute_joint_angles(landmarks)
     assert angles[0] == pytest.approx(math.pi)
 
@@ -67,9 +68,9 @@ def test_straight_finger_angle_is_pi() -> None:
 def test_right_angle_joint() -> None:
     landmarks = _zeros()
     a, b, c = JOINT_ANGLE_TRIPLETS[0]
-    landmarks[a] = [1.0, 0.0, 0.0]
-    landmarks[b] = [0.0, 0.0, 0.0]
-    landmarks[c] = [0.0, 1.0, 0.0]
+    landmarks[a] = [1.0, 0.0]
+    landmarks[b] = [0.0, 0.0]
+    landmarks[c] = [0.0, 1.0]
     angles = compute_joint_angles(landmarks)
     assert angles[0] == pytest.approx(math.pi / 2)
 
@@ -99,11 +100,11 @@ def test_velocity_is_per_second_causal_difference() -> None:
     extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=False))
     first = _zeros()
     second = _zeros()
-    second[0] = [0.1, 0.0, 0.0]  # 손목이 0.1만큼 이동
+    second[0] = [0.1, 0.0]  # 손목이 0.1만큼 이동
     extractor.push(_obs(first, timestamp_ms=1000, frame_id=1))
     features = extractor.push(_obs(second, timestamp_ms=1100, frame_id=2))  # dt=100ms
     offset = _POSITION_DIMS + len(JOINT_ANGLE_TRIPLETS)
-    velocity = features.vector[offset:offset + _POSITION_DIMS].reshape(HAND_LANDMARK_COUNT, 3)
+    velocity = features.vector[offset:offset + _POSITION_DIMS].reshape(HAND_LANDMARK_COUNT, LANDMARK_DIMS)
     # 0.1 이동 / 0.1초 = 1.0/초
     assert velocity[0, 0] == pytest.approx(1.0)
 
@@ -112,21 +113,21 @@ def test_acceleration_from_velocity_change() -> None:
     extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=False))
     f0 = _zeros()
     f1 = _zeros()
-    f1[0] = [0.1, 0.0, 0.0]
+    f1[0] = [0.1, 0.0]
     f2 = _zeros()
-    f2[0] = [0.3, 0.0, 0.0]  # 속도 증가
+    f2[0] = [0.3, 0.0]  # 속도 증가
     extractor.push(_obs(f0, timestamp_ms=1000, frame_id=1))
     extractor.push(_obs(f1, timestamp_ms=1100, frame_id=2))  # v=1.0
     features = extractor.push(_obs(f2, timestamp_ms=1200, frame_id=3))  # v=2.0, a=(2-1)/0.1=10
     offset = _POSITION_DIMS + len(JOINT_ANGLE_TRIPLETS) + _POSITION_DIMS
-    accel = features.vector[offset:offset + _POSITION_DIMS].reshape(HAND_LANDMARK_COUNT, 3)
+    accel = features.vector[offset:offset + _POSITION_DIMS].reshape(HAND_LANDMARK_COUNT, LANDMARK_DIMS)
     assert accel[0, 0] == pytest.approx(10.0)
 
 
 def test_lost_tracking_resets_history_and_zeros_features() -> None:
     extractor = HandFeatureExtractor()
     moving = _zeros()
-    moving[0] = [0.1, 0.0, 0.0]
+    moving[0] = [0.1, 0.0]
     extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1))
     lost = extractor.push(_obs(_zeros(), timestamp_ms=1050, frame_id=2, hand_detected=False))
     assert not lost.hand_detected
@@ -142,7 +143,7 @@ def test_large_frame_gap_resets_history() -> None:
     config = GestureConfig(max_frame_gap_ms=200)
     extractor = HandFeatureExtractor(config)
     moving = _zeros()
-    moving[0] = [0.1, 0.0, 0.0]
+    moving[0] = [0.1, 0.0]
     extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1))
     # 500ms 공백 > 200ms → 리셋, 이 프레임 속도 0
     features = extractor.push(_obs(moving, timestamp_ms=1500, frame_id=2))
@@ -154,7 +155,7 @@ def test_large_frame_gap_resets_history() -> None:
 def test_out_of_order_timestamp_does_not_crash_or_fabricate() -> None:
     extractor = HandFeatureExtractor()
     moving = _zeros()
-    moving[0] = [0.1, 0.0, 0.0]
+    moving[0] = [0.1, 0.0]
     extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1))
     # timestamp 역전 → dt<=0, 리셋되어 속도 0
     features = extractor.push(_obs(moving, timestamp_ms=900, frame_id=2))
@@ -239,10 +240,10 @@ def test_last_landmarks_exposes_the_model_input() -> None:
     extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=True))
     assert extractor.last_landmarks is None  # 첫 push 전
     lm = _zeros()
-    lm[0] = [0.2, 0.1, 0.0]
+    lm[0] = [0.2, 0.1]
     features = extractor.push(_obs(lm, timestamp_ms=1000, frame_id=1))
     exposed = extractor.last_landmarks
-    assert exposed is not None and exposed.shape == (21, 3)
+    assert exposed is not None and exposed.shape == (21, LANDMARK_DIMS)
     # feature 벡터의 위치 블록(모델 입력)과 동일해야 한다.
     np.testing.assert_allclose(exposed.reshape(-1), features.vector[:_POSITION_DIMS])
     # 추적 손실 뒤에는 다시 None.
@@ -254,7 +255,7 @@ def test_smoothing_resets_on_tracking_loss() -> None:
     """추적 손실 뒤 첫 프레임은 평활화 상태가 리셋되어 속도 0(공백 미연결)."""
     extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=True))
     moving = _zeros()
-    moving[0] = [0.3, 0.0, 0.0]
+    moving[0] = [0.3, 0.0]
     extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1))
     extractor.push(_obs(_zeros(), timestamp_ms=1033, frame_id=2, hand_detected=False))
     after = extractor.push(_obs(moving, timestamp_ms=1066, frame_id=3))
