@@ -15,7 +15,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 if TYPE_CHECKING:
-    from jarvis.calibration.registry import TargetRecord
     from jarvis.monitoring.gaze_probe import GazeSnapshot
     from jarvis.monitoring.hand_probe import HandSnapshot
 
@@ -83,20 +82,7 @@ def _text_block(frame: Frame, lines: list[tuple[str, tuple[int, int, int]]], ori
         cv2.putText(frame, text, (x + 5, ty), _FONT, 0.48, color, 1, cv2.LINE_AA)
 
 
-def _direction_point(yaw: float, pitch: float, width: int, height: int) -> tuple[int, int]:
-    """Debug projection: +/-45 degrees maps around frame center."""
-    return (
-        int(np.clip(width * 0.5 + yaw / 90.0 * width, 0, width - 1)),
-        int(np.clip(height * 0.5 - pitch / 90.0 * height, 0, height - 1)),
-    )
-
-
-def draw_gaze_overlay(
-    frame: Frame,
-    snapshot: GazeSnapshot,
-    targets: list[TargetRecord] | None = None,
-    registration_samples: list[tuple[float, float]] | None = None,
-) -> Frame:
+def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
     """Overlay the live Gaze pipeline result: gaze ray, head angles, lock state.
 
     Everything drawn comes from the real snapshot. Tracking loss is shown as a
@@ -106,32 +92,6 @@ def draw_gaze_overlay(
     h, w = frame.shape[:2]
     white = (235, 235, 235)
     grey = (170, 170, 170)
-
-    for target in targets or []:
-        point = _direction_point(target.direction.yaw, target.direction.pitch, w, h)
-        radius = max(
-            8,
-            int(max(target.spread.yaw / 90.0 * w, target.spread.pitch / 90.0 * h)),
-        )
-        color = (
-            (80, 200, 80)
-            if str(snapshot.lock_state) == "TARGET_LOCKED" and snapshot.target == target.target_id
-            else (255, 170, 40)
-        )
-        cv2.circle(frame, point, radius, color, 2, cv2.LINE_AA)
-        cv2.putText(
-            frame,
-            target.name,
-            (point[0] + 6, point[1] - 6),
-            _FONT,
-            0.4,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
-
-    for yaw, pitch in registration_samples or []:
-        cv2.circle(frame, _direction_point(yaw, pitch, w, h), 2, (200, 80, 220), -1)
 
     if snapshot.tracking_lost:
         cv2.rectangle(frame, (0, h - 30), (w, h), (0, 0, 0), thickness=-1)
@@ -160,10 +120,6 @@ def draw_gaze_overlay(
         tip = (int(center[0] + dx * scale), int(center[1] + dy * scale))
         cv2.circle(frame, center, 4, ray_color, thickness=-1)
         cv2.arrowedLine(frame, center, tip, ray_color, 2, cv2.LINE_AA, tipLength=0.2)
-        from jarvis.gaze.direction import direction_to_yaw_pitch
-
-        yaw, pitch = direction_to_yaw_pitch(np.array(snapshot.smoothed_gaze_direction))
-        cv2.circle(frame, _direction_point(yaw, pitch, w, h), 5, (235, 235, 235), -1)
 
     stability = snapshot.smoothed_stability
     lines: list[tuple[str, tuple[int, int, int]]] = [

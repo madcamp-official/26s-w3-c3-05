@@ -62,8 +62,7 @@ def test_registry_round_trip_and_nearby_warning_data(tmp_path: Path) -> None:
     assert loaded.get("lamp") == record
     assert loaded.nearby(12.0, 4.0) == [record]
     profile = record.to_profile()
-    assert profile.spread_yaw_deg == 5.0
-    assert profile.spread_pitch_deg == 4.0
+    assert profile.variance == pytest.approx(np_radians_squared(5.0))
 
 
 def test_registry_migrates_legacy_gaze_profile(tmp_path: Path) -> None:
@@ -90,3 +89,9 @@ def test_registry_migrates_legacy_gaze_profile(tmp_path: Path) -> None:
     assert record.direction.yaw == pytest.approx(0.0)
     assert record.direction.pitch == pytest.approx(0.0)
     assert record.spread.yaw == pytest.approx(4.0, abs=0.1)
+
+
+def np_radians_squared(degrees: float) -> float:
+    import math
+
+    return math.radians(degrees) ** 2

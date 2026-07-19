@@ -43,15 +43,11 @@ class TargetRecord:
             raise ValueError("target spread must be positive")
 
     def to_profile(self) -> DeviceGazeProfile:
-        # Classifier uses an isotropic angular variance; retain anisotropic spread
-        # in the registry for UI/matcher diagnostics and use the larger safe bound.
         radius_deg = max(self.spread.yaw, self.spread.pitch)
         return DeviceGazeProfile(
             device_id=self.target_id,
             mean_direction=yaw_pitch_to_direction(self.direction.yaw, self.direction.pitch),
             variance=math.radians(radius_deg) ** 2,
-            spread_yaw_deg=self.spread.yaw,
-            spread_pitch_deg=self.spread.pitch,
         )
 
 
@@ -143,9 +139,7 @@ class TargetRegistry:
             name=target_id,
             device_type="UNKNOWN",
             direction=TargetDirection(yaw, pitch),
-            spread=TargetSpread(
-                profile.spread_yaw_deg or radius_deg, profile.spread_pitch_deg or radius_deg
-            ),
+            spread=TargetSpread(radius_deg, radius_deg),
             device_id=target_id,
         )
 
@@ -158,8 +152,6 @@ class TargetRegistry:
             item["gaze_profile"] = {
                 "mean_direction": profile.mean_direction.tolist(),
                 "variance": profile.variance,
-                "spread_yaw_deg": profile.spread_yaw_deg,
-                "spread_pitch_deg": profile.spread_pitch_deg,
             }
             payload.append(item)
         temporary = self._path.with_suffix(self._path.suffix + ".tmp")

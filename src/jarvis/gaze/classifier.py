@@ -18,7 +18,6 @@ import numpy as np
 
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.features import Vector3
-from jarvis.gaze.direction import direction_to_yaw_pitch
 
 _MINIMUM_VARIANCE = 1e-6
 """분산이 0에 가까울 때 나눗셈이 발산하지 않도록 하는 하한값."""
@@ -35,8 +34,6 @@ class DeviceGazeProfile:
     device_id: str
     mean_direction: Vector3
     variance: float
-    spread_yaw_deg: float | None = None
-    spread_pitch_deg: float | None = None
 
     def __post_init__(self) -> None:
         if not self.device_id:
@@ -50,9 +47,6 @@ class DeviceGazeProfile:
             )
         if not math.isfinite(self.variance) or self.variance < 0:
             raise ValueError(f"DeviceGazeProfile.variance must be >= 0, got {self.variance}")
-        for spread in (self.spread_yaw_deg, self.spread_pitch_deg):
-            if spread is not None and (not math.isfinite(spread) or spread <= 0.0):
-                raise ValueError("direction spread must be finite and positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +61,6 @@ class ClassificationResult:
     target: str
     probability: float
     second_best_probability: float
-    normalized_distance: float | None = None
 
 
 def cosine_similarity(a: Vector3, b: Vector3) -> float:
@@ -108,25 +101,13 @@ class TargetClassifier:
         device_ids = list(self._profiles.keys())
         scores = np.empty(len(device_ids), dtype=np.float64)
         angular_distances = np.empty(len(device_ids), dtype=np.float64)
-        normalized_distances = np.empty(len(device_ids), dtype=np.float64)
-        gaze_yaw, gaze_pitch = direction_to_yaw_pitch(direction)
         for i, device_id in enumerate(device_ids):
             profile = self._profiles[device_id]
             similarity = cosine_similarity(direction, profile.mean_direction)
             angular_distance = math.acos(similarity)
             angular_distances[i] = angular_distance
             variance = max(profile.variance, _MINIMUM_VARIANCE)
-            if profile.spread_yaw_deg is not None and profile.spread_pitch_deg is not None:
-                target_yaw, target_pitch = direction_to_yaw_pitch(profile.mean_direction)
-                normalized_distance = math.hypot(
-                    (gaze_yaw - target_yaw) / profile.spread_yaw_deg,
-                    (gaze_pitch - target_pitch) / profile.spread_pitch_deg,
-                )
-                normalized_distances[i] = normalized_distance
-                scores[i] = math.exp(-(normalized_distance**2) / 2.0)
-            else:
-                normalized_distances[i] = math.degrees(angular_distance) / self._config.unknown_max_angle_deg
-                scores[i] = math.exp(-(angular_distance**2) / (2.0 * variance))
+            scores[i] = math.exp(-(angular_distance**2) / (2.0 * variance))
 
         score_sum = float(scores.sum())
         if score_sum <= 0.0 or not math.isfinite(score_sum):
@@ -141,25 +122,21 @@ class TargetClassifier:
         best_probability = float(probabilities[order[0]])
         second_best_probability = float(probabilities[order[1]]) if len(order) > 1 else 0.0
         best_device_id = device_ids[order[0]]
-        best_distance = float(normalized_distances[order[0]])
 
         best_angle_deg = math.degrees(float(angular_distances[order[0]]))
         if (
             best_probability < self._config.unknown_probability_threshold
             or best_angle_deg > self._config.unknown_max_angle_deg
-            or best_distance > 1.0
             or best_probability - second_best_probability < self._config.minimum_margin
         ):
             return ClassificationResult(
                 target=self._config.UNKNOWN_TARGET,
                 probability=best_probability,
                 second_best_probability=second_best_probability,
-                normalized_distance=best_distance,
             )
 
         return ClassificationResult(
             target=best_device_id,
             probability=best_probability,
             second_best_probability=second_best_probability,
-            normalized_distance=best_distance,
         )

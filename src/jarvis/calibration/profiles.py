@@ -22,8 +22,6 @@ def profile_to_dict(profile: DeviceGazeProfile) -> dict[str, object]:
         "gaze_profile": {
             "mean_direction": profile.mean_direction.tolist(),
             "variance": profile.variance,
-            "spread_yaw_deg": profile.spread_yaw_deg,
-            "spread_pitch_deg": profile.spread_pitch_deg,
         },
     }
 
@@ -41,14 +39,6 @@ def profile_from_dict(data: dict[str, object]) -> DeviceGazeProfile:
         device_id=device_id,
         mean_direction=mean_direction,
         variance=float(variance),
-        spread_yaw_deg=(
-            float(gaze_profile["spread_yaw_deg"])
-            if gaze_profile.get("spread_yaw_deg") is not None else None
-        ),
-        spread_pitch_deg=(
-            float(gaze_profile["spread_pitch_deg"])
-            if gaze_profile.get("spread_pitch_deg") is not None else None
-        ),
     )
 
 

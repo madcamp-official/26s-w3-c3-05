@@ -68,25 +68,24 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
 
 - head yaw/pitch/roll 부호 규약이 실 카메라와 맞는지 아직 확인되지 않음 — Day 1 통합
   테스트에서 확인되면 여기와 models/README.md를 갱신할 것(있으면 [decisions.md](decisions.md)로 옮기기).
-## Look-to-register calibration update (2026-07-19)
+## Device registration update (2026-07-19)
 
-Demo target registration is implemented as a user-managed target registry instead of a fixed monitor-coordinate
-calibration. The user looks at a real object for about two seconds, and the system stores that object's camera-relative
-gaze direction.
+Demo target registration follows README section 7: the user looks at a real object for about two seconds, and the
+system stores a camera-relative gaze direction profile as `mean_direction + variance`.
 
 Implemented files:
 
-- `src/jarvis/gaze/direction.py`: `CalibratedGaze(yaw, pitch, confidence, timestamp_ms)` and vector/yaw-pitch conversion.
+- `src/jarvis/gaze/direction.py`: vector/yaw-pitch conversion used only at the registration/debug boundary.
 - `src/jarvis/calibration/registry.py`: target add/update/rename/delete persistence, JSON auto-load, legacy profile migration,
-  and nearby-target warning data.
+  and conversion back to README-style `DeviceGazeProfile`.
 - `src/jarvis/calibration/target_registration.py`: two-second robust sample collection with minimum frame count,
-  confidence filtering, closed-eye filtering, jump filtering, median center, and p90 spread with a minimum 4-degree radius.
-- `src/jarvis/gaze/classifier.py`: registered target matching uses yaw/pitch elliptical distance when per-axis spread exists,
-  rejects `UNKNOWN` when distance is greater than 1.0 or first/second target margin is too small.
+  confidence filtering, closed-eye filtering, jump filtering, median center, and robust angular variance.
+- `src/jarvis/gaze/classifier.py`: registered target matching uses cosine similarity normalized by stored variance,
+  then rejects `UNKNOWN` when the nearest registered direction is too far or the first/second target margin is too small.
 - `src/jarvis/gaze/smoothing.py`: confidence-aware EMA smoothing is enabled before classification.
 - `src/jarvis/gaze/lock.py`: 300-500 ms dwell-based lock and hysteresis are handled by the existing state machine.
-- `src/jarvis/monitoring/`: debug UI can register/reregister/rename/delete targets, show current calibrated gaze,
-  registered target circles, candidate/lock state, and live registration sample dots.
+- `src/jarvis/monitoring/`: debug UI can register/reregister/rename/delete targets and show the live gaze ray,
+  candidate/lock state, and pipeline diagnostics without drawing artificial target-area circles.
 
 MVP operating assumptions:
 

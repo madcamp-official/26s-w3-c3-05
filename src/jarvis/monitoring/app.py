@@ -520,8 +520,6 @@ class VideoView(QLabel):
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
         self._hand: HandSnapshot | None = None
-        self._targets: list[TargetRecord] = []
-        self._registration_samples: list[tuple[float, float]] = []
         self._show_placeholder("카메라 시작 중…")
 
     def set_gaze(self, snapshot: GazeSnapshot) -> None:
@@ -529,12 +527,6 @@ class VideoView(QLabel):
 
     def set_hand(self, snapshot: HandSnapshot) -> None:
         self._hand = snapshot
-
-    def set_targets(self, targets: list[TargetRecord]) -> None:
-        self._targets = targets
-
-    def set_registration_samples(self, samples: list[tuple[float, float]]) -> None:
-        self._registration_samples = samples
 
     def _show_placeholder(self, text: str) -> None:
         self._render(placeholder_frame(text=text))
@@ -547,7 +539,7 @@ class VideoView(QLabel):
         h, w = frame.shape[:2]
         draw_hud(frame, [f"{w}x{h}  {fps:4.1f} FPS", f"frame #{self._frame_count}"])
         if self._gaze is not None:
-            draw_gaze_overlay(frame, self._gaze, self._targets, self._registration_samples)
+            draw_gaze_overlay(frame, self._gaze)
         if self._hand is not None:
             draw_hand_overlay(frame, self._hand)
         self._render(frame)
@@ -857,7 +849,6 @@ class MainWindow(QMainWindow):
                 and smoothed is not None
             ):
                 self._registration_points.append(direction_to_yaw_pitch(smoothed.direction))
-                self._video.set_registration_samples(self._registration_points)
             if self._registration.is_elapsed(snapshot.timestamp_ms):
                 self._finish_target_registration()
 
@@ -931,7 +922,6 @@ class MainWindow(QMainWindow):
         finally:
             self._registration = None
             self._registration_points = []
-            self._video.set_registration_samples([])
             self._register_target_button.setEnabled(True)
             self._refresh_targets()
 
@@ -973,7 +963,6 @@ class MainWindow(QMainWindow):
                 f"{record.name} [{record.target_id}]  "
                 f"yaw={record.direction.yaw:+.1f} pitch={record.direction.pitch:+.1f}"
             )
-        self._video.set_targets(self._target_registry.records)
 
     def _save_gaze_sample(self) -> None:
         if self._latest_gaze is None:
