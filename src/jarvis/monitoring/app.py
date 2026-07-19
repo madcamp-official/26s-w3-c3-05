@@ -678,7 +678,8 @@ class MainWindow(QMainWindow):
         self._target_registry = TargetRegistry(self._profiles_path)
         self._registration: TargetRegistrationSession | None = None
         self._registration_points: list[tuple[float, float]] = []
-
+        self._target_list = QListWidget()
+        self._register_target_button = QPushButton()
         self._probe = GazeProbe(
             model_path=self._model_path, profiles_path=self._profiles_path
         )
@@ -745,6 +746,8 @@ class MainWindow(QMainWindow):
             self._sample_list.addItem(format_gaze_sample(sample))
         layout.addWidget(self._sample_list)
         self._refresh_sample_button()
+        return container
+
         target_controls = QHBoxLayout()
         self._register_target_button = QPushButton("기기 바라보고 등록")
         self._register_target_button.clicked.connect(self._start_target_registration)

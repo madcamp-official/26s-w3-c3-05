@@ -257,5 +257,5 @@ class FaceLandmarkerAdapter:
             face_detected=True,
             left_eye_center_normalized=left_eye_center,
             right_eye_center_normalized=right_eye_center,
-            eyes_open=min(left_eye_open_ratio, right_eye_open_ratio) >= 0.08,
+            eyes_open=min(left_eye_open_ratio, right_eye_open_ratio) >= 0.12,
         )

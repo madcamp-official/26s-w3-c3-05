@@ -62,10 +62,10 @@ class GazeConfig:
     ema_max_alpha: float = 0.65
     """높은 confidence 프레임에 적용할 EMA 반영률."""
 
-    blink_hold_ms: int = 180
+    blink_hold_ms: int = 300
     """Short eye-closed intervals keep the last stable gaze instead of jumping."""
 
-    small_motion_deadzone_deg: float = 2.0
+    small_motion_deadzone_deg: float = 5.0
     """Ignore tiny smoothed-gaze changes below this angle to reduce jitter."""
 
     UNKNOWN_TARGET: str = "UNKNOWN"
