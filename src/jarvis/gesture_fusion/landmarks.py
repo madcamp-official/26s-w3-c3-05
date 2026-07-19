@@ -18,7 +18,7 @@ README 8장 처리 과정의 앞 두 단계를 구현한다:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -83,6 +83,12 @@ class HandObservation:
     좌표다. 따라서 카메라와의 거리·프레임 내 위치와 무관하게 같은 손 모양이면 거의
     같은 값이 나온다. 회전은 보존된다(손목 회전 제스처용).
 
+    `wrist_position`은 (3,) 배열로, 원점화하지 **않고** palm_scale로만 나눈 손목 좌표다
+    — `landmarks`가 매 프레임 손목을 (0,0,0)으로 지워 잃어버리는 손 전체의 평행이동
+    신호를 보존한다. palm_scale로 정규화해 카메라 거리에는 독립이다. feature 계층이
+    이를 causal 차분해 손목 이동 속도·가속도(swipe 판별 신호)를 만든다
+    (documents/decisions.md 2026-07-19). 추적 손실 프레임에서는 0벡터다.
+
     `detection_confidence`/`handedness_score`의 의미는 `RawHandLandmarks`와 같다
     (전자는 검출 신뢰도, 후자는 Left/Right 분류 신뢰도). 소스가 보고한 값을
     가공 없이 전파한다.
@@ -100,6 +106,11 @@ class HandObservation:
     detection_confidence: float
     handedness_score: float
     hand_detected: bool
+    # palm_scale로만 정규화한(원점화 없는) 손목 좌표. 기본값 0벡터 = 평행이동 신호 없음.
+    # 실사용 경로(normalize_hand)는 항상 실제 값을 채운다.
+    wrist_position: FloatArray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
 
     def __post_init__(self) -> None:
         if self.timestamp_ms < 0 or self.frame_id < 0:
@@ -110,6 +121,12 @@ class HandObservation:
             )
         if not np.all(np.isfinite(self.landmarks)):
             raise ValueError("normalized landmarks must all be finite")
+        if self.wrist_position.shape != (3,):
+            raise ValueError(
+                f"wrist_position must have shape (3,), got {self.wrist_position.shape}"
+            )
+        if not np.all(np.isfinite(self.wrist_position)):
+            raise ValueError("wrist_position must be finite")
         if not math.isfinite(self.palm_scale) or self.palm_scale < 0.0:
             raise ValueError("palm_scale must be finite and non-negative")
         if not math.isfinite(self.detection_confidence) or not 0.0 <= self.detection_confidence <= 1.0:
@@ -129,6 +146,7 @@ def _lost_tracking_observation(timestamp_ms: int, frame_id: int) -> HandObservat
         detection_confidence=0.0,
         handedness_score=0.0,
         hand_detected=False,
+        wrist_position=np.zeros(3, dtype=np.float64),
     )
 
 
@@ -156,6 +174,10 @@ def normalize_hand(
     #    원점(origin_index)과 스케일 기준(palm_scale_root_index)은 별개 설정이다.
     origin = raw.points[config.origin_index]
     normalized = (raw.points - origin) / palm_scale
+    # 손목 평행이동 신호: 원점화하지 않고 palm_scale로만 정규화해 손 전체의 위치를
+    # 보존한다(카메라 거리 독립). normalized에서는 손목이 항상 (0,0,0)이라 이 신호가
+    # 사라지므로, 여기서 따로 남겨 feature 계층이 미분한다.
+    wrist_position = origin / palm_scale
 
     return HandObservation(
         timestamp_ms=raw.timestamp_ms,
@@ -166,6 +188,7 @@ def normalize_hand(
         detection_confidence=raw.detection_confidence,
         handedness_score=raw.handedness_score,
         hand_detected=True,
+        wrist_position=wrist_position.astype(np.float64, copy=False),
     )
 
 

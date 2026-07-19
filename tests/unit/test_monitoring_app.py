@@ -41,6 +41,59 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
         app.processEvents()
 
 
+def test_hand_panel_renders_wrist_vectors_and_tracking_loss() -> None:
+    """손 추적 탭이 손목 이동 속도·가속도 벡터를 표시하고, 추적 손실도 예외 없이 처리한다."""
+    from jarvis.monitoring.app import HandPanel
+    from jarvis.monitoring.hand_probe import HandSnapshot
+
+    app = QApplication.instance() or QApplication([])
+    panel = HandPanel("probe live", "제스처 인식 비활성", smoothing=True)
+    try:
+        detected = HandSnapshot(
+            timestamp_ms=0,
+            frame_id=1,
+            hand_detected=True,
+            handedness="Right",
+            handedness_score=0.9,
+            detection_confidence=0.9,
+            palm_scale=0.2,
+            image_points=None,
+            model_points=None,
+            model_points_raw=None,
+            landmark_count=21,
+            inference_ms=5.0,
+            smoothed=True,
+            wrist_velocity=(2.0, -1.0, 0.3),
+            wrist_acceleration=(0.5, 0.1, 0.0),
+        )
+        panel.update_snapshot(detected)
+        assert "‖·‖" in panel._velocity_view._magnitude.text()
+        assert "‖·‖" in panel._accel_view._magnitude.text()
+
+        lost = HandSnapshot(
+            timestamp_ms=33,
+            frame_id=2,
+            hand_detected=False,
+            handedness="",
+            handedness_score=0.0,
+            detection_confidence=0.0,
+            palm_scale=0.0,
+            image_points=None,
+            model_points=None,
+            model_points_raw=None,
+            landmark_count=0,
+            inference_ms=5.0,
+            smoothed=True,
+            wrist_velocity=None,
+            wrist_acceleration=None,
+        )
+        panel.update_snapshot(lost)  # None 벡터 → "히스토리 없음", 예외 없이
+        assert "히스토리 없음" in panel._velocity_view._magnitude.text()
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
 def test_startup_logs_gesture_recognition_off() -> None:
     """The gesture pipeline exists but its model is untrained — startup says so
     honestly ("미학습"), never claiming recognition is running."""

@@ -18,6 +18,7 @@ detection is faked, and the untrained gesture model is never shown as recognizin
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 import time
 from collections import deque
@@ -261,6 +262,84 @@ class GazePanel(QScrollArea):
         )
 
 
+class _AxisBar(QWidget):
+    """One vector component: axis name + |value|/scale bar (signed color) + value."""
+
+    def __init__(self, axis: str) -> None:
+        super().__init__()
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 1, 0, 1)
+        name = QLabel(axis)
+        name.setFixedWidth(14)
+        name.setStyleSheet("color:#8b949e;")
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 1000)
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(10)
+        self._value = QLabel("   --")
+        self._value.setMinimumWidth(76)
+        self._value.setStyleSheet(_MONO)
+        layout.addWidget(name)
+        layout.addWidget(self._bar, 1)
+        layout.addWidget(self._value)
+
+    def set_value(self, value: float | None, scale: float) -> None:
+        if value is None:
+            self._bar.setValue(0)
+            self._value.setText("   --")
+            return
+        frac = min(1.0, abs(value) / scale) if scale > 0 else 0.0
+        self._bar.setValue(int(frac * 1000))
+        # green = 양(+) 방향, 주황 = 음(−) 방향 — 부호(=이동 방향)를 색으로도 드러낸다.
+        color = "#3fb950" if value >= 0 else "#f0883e"
+        self._bar.setStyleSheet(f"QProgressBar::chunk{{background:{color};}}")
+        self._value.setText(f"{value:+9.3f}")
+
+
+class VectorView(QWidget):
+    """A titled 3-component (x/y/z) vector display — one model-input signal.
+
+    Bars are scaled by a running maximum magnitude (per view), so both the small
+    velocities of a still hand and the large ones of a fast swipe stay readable
+    without hardcoding a scale that only fits the demo.
+    """
+
+    _AXES = ("x", "y", "z")
+
+    def __init__(self, title: str, subtitle: str) -> None:
+        super().__init__()
+        self.setMinimumWidth(196)
+        self.setMaximumWidth(268)
+        layout = QVBoxLayout(self)
+        layout.addWidget(_header(title))
+        sub = QLabel(subtitle)
+        sub.setWordWrap(True)
+        sub.setStyleSheet("color:#6e7681; font-size:11px;")
+        layout.addWidget(sub)
+        self._axes: dict[str, _AxisBar] = {}
+        for axis in self._AXES:
+            bar = _AxisBar(axis)
+            self._axes[axis] = bar
+            layout.addWidget(bar)
+        self._magnitude = QLabel("‖·‖    --")
+        self._magnitude.setStyleSheet(_MONO + " color:#58a6ff;")
+        layout.addWidget(self._magnitude)
+        layout.addStretch(1)
+        self._scale = 1e-6  # running max component magnitude, floors bar scaling
+
+    def set_vector(self, vec: tuple[float, float, float] | None) -> None:
+        if vec is None:
+            for bar in self._axes.values():
+                bar.set_value(None, self._scale)
+            self._magnitude.setText("‖·‖    --   (히스토리 없음)")
+            return
+        self._scale = max(self._scale, abs(vec[0]), abs(vec[1]), abs(vec[2]))
+        for axis, value in zip(self._AXES, vec, strict=True):
+            self._axes[axis].set_value(value, self._scale)
+        magnitude = math.sqrt(sum(component * component for component in vec))
+        self._magnitude.setText(f"‖·‖ {magnitude:9.3f}")
+
+
 class HandPanel(QScrollArea):
     """Live MediaPipe hand-tracking view + honest gesture-recognition status."""
 
@@ -275,12 +354,29 @@ class HandPanel(QScrollArea):
         super().__init__()
         self.setWidgetResizable(True)
         body = QWidget()
-        layout = QVBoxLayout(body)
+        outer = QVBoxLayout(body)
 
         self._status = QLabel(probe_status)
         self._status.setWordWrap(True)
         self._status.setStyleSheet("color:#d29922; padding:2px 0;")
-        layout.addWidget(self._status)
+        outer.addWidget(self._status)
+
+        # Three columns: the wide empty space either side of the (square) model-input
+        # canvas now shows the two wrist-translation vectors the model consumes.
+        columns = QHBoxLayout()
+        columns.setContentsMargins(0, 0, 0, 0)
+        columns.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self._velocity_view = VectorView(
+            "손목 이동 속도 (모델 입력)",
+            "정규화 손목 평행이동의 속도 (palm-width/s · x·y·z). 손목 원점 정규화로 "
+            "landmark 블록에서 지워지는 swipe 신호를 이 벡터가 담아 모델에 넣는다.",
+        )
+        columns.addWidget(self._velocity_view, 0)
+
+        center = QWidget()
+        layout = QVBoxLayout(center)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # The faithful debug view: the exact normalized landmarks the model consumes.
         layout.addWidget(_header("모델 입력 정점 (실제 · 정규화 좌표)"))
@@ -318,13 +414,25 @@ class HandPanel(QScrollArea):
         note = QLabel(
             "위 캔버스는 모델이 실제로 소비하는 정점(정규화·손목 원점)을 그대로 그린다 — "
             "웹캠 스켈레톤(raw 검출 위치)과 달리 이게 모델 입력이다. 손목이 원점(파란 점)이라 "
-            "절대 위치는 빠져 있고, 그래서 웹캠은 흔들려도 이 캔버스는 안정적이다. "
-            "제스처 이름·phase는 분류 모델 학습 후에만 의미가 있어 지금은 표시하지 않는다."
+            "이 캔버스에서 빠지는 손 전체의 평행이동(swipe)은 양옆의 손목 이동 속도·가속도 "
+            "벡터가 대신 담아 모델에 함께 들어간다. 그래서 웹캠은 흔들려도 이 캔버스는 "
+            "안정적이다. 제스처 이름·phase는 분류 모델 학습 후에만 의미가 있어 지금은 표시하지 않는다."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#6e7681; padding-top:8px;")
         layout.addWidget(note)
         layout.addStretch(1)
+        columns.addWidget(center, 1)
+
+        self._accel_view = VectorView(
+            "손목 이동 가속도 (모델 입력)",
+            "손목 이동 속도의 프레임 간 변화 (palm-width/s² · x·y·z). swipe의 시작·끝 "
+            "(가속·감속) 순간을 드러내 onset/ending 판정을 돕는다.",
+        )
+        columns.addWidget(self._accel_view, 0)
+
+        outer.addLayout(columns)
+        outer.addStretch(1)
         self.setWidget(body)
 
     def update_snapshot(self, s: HandSnapshot) -> None:
@@ -356,6 +464,10 @@ class HandPanel(QScrollArea):
             )
         else:
             self._numeric.setText("손 없음 (추적 손실)")
+
+        # 양옆 벡터 뷰: 모델에 들어가는 손목 평행이동 속도·가속도(추적 손실·첫 프레임 None).
+        self._velocity_view.set_vector(s.wrist_velocity)
+        self._accel_view.set_vector(s.wrist_acceleration)
 
 
 class ContractPanel(QFrame):

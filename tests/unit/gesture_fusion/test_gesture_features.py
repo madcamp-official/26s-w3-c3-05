@@ -33,6 +33,7 @@ def _obs(
     timestamp_ms: int,
     frame_id: int,
     hand_detected: bool = True,
+    wrist_position: object = None,
 ) -> HandObservation:
     return HandObservation(
         timestamp_ms=timestamp_ms,
@@ -43,6 +44,11 @@ def _obs(
         detection_confidence=0.9,
         handedness_score=0.9,
         hand_detected=hand_detected,
+        wrist_position=(
+            np.zeros(3, dtype=np.float64)
+            if wrist_position is None
+            else np.asarray(wrist_position, dtype=np.float64)
+        ),
     )
 
 
@@ -180,6 +186,7 @@ def test_disabling_groups_shrinks_vector() -> None:
         include_joint_angles=True,
         include_velocity=False,
         include_acceleration=False,
+        include_wrist_translation=False,
     )
     assert feature_dimension(config) == _POSITION_DIMS + len(JOINT_ANGLE_TRIPLETS)
     extractor = HandFeatureExtractor(config)
@@ -193,6 +200,7 @@ def test_angles_only_config() -> None:
         include_joint_angles=True,
         include_velocity=False,
         include_acceleration=False,
+        include_wrist_translation=False,
     )
     assert feature_dimension(config) == len(JOINT_ANGLE_TRIPLETS)
 
@@ -259,3 +267,96 @@ def test_smoothing_resets_on_tracking_loss() -> None:
     extractor.push(_obs(_zeros(), timestamp_ms=1033, frame_id=2, hand_detected=False))
     after = extractor.push(_obs(moving, timestamp_ms=1066, frame_id=3))
     assert np.all(_velocity_block(after) == 0.0)
+
+
+# --- 손목 평행이동 (swipe 신호 복원, decisions.md 2026-07-19) ---
+
+_WRIST_DIMS = 3
+
+
+def _wrist_velocity_block(features: object) -> np.ndarray:
+    # 손목 그룹은 벡터 맨 뒤에 속도(3)+가속도(3) 순으로 붙는다.
+    return features.vector[-2 * _WRIST_DIMS:][:_WRIST_DIMS]  # type: ignore[attr-defined]
+
+
+def _wrist_acceleration_block(features: object) -> np.ndarray:
+    return features.vector[-2 * _WRIST_DIMS:][_WRIST_DIMS:]  # type: ignore[attr-defined]
+
+
+def test_wrist_translation_adds_six_velocity_accel_dims() -> None:
+    without = GestureConfig(include_wrist_translation=False)
+    with_wrist = GestureConfig(include_wrist_translation=True)
+    assert feature_dimension(with_wrist) - feature_dimension(without) == 2 * _WRIST_DIMS
+
+
+def test_wrist_translation_is_on_by_default() -> None:
+    assert GestureConfig().include_wrist_translation is True
+
+
+def test_wrist_velocity_is_per_second_causal_difference() -> None:
+    extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=False))
+    extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1, wrist_position=[0.0, 0.0, 0.0]))
+    features = extractor.push(
+        _obs(_zeros(), timestamp_ms=1100, frame_id=2, wrist_position=[0.2, 0.0, 0.0])
+    )
+    # 손목 0.2 이동 / 0.1초 = 2.0/초.
+    velocity = _wrist_velocity_block(features)
+    assert velocity[0] == pytest.approx(2.0)
+    assert velocity[1] == pytest.approx(0.0)
+    assert velocity[2] == pytest.approx(0.0)
+
+
+def test_pure_translation_invisible_in_landmarks_but_visible_in_wrist() -> None:
+    """이 그룹의 존재 이유: 손 모양이 그대로인 순수 평행이동에서 landmark 속도는 0이지만
+    손목 이동 속도는 살아 있어야 한다 — swipe를 구분할 유일한 신호."""
+    extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=False))
+    shape = _zeros()
+    shape[8] = [0.5, 0.5, 0.0]  # 고정된 손 모양(정규화 좌표는 매 프레임 동일)
+    extractor.push(_obs(shape, timestamp_ms=1000, frame_id=1, wrist_position=[0.0, 0.0, 0.0]))
+    features = extractor.push(
+        _obs(shape, timestamp_ms=1100, frame_id=2, wrist_position=[0.3, 0.0, 0.0])
+    )
+    # landmark(위치·속도) 블록은 이동을 전혀 못 본다.
+    assert np.all(_velocity_block(features) == 0.0)
+    # 손목 평행이동 속도만 신호를 담는다: 0.3/0.1s = 3.0.
+    assert _wrist_velocity_block(features)[0] == pytest.approx(3.0)
+
+
+def test_wrist_acceleration_from_velocity_change() -> None:
+    extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=False))
+    extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1, wrist_position=[0.0, 0.0, 0.0]))
+    extractor.push(_obs(_zeros(), timestamp_ms=1100, frame_id=2, wrist_position=[0.1, 0.0, 0.0]))  # v=1.0
+    features = extractor.push(
+        _obs(_zeros(), timestamp_ms=1200, frame_id=3, wrist_position=[0.3, 0.0, 0.0])
+    )  # v=2.0, a=(2-1)/0.1=10
+    assert _wrist_acceleration_block(features)[0] == pytest.approx(10.0)
+
+
+def test_last_wrist_vectors_expose_model_input() -> None:
+    extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=False))
+    assert extractor.last_wrist_velocity is None
+    assert extractor.last_wrist_acceleration is None
+    extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1, wrist_position=[0.0, 0.0, 0.0]))
+    features = extractor.push(
+        _obs(_zeros(), timestamp_ms=1100, frame_id=2, wrist_position=[0.2, 0.0, 0.0])
+    )
+    velocity = extractor.last_wrist_velocity
+    acceleration = extractor.last_wrist_acceleration
+    assert velocity is not None and acceleration is not None
+    np.testing.assert_allclose(velocity, _wrist_velocity_block(features))
+    np.testing.assert_allclose(acceleration, _wrist_acceleration_block(features))
+    # 추적 손실 뒤에는 다시 None.
+    extractor.push(_obs(_zeros(), timestamp_ms=1133, frame_id=3, hand_detected=False))
+    assert extractor.last_wrist_velocity is None
+    assert extractor.last_wrist_acceleration is None
+
+
+def test_wrist_translation_resets_on_tracking_loss() -> None:
+    """손실 뒤 첫 프레임은 손목 히스토리도 리셋되어 속도 0(공백 넘는 허위 이동 금지)."""
+    extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=False))
+    extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1, wrist_position=[0.0, 0.0, 0.0]))
+    extractor.push(_obs(_zeros(), timestamp_ms=1033, frame_id=2, hand_detected=False))
+    after = extractor.push(
+        _obs(_zeros(), timestamp_ms=1066, frame_id=3, wrist_position=[0.5, 0.0, 0.0])
+    )
+    assert np.all(_wrist_velocity_block(after) == 0.0)

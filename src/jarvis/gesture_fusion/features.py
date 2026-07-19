@@ -35,6 +35,7 @@ from jarvis.gesture_fusion.smoothing import OneEuroFilter
 FloatArray = npt.NDArray[np.float64]
 
 _POSITION_DIMS = HAND_LANDMARK_COUNT * 3
+_WRIST_DIMS = 3  # 손목 평행이동 벡터(x, y, z) 한 개의 차원
 
 
 def compute_joint_angles(
@@ -94,6 +95,8 @@ def feature_dimension(config: GestureConfig = DEFAULT_GESTURE_CONFIG) -> int:
         dims += _POSITION_DIMS
     if config.include_acceleration:
         dims += _POSITION_DIMS
+    if config.include_wrist_translation:
+        dims += 2 * _WRIST_DIMS  # 손목 평행이동 속도 + 가속도
     return dims
 
 
@@ -112,15 +115,37 @@ class HandFeatureExtractor:
         self._prev_landmarks: FloatArray | None = None
         self._prev_velocity: FloatArray | None = None
         self._prev_timestamp_ms: int | None = None
+        # Wrist translation history — differenced with the SAME dt as the landmark
+        # features so wrist velocity/acceleration share their timing and reset rules.
+        self._prev_wrist_position: FloatArray | None = None
+        self._prev_wrist_velocity: FloatArray | None = None
         # The exact (smoothed, if enabled) landmarks fed to the model this frame,
         # exposed read-only so a debugging view can show the real model input
         # rather than a separate approximation. None until the first valid frame
         # and after a reset/tracking loss.
         self._last_landmarks: FloatArray | None = None
+        # The wrist translation velocity/acceleration actually fed to the model this
+        # frame, exposed read-only for the same debugging view. None until the first
+        # valid frame and after a reset/tracking loss.
+        self._last_wrist_velocity: FloatArray | None = None
+        self._last_wrist_acceleration: FloatArray | None = None
         # Smooth the landmark positions before differencing so per-frame jitter
         # is not amplified into the velocity/acceleration features. Disabled by
         # config for tests that isolate the raw differentiation math.
         self._smoother: OneEuroFilter | None = (
+            OneEuroFilter(
+                min_cutoff=config.smoothing_min_cutoff,
+                beta=config.smoothing_beta,
+                d_cutoff=config.smoothing_d_cutoff,
+            )
+            if config.smooth_landmarks
+            else None
+        )
+        # A separate One-Euro state for the wrist translation signal: it must be
+        # smoothed before differencing for the same reason as the landmarks (palm_scale
+        # and the wrist point both jitter), but it is a different (3,) signal so it
+        # cannot share the landmark filter's per-coordinate state.
+        self._wrist_smoother: OneEuroFilter | None = (
             OneEuroFilter(
                 min_cutoff=config.smoothing_min_cutoff,
                 beta=config.smoothing_beta,
@@ -143,14 +168,39 @@ class HandFeatureExtractor:
         """
         return None if self._last_landmarks is None else self._last_landmarks.copy()
 
+    @property
+    def last_wrist_velocity(self) -> FloatArray | None:
+        """이 프레임 모델에 들어간 손목 평행이동 속도 (3,). 추적 손실·리셋 후 None.
+
+        `last_landmarks`와 같은 목적 — 디버깅 뷰가 "모델이 실제로 보는 손목 이동 속도"를
+        그대로 표시한다(평활화 여부 반영). `include_wrist_translation`가 꺼져 있어도
+        값 자체는 계산해 노출하지만, 그 경우 feature 벡터에는 들어가지 않는다.
+        """
+        return None if self._last_wrist_velocity is None else self._last_wrist_velocity.copy()
+
+    @property
+    def last_wrist_acceleration(self) -> FloatArray | None:
+        """이 프레임 모델에 들어간 손목 평행이동 가속도 (3,). 추적 손실·리셋 후 None."""
+        return (
+            None
+            if self._last_wrist_acceleration is None
+            else self._last_wrist_acceleration.copy()
+        )
+
     def reset(self) -> None:
         """속도·가속도 history와 평활화 상태를 비운다(추적 손실·시퀀스 경계에서 호출)."""
         self._prev_landmarks = None
         self._prev_velocity = None
         self._prev_timestamp_ms = None
+        self._prev_wrist_position = None
+        self._prev_wrist_velocity = None
         self._last_landmarks = None
+        self._last_wrist_velocity = None
+        self._last_wrist_acceleration = None
         if self._smoother is not None:
             self._smoother.reset()
+        if self._wrist_smoother is not None:
+            self._wrist_smoother.reset()
 
     def push(self, observation: HandObservation) -> FrameFeatures:
         """관측값 하나를 처리해 이 프레임의 feature를 반환한다(과거만 사용)."""
@@ -177,12 +227,38 @@ class HandFeatureExtractor:
             dt_s = dt_ms / 1000.0
             acceleration = (velocity - self._prev_velocity) / dt_s
 
-        vector = self._assemble(landmarks, velocity, acceleration)
+        # 손목 평행이동도 같은 dt로 causal 차분한다. 미분 전에 (설정 시) 평활화해
+        # palm_scale·손목 점의 지터가 속도로 증폭되지 않게 한다 — 랜드마크와 동일 규칙.
+        wrist_position = observation.wrist_position
+        if self._wrist_smoother is not None:
+            wrist_position = self._wrist_smoother.filter(
+                wrist_position, observation.timestamp_ms
+            )
+
+        if dt_ms is None or self._prev_wrist_position is None:
+            wrist_velocity = np.zeros(_WRIST_DIMS, dtype=np.float64)
+        else:
+            dt_s = dt_ms / 1000.0
+            wrist_velocity = (wrist_position - self._prev_wrist_position) / dt_s
+
+        if dt_ms is None or self._prev_wrist_velocity is None:
+            wrist_acceleration = np.zeros(_WRIST_DIMS, dtype=np.float64)
+        else:
+            dt_s = dt_ms / 1000.0
+            wrist_acceleration = (wrist_velocity - self._prev_wrist_velocity) / dt_s
+
+        vector = self._assemble(
+            landmarks, velocity, acceleration, wrist_velocity, wrist_acceleration
+        )
 
         self._prev_landmarks = flat
         self._prev_velocity = velocity
+        self._prev_wrist_position = wrist_position
+        self._prev_wrist_velocity = wrist_velocity
         self._prev_timestamp_ms = observation.timestamp_ms
         self._last_landmarks = landmarks
+        self._last_wrist_velocity = wrist_velocity
+        self._last_wrist_acceleration = wrist_acceleration
 
         return FrameFeatures(
             timestamp_ms=observation.timestamp_ms,
@@ -208,6 +284,8 @@ class HandFeatureExtractor:
         landmarks: FloatArray,
         velocity: FloatArray,
         acceleration: FloatArray,
+        wrist_velocity: FloatArray,
+        wrist_acceleration: FloatArray,
     ) -> FloatArray:
         parts: list[FloatArray] = []
         if self._config.include_positions:
@@ -218,6 +296,11 @@ class HandFeatureExtractor:
             parts.append(velocity)
         if self._config.include_acceleration:
             parts.append(acceleration)
+        # 손목 평행이동 그룹은 기존 4개 그룹 뒤에 순수 추가한다(속도 → 가속도 순).
+        # 기존 그룹의 오프셋을 바꾸지 않아 학습된 가중치·기존 슬라이스가 그대로 유효하다.
+        if self._config.include_wrist_translation:
+            parts.append(wrist_velocity)
+            parts.append(wrist_acceleration)
         return np.concatenate(parts).astype(np.float64, copy=False)
 
     def _empty_features(self, observation: HandObservation) -> FrameFeatures:

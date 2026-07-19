@@ -37,6 +37,13 @@ from jarvis.gesture_fusion.landmarks import RawHandLandmarks, normalize_hand
 Point2D = tuple[float, float]
 
 
+def _as_vec3(vec: npt.NDArray[np.float64] | None) -> tuple[float, float, float] | None:
+    """Convert a length-3 array to a plain float tuple for the UI (None passes through)."""
+    if vec is None:
+        return None
+    return (float(vec[0]), float(vec[1]), float(vec[2]))
+
+
 @dataclass(frozen=True, slots=True)
 class HandSnapshot:
     """Real hand-tracking result for one frame (no gesture recognition).
@@ -66,6 +73,14 @@ class HandSnapshot:
     inference_ms: float
     # whether ``model_points`` reflects the smoothing the model actually applies.
     smoothed: bool
+    # The wrist-translation feature the model consumes this frame: normalized
+    # (palm-scaled, camera-distance independent) wrist velocity and acceleration,
+    # each (x, y, z) in palm-widths/second. None when lost or on the first frame
+    # after a reset (no causal history yet). This is the signal that makes a pure
+    # translation (swipe) visible even though wrist-origin normalization zeroes it
+    # out of the landmark block.
+    wrist_velocity: tuple[float, float, float] | None
+    wrist_acceleration: tuple[float, float, float] | None
 
 
 def _gesture_recognition_status() -> str:
@@ -218,6 +233,8 @@ class HandProbe:
         image_points = tuple((float(p[0]), float(p[1])) for p in points)
         model_points = None if model is None else tuple((float(p[0]), float(p[1])) for p in model)
         model_points_raw = tuple((float(p[0]), float(p[1])) for p in observation.landmarks)
+        wrist_velocity = _as_vec3(self._extractor.last_wrist_velocity)
+        wrist_acceleration = _as_vec3(self._extractor.last_wrist_acceleration)
         return HandSnapshot(
             timestamp_ms=timestamp_ms,
             frame_id=frame_id,
@@ -232,6 +249,8 @@ class HandProbe:
             landmark_count=len(image_points),
             inference_ms=inference_ms,
             smoothed=self._smoothing,
+            wrist_velocity=wrist_velocity,
+            wrist_acceleration=wrist_acceleration,
         )
 
     @staticmethod
@@ -259,6 +278,8 @@ class HandProbe:
             landmark_count=0,
             inference_ms=inference_ms,
             smoothed=self._smoothing,
+            wrist_velocity=None,
+            wrist_acceleration=None,
         )
 
     def close(self) -> None:
