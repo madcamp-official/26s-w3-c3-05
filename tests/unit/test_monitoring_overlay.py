@@ -35,6 +35,7 @@ def _hand_snapshot(*, detected: bool) -> HandSnapshot:
         image_points=points,
         landmark_count=21 if detected else 0,
         inference_ms=7.0,
+        smoothed=True,
     )
 
 

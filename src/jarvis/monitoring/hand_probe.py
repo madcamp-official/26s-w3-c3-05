@@ -32,6 +32,7 @@ import numpy.typing as npt
 
 from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG, GestureConfig
 from jarvis.gesture_fusion.landmarks import RawHandLandmarks, normalize_hand
+from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +51,8 @@ class HandSnapshot:
     image_points: tuple[tuple[float, float], ...] | None
     landmark_count: int
     inference_ms: float
+    # whether these landmark coordinates were One-Euro smoothed for display
+    smoothed: bool
 
 
 def _gesture_recognition_status() -> str:
@@ -81,6 +84,7 @@ class HandProbe:
         *,
         model_path: Path | None,
         config: GestureConfig = DEFAULT_GESTURE_CONFIG,
+        smoothing: bool = True,
     ) -> None:
         self._model_path = model_path
         self._config = config
@@ -88,10 +92,31 @@ class HandProbe:
         self._available = False
         self._status_text = "hand 프로브 미시작"
         self._gesture_status = _gesture_recognition_status()
+        self._smoothing = smoothing
+        # Reuse the exact One-Euro filter the model-input path uses (gesture_fusion),
+        # with the same config params, so the displayed skeleton is smoothed the
+        # same way the model's features are — not a different, ad-hoc filter. It is
+        # applied to image-space landmarks here (the model smooths its normalized
+        # copy), so they are consistent in method, not identical in coordinates.
+        self._filter = OneEuroFilter(
+            min_cutoff=config.smoothing_min_cutoff,
+            beta=config.smoothing_beta,
+            d_cutoff=config.smoothing_d_cutoff,
+        )
 
     @property
     def available(self) -> bool:
         return self._available
+
+    @property
+    def smoothing(self) -> bool:
+        return self._smoothing
+
+    def set_smoothing(self, enabled: bool) -> None:
+        """Toggle display smoothing. Resets filter state so it never jumps on toggle."""
+        if enabled != self._smoothing:
+            self._filter.reset()
+        self._smoothing = enabled
 
     @property
     def status_text(self) -> str:
@@ -169,6 +194,12 @@ class HandProbe:
         if points.shape != (21, 3):
             return self._lost(timestamp_ms, frame_id, inference_ms)
 
+        # Smooth the raw landmark array before both the overlay and normalization,
+        # so the displayed skeleton and the derived scalars come from one filtered
+        # source. This shows the smoothed vertices instead of raw per-frame jitter.
+        if self._smoothing:
+            points = self._filter.filter(points, timestamp_ms)
+
         handedness, score = self._primary_handedness(result)
         raw = RawHandLandmarks(
             timestamp_ms=timestamp_ms,
@@ -194,6 +225,7 @@ class HandProbe:
             image_points=image_points,
             landmark_count=len(image_points),
             inference_ms=inference_ms,
+            smoothed=self._smoothing,
         )
 
     @staticmethod
@@ -204,8 +236,9 @@ class HandProbe:
         top = handedness_list[0][0]
         return str(top.category_name), float(top.score)
 
-    @staticmethod
-    def _lost(timestamp_ms: int, frame_id: int, inference_ms: float) -> HandSnapshot:
+    def _lost(self, timestamp_ms: int, frame_id: int, inference_ms: float) -> HandSnapshot:
+        # Reset the filter on tracking loss so smoothing never bridges the gap.
+        self._filter.reset()
         return HandSnapshot(
             timestamp_ms=timestamp_ms,
             frame_id=frame_id,
@@ -217,6 +250,7 @@ class HandProbe:
             image_points=None,
             landmark_count=0,
             inference_ms=inference_ms,
+            smoothed=self._smoothing,
         )
 
     def close(self) -> None:

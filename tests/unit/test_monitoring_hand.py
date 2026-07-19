@@ -32,3 +32,12 @@ def test_untrained_gesture_source_yields_nothing() -> None:
     assert source.available is False
     assert source.poll() == []
     assert "미학습" in source.status_text
+
+
+def test_display_smoothing_defaults_on_and_toggles() -> None:
+    probe = HandProbe(model_path=None)
+    assert probe.smoothing is True  # smoothed vertices shown by default
+    probe.set_smoothing(False)
+    assert probe.smoothing is False
+    probe.set_smoothing(True)
+    assert probe.smoothing is True

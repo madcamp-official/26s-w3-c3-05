@@ -21,6 +21,7 @@ import dataclasses
 import os
 import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -258,7 +260,14 @@ class GazePanel(QScrollArea):
 class HandPanel(QScrollArea):
     """Live MediaPipe hand-tracking view + honest gesture-recognition status."""
 
-    def __init__(self, probe_status: str, gesture_status: str) -> None:
+    def __init__(
+        self,
+        probe_status: str,
+        gesture_status: str,
+        *,
+        smoothing: bool = True,
+        on_smoothing_toggled: Callable[[bool], None] | None = None,
+    ) -> None:
         super().__init__()
         self.setWidgetResizable(True)
         body = QWidget()
@@ -268,6 +277,13 @@ class HandPanel(QScrollArea):
         self._status.setWordWrap(True)
         self._status.setStyleSheet("color:#d29922; padding:2px 0;")
         layout.addWidget(self._status)
+
+        # Toggle: show the One-Euro–smoothed landmarks (default) or raw, to compare.
+        self._smooth_toggle = QCheckBox("One-Euro 스무딩 (표시용 · 끄면 raw 정점)")
+        self._smooth_toggle.setChecked(smoothing)
+        if on_smoothing_toggled is not None:
+            self._smooth_toggle.toggled.connect(on_smoothing_toggled)
+        layout.addWidget(self._smooth_toggle)
 
         # The one thing that must not be misread: recognition is OFF (untrained).
         banner = QLabel("⚠ 제스처 인식 비활성\n" + gesture_status)
@@ -310,9 +326,11 @@ class HandPanel(QScrollArea):
             s.detection_confidence if s.hand_detected else 0.0, color="#58a6ff"
         )
         if s.hand_detected:
+            mode = "One-Euro 스무딩됨" if s.smoothed else "raw (스무딩 꺼짐)"
             self._numeric.setText(
+                f"landmark 표시 : {mode}\n"
                 f"palm scale   : {s.palm_scale:.4f}\n"
-                f"landmarks    : {s.landmark_count} points (정규화 좌표는 downstream feature 입력)\n"
+                f"landmarks    : {s.landmark_count} points\n"
                 f"handedness   : {s.handedness}  score {s.handedness_score:.3f}"
             )
         else:
@@ -684,7 +702,10 @@ class MainWindow(QMainWindow):
 
     def _build_hand_tab(self) -> QWidget:
         self._hand_panel = HandPanel(
-            self._hand_probe.status_text, self._hand_probe.gesture_recognition_status
+            self._hand_probe.status_text,
+            self._hand_probe.gesture_recognition_status,
+            smoothing=self._hand_probe.smoothing,
+            on_smoothing_toggled=self._hand_probe.set_smoothing,
         )
         return self._hand_panel
 

@@ -149,10 +149,11 @@ def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot) -> Frame:
         cv2.circle(frame, (px, py), 3, (235, 235, 235), thickness=-1)
 
     label = snapshot.handedness or "?"
+    mode = "smoothed" if snapshot.smoothed else "raw"
     _text_block(
         frame,
         [
-            (f"HAND  {label}  det {snapshot.detection_confidence:.0%}", color),
+            (f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [{mode}]", color),
             (f"palm scale  {snapshot.palm_scale:.3f}", (170, 170, 170)),
         ],
         (8, 58),  # below the FPS HUD (top-left) so they do not overlap
