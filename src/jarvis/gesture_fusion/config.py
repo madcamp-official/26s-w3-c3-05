@@ -80,10 +80,10 @@ class GestureConfig:
     smoothing_min_cutoff: float = 1.0
     """기본 평활 강도(Hz). 낮을수록 정지 시 더 부드럽지만 지연이 커진다."""
 
-    smoothing_beta: float = 0.3
+    smoothing_beta: float = 0.5
     """속도에 따른 컷오프 개방 계수. 높을수록 빠른 동작에서 지연이 줄어든다."""
 
-    smoothing_d_cutoff: float = 1.0
+    smoothing_d_cutoff: float = 1.5
     """내부 속도 추정의 평활 컷오프(Hz)."""
 
     # --- Feature engineering (README 8장 "속도·가속도·관절 각도 생성") ---
@@ -101,6 +101,19 @@ class GestureConfig:
 
     include_acceleration: bool = True
     """속도의 프레임 간 변화(초당 가속도, causal 차분)를 feature에 포함한다."""
+
+    include_wrist_translation: bool = True
+    """손목의 정규화된 평행이동 속도·가속도(각 3차원, 합 6차원)를 feature에 포함한다.
+
+    손목 기준 정규화(`origin_index`)는 매 프레임 손목을 원점(0,0,0)으로 옮기므로,
+    손 모양·회전이 그대로인 순수 평행이동(swipe)에서는 position·velocity·acceleration이
+    21개 랜드마크 전부 이론상 0이 된다 — swipe_up/down/left/right를 구분할 유일한 신호
+    (손 전체의 이동 방향·속력)가 feature에서 사라진다. 이 그룹은 원점화하지 않고
+    palm_scale로만 정규화한 손목 좌표(`HandObservation.wrist_position`, 카메라 거리에
+    독립)를 causal 차분해 그 이동 속도·가속도를 되살린다. 위치 자체가 아니라 속도·가속도만
+    넣어 "프레임 내 어디에 있느냐"가 아니라 "어느 방향으로 얼마나 움직이느냐"만 담는다
+    (프레임 위치 overfitting 방지). rotate 계열은 회전이 보존돼 영향받지 않는다
+    (documents/decisions.md 2026-07-19). 학습 데이터도 반드시 같은 설정으로 전처리해야 한다."""
 
     max_frame_gap_ms: int = 200
     """이 간격을 넘는 프레임 공백이면 속도·가속도 history를 리셋한다.
@@ -149,6 +162,7 @@ class GestureConfig:
                 self.include_joint_angles,
                 self.include_velocity,
                 self.include_acceleration,
+                self.include_wrist_translation,
             )
         ):
             raise ValueError("at least one feature group must be enabled")
@@ -158,6 +172,14 @@ class GestureConfig:
 # engineering·gesture 로직이 참조하도록 표준 인덱스를 한 곳에 둔다.
 # 참고: https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker
 HAND_LANDMARK_COUNT = 21
+
+# 각 랜드마크의 좌표 차원. MediaPipe는 (x, y, z)를 주지만 z(깊이)는 단안 웹캠에서
+# 추정한 값이라 노이즈가 크고 프레임마다 크게 흔들린다(특히 손가락이 카메라 쪽으로
+# 접히는 주먹류 동작). 검출 안정성을 위해 x·y 2D만 사용한다. 이 값 하나가 원시 좌표
+# 추출(mediapipe_hands·hand_probe)부터 정규화(landmarks)·feature 차원(features)까지
+# 전 파이프라인의 좌표 차원을 결정한다 — 3으로 되돌리면 다시 z를 포함하지만, 학습
+# 데이터도 같은 차원으로 전처리해야 하므로(모델 재현성) 변경 시 반드시 재학습한다.
+LANDMARK_DIMS = 2
 
 WRIST = 0
 THUMB_CMC = 1
