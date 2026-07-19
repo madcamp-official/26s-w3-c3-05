@@ -13,6 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from jarvis.monitoring.gaze_source import GazeSnapshot
+from jarvis.calibration.registry import TargetRecord
 
 Frame = NDArray[np.uint8]
 
@@ -41,11 +42,49 @@ def draw_hud(frame: Frame, lines: list[str], *, recording: bool = True) -> Frame
     return frame
 
 
-def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
+def _direction_point(yaw: float, pitch: float, width: int, height: int) -> tuple[int, int]:
+    """Debug projection: ±45° maps around the frame center (not a camera projection)."""
+    return (
+        int(np.clip(width * 0.5 + yaw / 90.0 * width, 0, width - 1)),
+        int(np.clip(height * 0.5 - pitch / 90.0 * height, 0, height - 1)),
+    )
+
+
+def draw_gaze_overlay(
+    frame: Frame,
+    snapshot: GazeSnapshot,
+    targets: list[TargetRecord] | None = None,
+    registration_samples: list[tuple[float, float]] | None = None,
+) -> Frame:
     """Draw real gaze/head/target state from the current camera frame."""
     height, width = frame.shape[:2]
     observation = snapshot.observation
     estimate = snapshot.estimate
+
+    for target in targets or []:
+        point = _direction_point(target.direction.yaw, target.direction.pitch, width, height)
+        radius = max(
+            8, int(max(target.spread.yaw / 90.0 * width, target.spread.pitch / 90.0 * height))
+        )
+        color = (
+            (0, 220, 0)
+            if snapshot.lock_state == "TARGET_LOCKED" and estimate.target == target.target_id
+            else (255, 170, 40)
+        )
+        cv2.circle(frame, point, radius, color, 2, cv2.LINE_AA)
+        cv2.putText(
+            frame, target.name, (point[0] + 6, point[1] - 6), _FONT, 0.4, color, 1, cv2.LINE_AA
+        )
+
+    for yaw, pitch in registration_samples or []:
+        cv2.circle(frame, _direction_point(yaw, pitch, width, height), 2, (200, 80, 220), -1)
+
+    if snapshot.calibrated_gaze is not None:
+        point = _direction_point(
+            snapshot.calibrated_gaze.yaw, snapshot.calibrated_gaze.pitch, width, height
+        )
+        color = (0, 255, 255) if estimate.target != "UNKNOWN" else (200, 200, 200)
+        cv2.circle(frame, point, 6, color, -1, cv2.LINE_AA)
 
     if snapshot.gaze_vector is not None:
         direction = snapshot.gaze_vector.direction
@@ -76,6 +115,11 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
 
     target_color = (80, 210, 100) if estimate.target != "UNKNOWN" else (80, 180, 240)
     lines = [
+        (
+            f"GAZE y={snapshot.calibrated_gaze.yaw:+.1f} p={snapshot.calibrated_gaze.pitch:+.1f}"
+            if snapshot.calibrated_gaze is not None
+            else "GAZE LOST"
+        ),
         f"TARGET  {estimate.target}",
         f"P {estimate.probability:.2f}  STABLE {estimate.stability:.2f}",
         f"LOCK  {snapshot.lock_state}",
@@ -85,7 +129,7 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
         ),
     ]
     x = 12
-    y = height - 84
+    y = height - 104
     for index, text in enumerate(lines):
         cv2.putText(
             frame,

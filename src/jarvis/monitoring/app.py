@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMainWindow,
     QPushButton,
+    QInputDialog,
+    QMessageBox,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
@@ -40,6 +42,9 @@ from jarvis.monitoring.gesture_source import GestureSource, NullGestureSource
 from jarvis.monitoring.messages import MessageLevel, MessageLog
 from jarvis.monitoring.overlay import Frame, draw_gaze_overlay, draw_hud, placeholder_frame
 from jarvis.monitoring.pipeline_status import StageState, StageStatus, detect_pipeline_status
+from jarvis.calibration.registry import TargetRecord, TargetRegistry
+from jarvis.calibration.target_registration import TargetRegistrationSession
+from jarvis.gaze.direction import direction_to_yaw_pitch
 
 _STATE_COLOR = {
     StageState.LIVE: "#3fb950",
@@ -65,6 +70,8 @@ class VideoView(QLabel):
         self._fps_times: deque[float] = deque(maxlen=30)
         self._frame_count = 0
         self._gaze_snapshot: GazeSnapshot | None = None
+        self._targets: list[TargetRecord] = []
+        self._registration_samples: list[tuple[float, float]] = []
         self._show_placeholder("카메라 시작 중…")
 
     def _show_placeholder(self, text: str) -> None:
@@ -77,7 +84,7 @@ class VideoView(QLabel):
         fps = self._current_fps()
         h, w = frame.shape[:2]
         if self._gaze_snapshot is not None:
-            draw_gaze_overlay(frame, self._gaze_snapshot)
+            draw_gaze_overlay(frame, self._gaze_snapshot, self._targets, self._registration_samples)
         draw_hud(
             frame,
             [f"{w}x{h}  {fps:4.1f} FPS", f"frame #{self._frame_count}"],
@@ -86,6 +93,12 @@ class VideoView(QLabel):
 
     def update_gaze(self, snapshot: GazeSnapshot) -> None:
         self._gaze_snapshot = snapshot
+
+    def update_targets(self, targets: list[TargetRecord]) -> None:
+        self._targets = targets
+
+    def update_registration_samples(self, samples: list[tuple[float, float]]) -> None:
+        self._registration_samples = samples
 
     def _current_fps(self) -> float:
         if len(self._fps_times) < 2:
@@ -116,9 +129,7 @@ class GestureSidebar(QWidget):
         title.setStyleSheet("font-weight:600; color:#58a6ff; padding:4px 0;")
         self._status = QLabel(source.status_text)
         self._status.setWordWrap(True)
-        self._status.setStyleSheet(
-            "color:#8b949e;" if source.available else "color:#d29922;"
-        )
+        self._status.setStyleSheet("color:#8b949e;" if source.available else "color:#d29922;")
         self._list = QListWidget()
         layout.addWidget(title)
         layout.addWidget(self._status)
@@ -157,15 +168,15 @@ class StageCard(QFrame):
     def __init__(self, status: StageStatus) -> None:
         super().__init__()
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet("QFrame{background:#161b22; border:1px solid #30363d; border-radius:8px;}")
+        self.setStyleSheet(
+            "QFrame{background:#161b22; border:1px solid #30363d; border-radius:8px;}"
+        )
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
         name = QLabel(status.name)
         name.setStyleSheet("font-weight:600; color:#e6e6e6; border:none;")
         chip = QLabel(status.state)
-        chip.setStyleSheet(
-            f"color:{_STATE_COLOR[status.state]}; font-weight:700; border:none;"
-        )
+        chip.setStyleSheet(f"color:{_STATE_COLOR[status.state]}; font-weight:700; border:none;")
         header.addWidget(name)
         header.addStretch(1)
         header.addWidget(chip)
@@ -200,6 +211,9 @@ class MainWindow(QMainWindow):
         self._sample_store = GazeSampleStore(
             samples_path or Path("data/evaluation/gaze_samples.json")
         )
+        self._target_registry = TargetRegistry(self._profiles_path)
+        self._registration: TargetRegistrationSession | None = None
+        self._registration_points: list[tuple[float, float]] = []
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
@@ -251,6 +265,27 @@ class MainWindow(QMainWindow):
         for sample in self._sample_store.samples:
             self._sample_list.addItem(format_gaze_sample(sample))
         layout.addWidget(self._sample_list)
+        target_controls = QHBoxLayout()
+        self._register_target_button = QPushButton("기기 바라보고 등록")
+        self._register_target_button.clicked.connect(self._start_target_registration)
+        self._reregister_target_button = QPushButton("위치 다시 등록")
+        self._reregister_target_button.clicked.connect(self._reregister_selected_target)
+        self._rename_target_button = QPushButton("이름 변경")
+        self._rename_target_button.clicked.connect(self._rename_selected_target)
+        self._delete_target_button = QPushButton("기기 삭제")
+        self._delete_target_button.clicked.connect(self._delete_selected_target)
+        for button in (
+            self._register_target_button,
+            self._reregister_target_button,
+            self._rename_target_button,
+            self._delete_target_button,
+        ):
+            target_controls.addWidget(button)
+        layout.addLayout(target_controls)
+        self._target_list = QListWidget()
+        self._target_list.setMaximumHeight(100)
+        layout.addWidget(self._target_list)
+        self._refresh_targets()
         return container
 
     def _build_pipeline_tab(self) -> QWidget:
@@ -282,12 +317,132 @@ class MainWindow(QMainWindow):
         self._latest_gaze = snapshot
         self._gaze_history.append(snapshot)
         cutoff_ms = snapshot.observation.timestamp_ms - 500
-        while (
-            self._gaze_history
-            and self._gaze_history[0].observation.timestamp_ms < cutoff_ms
-        ):
+        while self._gaze_history and self._gaze_history[0].observation.timestamp_ms < cutoff_ms:
             self._gaze_history.popleft()
         self._video.update_gaze(snapshot)
+        if self._registration is not None:
+            confidence = min(
+                snapshot.observation.eye_tracking_confidence,
+                snapshot.observation.face_tracking_confidence,
+            )
+            if (
+                self._registration.add(
+                    snapshot.gaze_vector,
+                    confidence,
+                    eyes_open=snapshot.observation.eyes_open,
+                )
+                and snapshot.gaze_vector is not None
+            ):
+                self._registration_points.append(
+                    direction_to_yaw_pitch(snapshot.gaze_vector.direction)
+                )
+                self._video.update_registration_samples(self._registration_points)
+            if self._registration.is_elapsed(snapshot.observation.timestamp_ms):
+                self._finish_target_registration()
+
+    def _selected_target(self) -> TargetRecord | None:
+        row = self._target_list.currentRow()
+        records = self._target_registry.records
+        return records[row] if 0 <= row < len(records) else None
+
+    def _start_target_registration(self) -> None:
+        target_id, ok = QInputDialog.getText(self, "기기 등록", "Target ID")
+        if not ok or not target_id.strip():
+            return
+        name, ok = QInputDialog.getText(self, "기기 등록", "표시 이름", text=target_id.strip())
+        if not ok or not name.strip():
+            return
+        device_type, ok = QInputDialog.getText(self, "기기 등록", "기기 종류", text="LIGHT")
+        if not ok or not device_type.strip():
+            return
+        device_id, ok = QInputDialog.getText(
+            self, "기기 등록", "Adapter Device ID", text=target_id.strip()
+        )
+        if not ok or not device_id.strip():
+            return
+        self._begin_registration(
+            target_id.strip(), name.strip(), device_type.strip(), device_id.strip()
+        )
+
+    def _begin_registration(
+        self, target_id: str, name: str, device_type: str, device_id: str
+    ) -> None:
+        if self._registration is not None:
+            self._log.warn("이미 기기 등록이 진행 중입니다")
+            return
+        self._registration = TargetRegistrationSession(target_id, name, device_type, device_id)
+        self._registration_points = []
+        self._register_target_button.setEnabled(False)
+        self._log.info(f"'{name}'을 2초 동안 바라보며 고개를 천천히 움직여 주세요")
+
+    def _finish_target_registration(self) -> None:
+        assert self._registration is not None
+        try:
+            record = self._registration.finalize()
+            nearby = [
+                item
+                for item in self._target_registry.nearby(
+                    record.direction.yaw, record.direction.pitch
+                )
+                if item.target_id != record.target_id
+            ]
+            if nearby:
+                names = ", ".join(item.name for item in nearby)
+                self._log.warn(f"등록 방향이 기존 기기와 가깝습니다: {names}")
+            self._target_registry.upsert(record)
+            if self._camera is not None:
+                self._camera.register_profile(record.to_profile())
+            self._log.info(
+                f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames)"
+            )
+        except ValueError as exc:
+            self._log.warn(f"기기 등록 실패: {exc}")
+        finally:
+            self._registration = None
+            self._registration_points = []
+            self._video.update_registration_samples([])
+            self._register_target_button.setEnabled(True)
+            self._refresh_targets()
+
+    def _reregister_selected_target(self) -> None:
+        record = self._selected_target()
+        if record is None:
+            self._log.warn("위치를 다시 등록할 기기를 선택하세요")
+            return
+        self._begin_registration(
+            record.target_id, record.name, record.device_type, record.device_id
+        )
+
+    def _rename_selected_target(self) -> None:
+        record = self._selected_target()
+        if record is None:
+            return
+        name, ok = QInputDialog.getText(self, "이름 변경", "표시 이름", text=record.name)
+        if ok and name.strip():
+            self._target_registry.rename(record.target_id, name.strip())
+            self._refresh_targets()
+
+    def _delete_selected_target(self) -> None:
+        record = self._selected_target()
+        if record is None:
+            return
+        if (
+            QMessageBox.question(self, "기기 삭제", f"'{record.name}'을 삭제할까요?")
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self._target_registry.remove(record.target_id)
+        if self._camera is not None:
+            self._camera.unregister_profile(record.target_id)
+        self._refresh_targets()
+
+    def _refresh_targets(self) -> None:
+        self._target_list.clear()
+        for record in self._target_registry.records:
+            self._target_list.addItem(
+                f"{record.name} [{record.target_id}]  yaw={record.direction.yaw:+.1f} pitch={record.direction.pitch:+.1f}"
+            )
+        self._video.update_targets(self._target_registry.records)
 
     def _save_gaze_sample(self) -> None:
         if self._latest_gaze is None:
@@ -298,9 +453,7 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             self._log.warn(f"Gaze 샘플 저장 실패: {exc}")
             return
-        self._log.info(
-            f"Gaze 샘플 {sample['sample_index']}/{self._sample_store.capacity} 저장"
-        )
+        self._log.info(f"Gaze 샘플 {sample['sample_index']}/{self._sample_store.capacity} 저장")
         self._sample_list.addItem(format_gaze_sample(sample))
         self._sample_list.scrollToBottom()
         self._refresh_sample_button()

@@ -7,8 +7,9 @@ import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from jarvis.calibration.profiles import profile_from_dict
 from jarvis.gaze.classifier import DeviceGazeProfile
-from jarvis.gaze.direction import yaw_pitch_to_direction
+from jarvis.gaze.direction import direction_to_yaw_pitch, yaw_pitch_to_direction
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,8 +75,12 @@ class TargetRegistry:
     def rename(self, target_id: str, name: str) -> TargetRecord:
         current = self._records[target_id]
         updated = TargetRecord(
-            target_id=current.target_id, name=name, device_type=current.device_type,
-            direction=current.direction, spread=current.spread, device_id=current.device_id,
+            target_id=current.target_id,
+            name=name,
+            device_type=current.device_type,
+            direction=current.direction,
+            spread=current.spread,
+            device_id=current.device_id,
         )
         self.upsert(updated)
         return updated
@@ -84,9 +89,12 @@ class TargetRegistry:
         self._records.pop(target_id, None)
         self._save()
 
-    def nearby(self, yaw: float, pitch: float, minimum_distance_deg: float = 5.0) -> list[TargetRecord]:
+    def nearby(
+        self, yaw: float, pitch: float, minimum_distance_deg: float = 5.0
+    ) -> list[TargetRecord]:
         return [
-            record for record in self.records
+            record
+            for record in self.records
             if math.hypot(record.direction.yaw - yaw, record.direction.pitch - pitch)
             < minimum_distance_deg
         ]
@@ -98,20 +106,48 @@ class TargetRegistry:
         if not isinstance(payload, list):
             raise ValueError("target registry must contain a JSON list")
         for item in payload:
-            if not isinstance(item, dict) or "direction" not in item:
-                continue  # legacy gaze_profile entries are loaded by profiles.py
+            if not isinstance(item, dict):
+                continue
+            if "direction" not in item:
+                migrated = self._migrate_legacy_profile(item)
+                if migrated is not None:
+                    self._records[migrated.target_id] = migrated
+                continue
             direction = item["direction"]
-            spread = item["spread"]
+            spread = item.get("spread", {"yaw": 4.0, "pitch": 4.0})
             if not isinstance(direction, dict) or not isinstance(spread, dict):
                 continue
             record = TargetRecord(
-                target_id=str(item["target_id"]), name=str(item["name"]),
+                target_id=str(item["target_id"]),
+                name=str(item["name"]),
                 device_type=str(item["device_type"]),
                 direction=TargetDirection(float(direction["yaw"]), float(direction["pitch"])),
                 spread=TargetSpread(float(spread["yaw"]), float(spread["pitch"])),
                 device_id=str(item["device_id"]),
             )
             self._records[record.target_id] = record
+
+    def _migrate_legacy_profile(self, item: dict[str, object]) -> TargetRecord | None:
+        profile_payload = item.get("gaze_profile")
+        target_id = item.get("device_id")
+        if not isinstance(target_id, str) or not isinstance(profile_payload, dict):
+            return None
+        try:
+            profile = profile_from_dict(item)
+            yaw, pitch = direction_to_yaw_pitch(profile.mean_direction)
+            radius_deg = max(4.0, math.degrees(math.sqrt(profile.variance)))
+        except (TypeError, ValueError):
+            return None
+        return TargetRecord(
+            target_id=target_id,
+            name=target_id,
+            device_type="UNKNOWN",
+            direction=TargetDirection(yaw, pitch),
+            spread=TargetSpread(
+                profile.spread_yaw_deg or radius_deg, profile.spread_pitch_deg or radius_deg
+            ),
+            device_id=target_id,
+        )
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,5 +163,7 @@ class TargetRegistry:
             }
             payload.append(item)
         temporary = self._path.with_suffix(self._path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        temporary.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
         temporary.replace(self._path)

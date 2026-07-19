@@ -9,6 +9,7 @@ silently showing a frozen image.
 from __future__ import annotations
 
 from pathlib import Path
+from queue import Empty, SimpleQueue
 from typing import cast
 
 import cv2
@@ -16,6 +17,8 @@ from PySide6.QtCore import QThread, Signal
 
 from jarvis.calibration.profiles import load_profiles
 from jarvis.gaze.engine import GazeTargetingEngine
+from jarvis.gaze.classifier import DeviceGazeProfile
+from jarvis.gaze.direction import CalibratedGaze, direction_to_yaw_pitch
 from jarvis.gaze.landmarks import FaceLandmarkerAdapter, RgbFrame
 from jarvis.monitoring.gaze_source import GazeSnapshot
 
@@ -38,6 +41,24 @@ class CameraWorker(QThread):
         self._model_path = model_path
         self._profiles_path = profiles_path
         self._running = False
+        self._profile_updates: SimpleQueue[tuple[str, DeviceGazeProfile | str]] = SimpleQueue()
+
+    def register_profile(self, profile: DeviceGazeProfile) -> None:
+        self._profile_updates.put(("upsert", profile))
+
+    def unregister_profile(self, target_id: str) -> None:
+        self._profile_updates.put(("remove", target_id))
+
+    def _apply_profile_updates(self, engine: GazeTargetingEngine) -> None:
+        while True:
+            try:
+                action, profile = self._profile_updates.get_nowait()
+            except Empty:
+                return
+            if action == "upsert" and isinstance(profile, DeviceGazeProfile):
+                engine.register_device(profile)
+            elif isinstance(profile, str):
+                engine.unregister_device(profile)
 
     def run(self) -> None:
         self._running = True
@@ -67,16 +88,31 @@ class CameraWorker(QThread):
                     self.msleep(5)
                     continue
                 if gaze_adapter is not None and gaze_engine is not None:
+                    self._apply_profile_updates(gaze_engine)
                     timestamp_ms = frame_id * 33
                     rgb_frame = cast(RgbFrame, cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
                     observation = gaze_adapter.process(rgb_frame, timestamp_ms, frame_id)
                     estimate = gaze_engine.process(observation)
+                    smoothed = gaze_engine.last_smoothed_gaze
+                    calibrated = None
+                    if smoothed is not None:
+                        yaw, pitch = direction_to_yaw_pitch(smoothed.direction)
+                        calibrated = CalibratedGaze(
+                            yaw=yaw,
+                            pitch=pitch,
+                            confidence=min(
+                                observation.eye_tracking_confidence,
+                                observation.face_tracking_confidence,
+                            ),
+                            timestamp_ms=smoothed.timestamp_ms,
+                        )
                     self.gaze_ready.emit(
                         GazeSnapshot(
                             observation=observation,
-                            gaze_vector=gaze_engine.last_smoothed_gaze,
+                            gaze_vector=smoothed,
                             estimate=estimate,
                             lock_state=str(gaze_engine.lock_state),
+                            calibrated_gaze=calibrated,
                         )
                     )
                 self.frame_ready.emit(image)

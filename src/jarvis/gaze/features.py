@@ -44,6 +44,7 @@ class FaceObservation:
     face_detected: bool
     left_eye_center_normalized: tuple[float, float] | None = None
     right_eye_center_normalized: tuple[float, float] | None = None
+    eyes_open: bool = True
 
     def __post_init__(self) -> None:
         if self.timestamp_ms < 0 or self.frame_id < 0:
@@ -59,7 +60,9 @@ class FaceObservation:
         )
         if not all(math.isfinite(value) for value in numeric_values):
             raise ValueError("FaceObservation numeric values must be finite")
-        if not all(-1.0 <= value <= 1.0 for value in (*self.left_iris_relative, *self.right_iris_relative)):
+        if not all(
+            -1.0 <= value <= 1.0 for value in (*self.left_iris_relative, *self.right_iris_relative)
+        ):
             raise ValueError("iris relative positions must be within [-1, 1]")
         if not 0.0 <= self.eye_tracking_confidence <= 1.0:
             raise ValueError("eye_tracking_confidence must be within [0, 1]")

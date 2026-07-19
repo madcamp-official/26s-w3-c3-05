@@ -37,12 +37,25 @@ def test_registration_rejects_jump_and_insufficient_frames() -> None:
         session.finalize()
 
 
+def test_registration_rejects_closed_eyes() -> None:
+    session = TargetRegistrationSession(
+        "lamp", "desk lamp", "LIGHT", "device-1", minimum_valid_frames=1
+    )
+    assert not session.add(_gaze(0, 0.0), 1.0, eyes_open=False)
+    with pytest.raises(ValueError, match="not enough"):
+        session.finalize()
+
+
 def test_registry_round_trip_and_nearby_warning_data(tmp_path: Path) -> None:
     path = tmp_path / "targets.json"
     registry = TargetRegistry(path)
     record = TargetRecord(
-        "lamp", "책상 조명", "LIGHT", TargetDirection(10.0, 4.0),
-        TargetSpread(5.0, 4.0), "smartthings-1",
+        "lamp",
+        "책상 조명",
+        "LIGHT",
+        TargetDirection(10.0, 4.0),
+        TargetSpread(5.0, 4.0),
+        "smartthings-1",
     )
     registry.upsert(record)
     loaded = TargetRegistry(path)
@@ -51,3 +64,29 @@ def test_registry_round_trip_and_nearby_warning_data(tmp_path: Path) -> None:
     profile = record.to_profile()
     assert profile.spread_yaw_deg == 5.0
     assert profile.spread_pitch_deg == 4.0
+
+
+def test_registry_migrates_legacy_gaze_profile(tmp_path: Path) -> None:
+    path = tmp_path / "targets.json"
+    path.write_text(
+        """
+[
+  {
+    "device_id": "lamp",
+    "gaze_profile": {
+      "mean_direction": [0.0, 0.0, 1.0],
+      "variance": 0.004873878
+    }
+  }
+]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    registry = TargetRegistry(path)
+    record = registry.get("lamp")
+
+    assert record is not None
+    assert record.direction.yaw == pytest.approx(0.0)
+    assert record.direction.pitch == pytest.approx(0.0)
+    assert record.spread.yaw == pytest.approx(4.0, abs=0.1)

@@ -32,8 +32,7 @@ try:
     )
 except ImportError as exc:  # pragma: no cover - only hit without the `vision` extra
     raise ImportError(
-        "mediapipe is required for jarvis.gaze.landmarks; install with "
-        "`pip install -e '.[vision]'`"
+        "mediapipe is required for jarvis.gaze.landmarks; install with `pip install -e '.[vision]'`"
     ) from exc
 
 # Canonical MediaPipe Face Landmarker indices (478-point mesh, iris included).
@@ -93,6 +92,20 @@ def _eye_center_normalized(
     )
 
 
+def _eye_open_ratio(
+    landmarks: Any, inner_idx: int, outer_idx: int, upper_idx: int, lower_idx: int
+) -> float:
+    """Return eyelid opening normalized by eye width."""
+    inner = landmarks[inner_idx]
+    outer = landmarks[outer_idx]
+    upper = landmarks[upper_idx]
+    lower = landmarks[lower_idx]
+    width = math.hypot(outer.x - inner.x, outer.y - inner.y)
+    if width < 1e-6:
+        return 0.0
+    return float(abs(lower.y - upper.y) / width)
+
+
 def rotation_matrix_to_euler_deg(matrix: FloatMatrix) -> tuple[float, float, float]:
     """회전 행렬(3x3 또는 4x4의 좌상단)에서 (yaw, pitch, roll)을 degree로 추출한다.
 
@@ -131,6 +144,7 @@ def _lost_tracking_observation(timestamp_ms: int, frame_id: int) -> FaceObservat
         eye_tracking_confidence=0.0,
         face_tracking_confidence=0.0,
         face_detected=False,
+        eyes_open=False,
     )
 
 
@@ -174,7 +188,9 @@ class FaceLandmarkerAdapter:
             return _lost_tracking_observation(timestamp_ms, frame_id)
 
         landmarks = result.face_landmarks[0]
-        transform: FloatMatrix = np.array(result.facial_transformation_matrixes[0], dtype=np.float64)
+        transform: FloatMatrix = np.array(
+            result.facial_transformation_matrixes[0], dtype=np.float64
+        )
         yaw_deg, pitch_deg, roll_deg = rotation_matrix_to_euler_deg(transform)
 
         left_iris = _iris_relative_position(
@@ -207,6 +223,20 @@ class FaceLandmarkerAdapter:
             _RIGHT_EYE_UPPER_LID,
             _RIGHT_EYE_LOWER_LID,
         )
+        left_eye_open_ratio = _eye_open_ratio(
+            landmarks,
+            _LEFT_EYE_INNER_CORNER,
+            _LEFT_EYE_OUTER_CORNER,
+            _LEFT_EYE_UPPER_LID,
+            _LEFT_EYE_LOWER_LID,
+        )
+        right_eye_open_ratio = _eye_open_ratio(
+            landmarks,
+            _RIGHT_EYE_INNER_CORNER,
+            _RIGHT_EYE_OUTER_CORNER,
+            _RIGHT_EYE_UPPER_LID,
+            _RIGHT_EYE_LOWER_LID,
+        )
 
         # Face Landmarker Tasks API는 얼굴 전체에 대한 단일 confidence 스칼라를
         # 내주지 않는다. 얼굴이 검출된 프레임은 1.0으로 다루고, 검출 실패(위에서
@@ -227,4 +257,5 @@ class FaceLandmarkerAdapter:
             face_detected=True,
             left_eye_center_normalized=left_eye_center,
             right_eye_center_normalized=right_eye_center,
+            eyes_open=min(left_eye_open_ratio, right_eye_open_ratio) >= 0.08,
         )
