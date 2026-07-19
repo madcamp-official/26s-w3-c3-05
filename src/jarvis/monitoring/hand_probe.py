@@ -33,6 +33,7 @@ import numpy.typing as npt
 from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG, GestureConfig
 from jarvis.gesture_fusion.features import HandFeatureExtractor
 from jarvis.gesture_fusion.landmarks import RawHandLandmarks, normalize_hand
+from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 Point2D = tuple[float, float]
 
@@ -66,6 +67,10 @@ class HandSnapshot:
     inference_ms: float
     # whether ``model_points`` reflects the smoothing the model actually applies.
     smoothed: bool
+    # One-Euro-smoothed image-space (x, y) in [0, 1] for the live webcam overlay.
+    # None when smoothing is off or the hand is lost. Display-only — this is *never*
+    # fed to the model or logged for training (that path uses the raw ``points``).
+    image_points_smoothed: tuple[Point2D, ...] | None = None
 
 
 def _gesture_recognition_status() -> str:
@@ -109,6 +114,19 @@ class HandProbe:
         # Run the model's real feature extractor so the displayed model_points are
         # the exact normalized landmarks the model consumes (not a parallel filter).
         self._extractor = HandFeatureExtractor(config)
+        # Display-only One-Euro filter for the live webcam overlay's image-space
+        # points. Kept separate from the model's normalized-space smoothing
+        # (``self._extractor``): it only de-jitters the skeleton drawn on the webcam
+        # and never touches the landmarks fed to the model or logged for training.
+        self._image_smoother: OneEuroFilter | None = (
+            OneEuroFilter(
+                min_cutoff=config.smoothing_min_cutoff,
+                beta=config.smoothing_beta,
+                d_cutoff=config.smoothing_d_cutoff,
+            )
+            if config.smooth_landmarks
+            else None
+        )
 
     @property
     def available(self) -> bool:
@@ -216,6 +234,7 @@ class HandProbe:
         self._extractor.push(observation)
         model = self._extractor.last_landmarks
         image_points = tuple((float(p[0]), float(p[1])) for p in points)
+        image_points_smoothed = self._smooth_image_points(points[:, :2], timestamp_ms)
         model_points = None if model is None else tuple((float(p[0]), float(p[1])) for p in model)
         model_points_raw = tuple((float(p[0]), float(p[1])) for p in observation.landmarks)
         return HandSnapshot(
@@ -232,7 +251,21 @@ class HandProbe:
             landmark_count=len(image_points),
             inference_ms=inference_ms,
             smoothed=self._smoothing,
+            image_points_smoothed=image_points_smoothed,
         )
+
+    def _smooth_image_points(
+        self, xy: npt.NDArray[np.float64], timestamp_ms: int
+    ) -> tuple[Point2D, ...] | None:
+        """One-Euro-smooth the image-space (x, y) for the live overlay (display only).
+
+        Returns ``None`` when smoothing is disabled — the overlay then falls back to
+        the raw detection. Never affects the model input or training data.
+        """
+        if self._image_smoother is None:
+            return None
+        smoothed = self._image_smoother.filter(xy, timestamp_ms)
+        return tuple((float(p[0]), float(p[1])) for p in smoothed)
 
     @staticmethod
     def _primary_handedness(result: object) -> tuple[str, float]:
@@ -245,6 +278,8 @@ class HandProbe:
     def _lost(self, timestamp_ms: int, frame_id: int, inference_ms: float) -> HandSnapshot:
         # Reset the extractor on tracking loss so smoothing never bridges the gap.
         self._extractor.reset()
+        if self._image_smoother is not None:
+            self._image_smoother.reset()
         return HandSnapshot(
             timestamp_ms=timestamp_ms,
             frame_id=frame_id,

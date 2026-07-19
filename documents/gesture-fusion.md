@@ -21,6 +21,7 @@ README [8장 핵심 기능 2](../README.md), [9장 핵심 기능 3](../README.md
 - **추론 위치 (2026-07-18 확정)**: MVP는 로컬 추론. 단, 모델 추론 부분(landmark 시퀀스 → gesture/phase)을 교체 가능한 경계로 분리해, 나중에 keypoint를 WebSocket으로 GPU 서버에 보내는 방식으로 옮길 수 있게 한다. 서버로 옮길 경우 timestamp는 서버가 새로 찍지 않고 클라이언트 값을 그대로 반환한다([interface-contract.md](interface-contract.md) 공통 규칙).
 - **커스텀 제스처 대비**: `gesture`는 열린 문자열 키다. 고정 분류기(TCN/GRU) 출력 외에, 나중에 few-shot 매처(DTW/임베딩 유사도)를 병렬로 붙이는 확장을 전제로 gesture id를 하드코딩하지 않는다.
 - **랜드마크 평활화 (2026-07-19 추가, dev-3 제안 — dev-2 확인/decisions.md 기록 필요)**: 속도·가속도는 이산 미분이라 MediaPipe 프레임별 랜드마크 지터를 증폭한다. 이를 막기 위해 `HandFeatureExtractor`가 **미분 전에** 위치를 One-Euro 필터(`smoothing.py`)로 평활화한다. `GestureConfig.smooth_landmarks`(기본 True)와 `smoothing_min_cutoff`/`smoothing_beta`/`smoothing_d_cutoff`로 제어하며, 추적 손실·프레임 공백에서 필터도 함께 리셋한다. 검증: 정지한 손 ±0.01 지터에서 속도 feature 노이즈 에너지 약 98% 감소. **주의**: 학습 데이터도 같은 설정으로 전처리해야 추론과 일관되므로(모델 재현성), 학습 파이프라인 구성 시 이 값을 고정·기록한다.
+  - **모니터 디버그 표시 (2026-07-19)**: 위 평활화는 모델이 소비하는 **정규화 좌표** 공간에서 일어난다. 모니터 `실시간` 탭의 웹캠 스켈레톤은 **이미지 좌표** 공간이라 이 필터를 거치지 않아 이전엔 raw 지터가 그대로 보였다. 이제 `HandProbe`가 같은 `GestureConfig` 평활 파라미터로 **표시 전용** One-Euro 필터를 이미지 좌표에도 적용해(`HandSnapshot.image_points_smoothed`) 웹캠 스켈레톤도 안정적으로 보인다. 이 표시용 필터와 `실시간`·`손 추적` 탭의 거울상(좌우 반전)은 **모두 화면 표시 전용**이며, 모델 입력·학습 데이터에는 영향을 주지 않는다. 상세 결정은 decisions.md(2026-07-19) 참조.
 
 ## 통합 규약 (배선 계층 주의)
 

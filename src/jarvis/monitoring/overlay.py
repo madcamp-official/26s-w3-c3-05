@@ -82,12 +82,14 @@ def _text_block(frame: Frame, lines: list[tuple[str, tuple[int, int, int]]], ori
         cv2.putText(frame, text, (x + 5, ty), _FONT, 0.48, color, 1, cv2.LINE_AA)
 
 
-def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
+def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = False) -> Frame:
     """Overlay the live Gaze pipeline result: gaze ray, head angles, lock state.
 
     Everything drawn comes from the real snapshot. Tracking loss is shown as a
     red banner instead of a stale ray — the overlay never invents a direction.
-    Mutates and returns ``frame``.
+    ``mirror`` flips the ray geometry (eye center + horizontal direction) to match a
+    horizontally-flipped display frame; display-only, the snapshot is untouched and
+    text stays readable. Mutates and returns ``frame``.
     """
     h, w = frame.shape[:2]
     white = (235, 235, 235)
@@ -108,14 +110,18 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
     left_eye = snapshot.left_eye_center_normalized
     right_eye = snapshot.right_eye_center_normalized
     if left_eye is not None and right_eye is not None:
+        cx_norm = (left_eye[0] + right_eye[0]) * 0.5
+        cy_norm = (left_eye[1] + right_eye[1]) * 0.5
         center = (
-            int((left_eye[0] + right_eye[0]) * 0.5 * w),
-            int((left_eye[1] + right_eye[1]) * 0.5 * h),
+            int((1.0 - cx_norm if mirror else cx_norm) * w),
+            int(cy_norm * h),
         )
     else:
         center = (w // 2, h // 2)
     if snapshot.smoothed_gaze_direction is not None:
         dx, dy, _ = snapshot.smoothed_gaze_direction
+        if mirror:
+            dx = -dx
         scale = min(w, h) * 0.35
         tip = (int(center[0] + dx * scale), int(center[1] + dy * scale))
         cv2.circle(frame, center, 4, ray_color, thickness=-1)
@@ -136,11 +142,17 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
     return frame
 
 
-def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot) -> Frame:
+def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot, *, mirror: bool = False) -> Frame:
     """Overlay the real hand skeleton (21 landmarks) and tracking info.
 
     Draws only when a hand is actually tracked; a lost frame draws nothing (never
     a stale skeleton). This is hand *tracking* — no gesture is recognized here.
+
+    Uses the One-Euro-smoothed image points when available (matching the model-input
+    smoothing toggle), falling back to the raw detection. ``mirror`` flips the drawn
+    x-coordinates to match a horizontally-flipped (selfie/거울상) display frame; it is
+    a display concern only and leaves the underlying landmark data untouched. Text is
+    drawn at un-mirrored positions so it stays readable on the flipped frame.
     Mutates and returns ``frame``.
     """
     if not snapshot.hand_detected or snapshot.image_points is None:
@@ -150,18 +162,21 @@ def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot) -> Frame:
     color = {"Right": (230, 180, 60), "Left": (60, 150, 230)}.get(
         snapshot.handedness, (170, 170, 170)
     )
-    pts = [(int(x * w), int(y * h)) for x, y in snapshot.image_points]
+    use_smoothed = snapshot.smoothed and snapshot.image_points_smoothed is not None
+    src = snapshot.image_points_smoothed if use_smoothed else snapshot.image_points
+    pts = [(int((1.0 - x) * w) if mirror else int(x * w), int(y * h)) for x, y in src]
     for a, b in _HAND_CONNECTIONS:
         cv2.line(frame, pts[a], pts[b], color, 2, cv2.LINE_AA)
     for px, py in pts:
         cv2.circle(frame, (px, py), 3, (235, 235, 235), thickness=-1)
 
     label = snapshot.handedness or "?"
+    src_tag = "스무딩" if use_smoothed else "raw"
     _text_block(
         frame,
         [
-            # image-space raw detection — where the hand is, not the model input
-            (f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [raw 검출]", color),
+            # image-space detection (smoothed for display) — where the hand is
+            (f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [{src_tag} 검출]", color),
             (f"palm scale  {snapshot.palm_scale:.3f}", (170, 170, 170)),
         ],
         (8, 58),  # below the FPS HUD (top-left) so they do not overlap
@@ -174,13 +189,15 @@ def render_normalized_hand(
     *,
     size: int = 260,
     smoothed: bool = True,
+    mirror: bool = False,
 ) -> Frame:
     """Render normalized (wrist-origin, palm-scaled) landmarks into a square canvas.
 
     This is the faithful "what the model sees" view: the same normalized landmark
     coordinates the model consumes, drawn in their own space (not the webcam).
     ``points`` are the (x, y) of the normalized landmarks; ``None`` draws an empty
-    canvas with a "no hand" note.
+    canvas with a "no hand" note. ``mirror`` flips the drawing left↔right to match the
+    selfie/거울상 webcam view — a display concern only; ``points`` are unchanged.
     """
     canvas: Frame = np.zeros((size, size, 3), dtype=np.uint8)
     canvas[:] = (18, 20, 26)
@@ -199,7 +216,10 @@ def render_normalized_hand(
     # sits low so fingers, which have negative y (up in the image), extend upward.
     cx, cy = size // 2, int(size * 0.72)
     scale = size * 0.15
-    px = [(int(cx + x * scale), int(cy + y * scale)) for x, y in points]
+    px = [
+        (int(cx - x * scale) if mirror else int(cx + x * scale), int(cy + y * scale))
+        for x, y in points
+    ]
     for a, b in _HAND_CONNECTIONS:
         cv2.line(canvas, px[a], px[b], color, 2, cv2.LINE_AA)
     for x, y in px:
