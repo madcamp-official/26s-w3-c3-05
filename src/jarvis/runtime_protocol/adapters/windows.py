@@ -57,6 +57,14 @@ class InputSink(Protocol):
         """Move the cursor by a relative delta (used by the future pointer path)."""
         ...
 
+    def switch_window(self, forward: bool, repeat: int) -> None:
+        """Switch between application windows ``repeat`` times.
+
+        ``forward`` advances to the next window (Alt+Tab / Cmd+Tab), else the
+        previous one. The modifier-chord details live in each OS implementation.
+        """
+        ...
+
 
 def _as_count(value: int | float | bool) -> int | None:
     """Interpret a command value as a positive repeat count, or ``None`` if invalid.
@@ -92,6 +100,8 @@ class WindowsAdapter:
             return self._volume(command)
         if command.capability == "media":
             return self._media(command)
+        if command.capability == "window_switch":
+            return self._window_switch(command)
         return AdapterResult(
             AdapterStatus.FAILED,
             f"windows adapter does not handle capability {command.capability!r}",
@@ -135,6 +145,24 @@ class WindowsAdapter:
         self._sink.tap_key(InputKey.PLAY_PAUSE)
         return AdapterResult(AdapterStatus.ACKNOWLEDGED, "media play/pause toggled")
 
+    def _window_switch(self, command: Command) -> AdapterResult:
+        count = _as_count(command.value)
+        if count is None:
+            return AdapterResult(
+                AdapterStatus.FAILED, f"invalid window_switch count {command.value!r}"
+            )
+        if command.operation == "increment":
+            forward = True
+        elif command.operation == "decrement":
+            forward = False
+        else:
+            return AdapterResult(
+                AdapterStatus.FAILED, f"window_switch does not support {command.operation!r}"
+            )
+        self._sink.switch_window(forward, count)
+        direction = "next" if forward else "previous"
+        return AdapterResult(AdapterStatus.ACKNOWLEDGED, f"window switch {direction} x{count}")
+
 
 # --- Hardware boundary ------------------------------------------------------
 
@@ -147,6 +175,9 @@ _VK = {
 _KEYEVENTF_KEYUP = 0x0002
 _MOUSEEVENTF_WHEEL = 0x0800
 _WHEEL_DELTA = 120
+_VK_TAB = 0x09
+_VK_MENU = 0x12  # ALT
+_VK_SHIFT = 0x10
 
 
 class Win32InputSink:
@@ -179,6 +210,20 @@ class Win32InputSink:
     def move_cursor(self, dx: int, dy: int) -> None:
         # MOUSEEVENTF_MOVE (0x0001) moves relative to the current cursor position.
         self._user32().mouse_event(0x0001, dx, dy, 0, 0)
+
+    def switch_window(self, forward: bool, repeat: int) -> None:
+        # Alt+Tab (forward) / Alt+Shift+Tab (backward). Hold Alt for the whole
+        # sequence so the window switcher stays up across repeated Tab taps.
+        user32 = self._user32()
+        user32.keybd_event(_VK_MENU, 0, 0, 0)
+        if not forward:
+            user32.keybd_event(_VK_SHIFT, 0, 0, 0)
+        for _ in range(repeat):
+            user32.keybd_event(_VK_TAB, 0, 0, 0)
+            user32.keybd_event(_VK_TAB, 0, _KEYEVENTF_KEYUP, 0)
+        if not forward:
+            user32.keybd_event(_VK_SHIFT, 0, _KEYEVENTF_KEYUP, 0)
+        user32.keybd_event(_VK_MENU, 0, _KEYEVENTF_KEYUP, 0)
 
 
 def default_input_sink() -> InputSink:
