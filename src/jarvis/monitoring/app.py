@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMainWindow,
     QProgressBar,
+    QPushButton,
     QScrollArea,
     QSplitter,
     QTabWidget,
@@ -50,10 +51,12 @@ from jarvis.contracts.messages import Command, GestureEstimate, Intent
 from jarvis.gaze.lock import GazeLockState
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
+from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
 from jarvis.monitoring.gesture_source import GestureSource, UntrainedGestureSource
 from jarvis.monitoring.hand_probe import HandProbe, HandSnapshot
 from jarvis.monitoring.messages import MessageLevel, MessageLog
 from jarvis.monitoring.overlay import (
+    Frame,
     draw_gaze_overlay,
     draw_hand_overlay,
     draw_hud,
@@ -522,7 +525,7 @@ class VideoView(QLabel):
     def _show_placeholder(self, text: str) -> None:
         self._render(placeholder_frame(text=text))
 
-    def show_frame(self, frame: np.ndarray) -> None:
+    def show_frame(self, frame: Frame) -> None:
         now = time.monotonic()
         self._fps_times.append(now)
         self._frame_count += 1
@@ -541,7 +544,7 @@ class VideoView(QLabel):
         span = self._fps_times[-1] - self._fps_times[0]
         return (len(self._fps_times) - 1) / span if span > 0 else 0.0
 
-    def _render(self, frame: np.ndarray) -> None:
+    def _render(self, frame: Frame) -> None:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         image = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
@@ -646,6 +649,7 @@ class MainWindow(QMainWindow):
         model_path: Path | None = None,
         profiles_path: Path | None = None,
         hand_model_path: Path | None = None,
+        samples_path: Path | None = None,
         start_camera: bool = True,
     ) -> None:
         super().__init__()
@@ -660,6 +664,11 @@ class MainWindow(QMainWindow):
             hand_model_path if hand_model_path is not None else _default_hand_model_path()
         )
         self._latency = LatencyAggregator()
+        self._latest_gaze: GazeSnapshot | None = None
+        self._gaze_history: deque[GazeSnapshot] = deque()
+        self._sample_store = GazeSampleStore(
+            samples_path or Path("data/evaluation/gaze_samples.json")
+        )
 
         self._probe = GazeProbe(
             model_path=self._model_path, profiles_path=self._profiles_path
@@ -712,6 +721,21 @@ class MainWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(split)
+        self._sample_button = QPushButton()
+        self._sample_button.clicked.connect(self._save_gaze_sample)
+        self._clear_samples_button = QPushButton("샘플 초기화")
+        self._clear_samples_button.clicked.connect(self._clear_gaze_samples)
+        sample_controls = QHBoxLayout()
+        sample_controls.addWidget(self._sample_button, 1)
+        sample_controls.addWidget(self._clear_samples_button)
+        layout.addLayout(sample_controls)
+        self._sample_list = QListWidget()
+        self._sample_list.setMaximumHeight(130)
+        self._sample_list.setStyleSheet("font-family:Consolas,monospace; font-size:12px;")
+        for sample in self._sample_store.samples:
+            self._sample_list.addItem(format_gaze_sample(sample))
+        layout.addWidget(self._sample_list)
+        self._refresh_sample_button()
         return container
 
     def _build_gaze_tab(self) -> QWidget:
@@ -773,14 +797,47 @@ class MainWindow(QMainWindow):
         worker.start()
         self._log.info(f"카메라 {device_index}번 시작")
 
-    def _on_frame(self, frame: np.ndarray) -> None:
+    def _on_frame(self, frame: Frame) -> None:
         self._video.show_frame(frame)
 
     def _on_gaze(self, snapshot: object) -> None:
         assert isinstance(snapshot, GazeSnapshot)
+        self._latest_gaze = snapshot
+        self._gaze_history.append(snapshot)
+        cutoff_ms = snapshot.timestamp_ms - 500
+        while self._gaze_history and self._gaze_history[0].timestamp_ms < cutoff_ms:
+            self._gaze_history.popleft()
         self._video.set_gaze(snapshot)
         self._gaze_panel.update_snapshot(snapshot)
         self._latency.record(LatencyStage.CAPTURE_TO_INFERENCE, snapshot.inference_ms)
+
+    def _save_gaze_sample(self) -> None:
+        if self._latest_gaze is None:
+            self._log.warn("저장할 Gaze 값이 아직 없습니다")
+            return
+        try:
+            sample = self._sample_store.add_window(list(self._gaze_history))
+        except ValueError as exc:
+            self._log.warn(f"Gaze 샘플 저장 실패: {exc}")
+            return
+        self._sample_list.addItem(format_gaze_sample(sample))
+        self._sample_list.scrollToBottom()
+        self._log.info(
+            f"Gaze 샘플 {sample['sample_index']}/{self._sample_store.capacity} 저장"
+        )
+        self._refresh_sample_button()
+
+    def _refresh_sample_button(self) -> None:
+        self._sample_button.setText(
+            f"시선 샘플 저장 ({self._sample_store.count}/{self._sample_store.capacity})"
+        )
+        self._sample_button.setEnabled(not self._sample_store.full)
+
+    def _clear_gaze_samples(self) -> None:
+        self._sample_store.clear()
+        self._sample_list.clear()
+        self._refresh_sample_button()
+        self._log.info("저장된 Gaze 샘플 초기화")
 
     def _on_hand(self, snapshot: object) -> None:
         assert isinstance(snapshot, HandSnapshot)

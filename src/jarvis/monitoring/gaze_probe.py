@@ -73,6 +73,8 @@ class GazeSnapshot:
     head_roll_deg: float
     left_iris_relative: tuple[float, float]
     right_iris_relative: tuple[float, float]
+    left_eye_center_normalized: tuple[float, float] | None
+    right_eye_center_normalized: tuple[float, float] | None
     tracking_confidence: float
 
     # 2b — composed gaze vector (None when tracking is lost / rejected)
@@ -81,6 +83,7 @@ class GazeSnapshot:
 
     # 2c — temporal smoothing
     smoothed_stability: float | None
+    smoothed_gaze_direction: tuple[float, float, float] | None
     buffer_fill: int
     buffer_capacity: int
 
@@ -238,12 +241,15 @@ def evaluate(
         head_roll_deg=observation.head_roll_deg,
         left_iris_relative=observation.left_iris_relative,
         right_iris_relative=observation.right_iris_relative,
+        left_eye_center_normalized=observation.left_eye_center_normalized,
+        right_eye_center_normalized=observation.right_eye_center_normalized,
         tracking_confidence=min(
             observation.eye_tracking_confidence, observation.face_tracking_confidence
         ),
         gaze_direction=gaze_direction,
         gaze_confidence=gaze_confidence,
         smoothed_stability=smoothed_stability,
+        smoothed_gaze_direction=classify_direction,
         buffer_fill=len(smoother._buffer),  # noqa: SLF001 - diagnostic read of buffer depth
         buffer_capacity=config.smoothing_window_frames,
         target=result.target,

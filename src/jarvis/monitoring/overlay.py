@@ -104,12 +104,20 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
     state = str(snapshot.lock_state)
     ray_color = _LOCK_BGR.get(state, grey)
 
-    # Gaze ray: project the composed direction (x right, y up) onto the frame.
-    center = (w // 2, h // 2)
-    if snapshot.gaze_direction is not None:
-        dx, dy, _ = snapshot.gaze_direction
+    # Gaze ray: use the same smoothed direction that the classifier consumes.
+    left_eye = snapshot.left_eye_center_normalized
+    right_eye = snapshot.right_eye_center_normalized
+    if left_eye is not None and right_eye is not None:
+        center = (
+            int((left_eye[0] + right_eye[0]) * 0.5 * w),
+            int((left_eye[1] + right_eye[1]) * 0.5 * h),
+        )
+    else:
+        center = (w // 2, h // 2)
+    if snapshot.smoothed_gaze_direction is not None:
+        dx, dy, _ = snapshot.smoothed_gaze_direction
         scale = min(w, h) * 0.35
-        tip = (int(center[0] + dx * scale), int(center[1] - dy * scale))
+        tip = (int(center[0] + dx * scale), int(center[1] + dy * scale))
         cv2.circle(frame, center, 4, ray_color, thickness=-1)
         cv2.arrowedLine(frame, center, tip, ray_color, 2, cv2.LINE_AA, tipLength=0.2)
 

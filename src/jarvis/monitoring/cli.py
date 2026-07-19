@@ -27,6 +27,11 @@ def main(argv: list[str] | None = None) -> int:
         default="models/hand_landmarker.task",
         help="hand_landmarker.task 경로 (손 추적 라이브에 필요)",
     )
+    parser.add_argument(
+        "--samples",
+        default="data/evaluation/gaze_samples.json",
+        help="버튼으로 저장할 gaze 진단 샘플 JSON 경로",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -44,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         model_path=Path(args.model),
         profiles_path=Path(args.profiles),
         hand_model_path=Path(args.hand_model),
+        samples_path=Path(args.samples),
     )
     window.show()
     return int(app.exec())

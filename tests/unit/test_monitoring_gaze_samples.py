@@ -5,14 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import numpy as np
 import pytest
 
-from jarvis.contracts import TargetEstimate
+from jarvis.gaze.classifier import TargetClassifier
+from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.features import FaceObservation
-from jarvis.gaze.smoothing import SmoothedGaze
+from jarvis.gaze.lock import GazeLockStateMachine
+from jarvis.gaze.smoothing import GazeSmoother
+from jarvis.monitoring.gaze_probe import GazeSnapshot, evaluate
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
-from jarvis.monitoring.gaze_source import GazeSnapshot
 
 
 def _snapshot(frame_id: int = 1) -> GazeSnapshot:
@@ -30,11 +31,13 @@ def _snapshot(frame_id: int = 1) -> GazeSnapshot:
         left_eye_center_normalized=(0.4, 0.3),
         right_eye_center_normalized=(0.6, 0.3),
     )
-    return GazeSnapshot(
+    config = GazeConfig()
+    return evaluate(
         observation,
-        SmoothedGaze(np.array([0.0, 0.0, 1.0]), 1.0, frame_id * 33, frame_id),
-        TargetEstimate(frame_id * 33, frame_id, "UNKNOWN", 0.0, 0.0, 1.0),
-        "SEARCHING",
+        smoother=GazeSmoother(config),
+        classifier=TargetClassifier(config),
+        lock=GazeLockStateMachine(config),
+        config=config,
     )
 
 
@@ -44,7 +47,9 @@ def test_store_persists_snapshot_as_json(tmp_path: Path) -> None:
 
     sample = store.add(_snapshot())
 
-    assert sample["gaze_direction"] == [0.0, 0.0, 1.0]
+    assert sample["gaze_direction"] == pytest.approx(
+        [0.1277105, 0.1493484, 0.9805322], abs=1e-3
+    )
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload[0]["head_pose_deg"]["pitch"] == -4.0
     assert payload[0]["left_iris_relative"] == [0.1, -0.2]
@@ -67,7 +72,7 @@ def test_format_sample_shows_vector_head_and_target(tmp_path: Path) -> None:
     rendered = format_gaze_sample(store.add(_snapshot()))
 
     assert "#1 [1f]" in rendered
-    assert "gaze=(+0.000, +0.000, +1.000)" in rendered
+    assert "gaze=(+0.128, +0.149, +0.981)" in rendered
     assert "head=(+3.0, -4.0, +1.0)" in rendered
     assert "target=UNKNOWN P=0.00" in rendered
 
@@ -80,7 +85,9 @@ def test_window_averages_multiple_smoothed_frames(tmp_path: Path) -> None:
 
     assert sample["window_frame_count"] == 5
     assert sample["window_duration_ms"] == 132
-    assert sample["gaze_direction"] == [0.0, 0.0, 1.0]
+    assert sample["gaze_direction"] == pytest.approx(
+        [0.1277105, 0.1493484, 0.9805322], abs=1e-3
+    )
 
 
 def test_clear_empties_memory_and_persisted_file(tmp_path: Path) -> None:

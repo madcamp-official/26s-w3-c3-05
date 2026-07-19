@@ -19,7 +19,7 @@ def test_upward_head_pitch_is_positive_in_face_observation_contract() -> None:
         [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, math.cos(raw_pitch), -math.sin(raw_pitch), 0.0],
-            [0.0, math.sin(raw_pitch), math.cos(raw_pitch), 0.0,],
+            [0.0, math.sin(raw_pitch), math.cos(raw_pitch), 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ],
         dtype=np.float64,

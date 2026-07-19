@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from jarvis.monitoring.gaze_source import GazeSnapshot
+from jarvis.monitoring.gaze_probe import GazeSnapshot
 
 
 class GazeSampleStore:
@@ -52,7 +52,7 @@ class GazeSampleStore:
         valid = [
             snapshot
             for snapshot in snapshots
-            if snapshot.observation.face_detected and snapshot.gaze_vector is not None
+            if snapshot.face_detected and snapshot.smoothed_gaze_direction is not None
         ]
         if len(valid) < minimum_frames:
             raise ValueError(
@@ -60,10 +60,12 @@ class GazeSampleStore:
             )
 
         latest = valid[-1]
-        observation = latest.observation
-        estimate = latest.estimate
         directions = np.stack(
-            [snapshot.gaze_vector.direction for snapshot in valid if snapshot.gaze_vector is not None]
+            [
+                snapshot.smoothed_gaze_direction
+                for snapshot in valid
+                if snapshot.smoothed_gaze_direction is not None
+            ]
         )
         mean_direction = directions.mean(axis=0)
         norm = float(np.linalg.norm(mean_direction))
@@ -78,42 +80,37 @@ class GazeSampleStore:
             array = np.asarray(values, dtype=np.float64)
             return [float(array[:, 0].mean()), float(array[:, 1].mean())]
 
-        observations = [snapshot.observation for snapshot in valid]
-        estimates = [snapshot.estimate for snapshot in valid]
-        eye_confidences = [
-            min(item.eye_tracking_confidence, item.face_tracking_confidence)
-            for item in observations
-        ]
+        eye_confidences = [snapshot.tracking_confidence for snapshot in valid]
         left_eye_centers = [
             item.left_eye_center_normalized
-            for item in observations
+            for item in valid
             if item.left_eye_center_normalized is not None
         ]
         right_eye_centers = [
             item.right_eye_center_normalized
-            for item in observations
+            for item in valid
             if item.right_eye_center_normalized is not None
         ]
         sample: dict[str, object] = {
             "sample_index": self.count + 1,
-            "timestamp_ms": observation.timestamp_ms,
-            "frame_id": observation.frame_id,
+            "timestamp_ms": latest.timestamp_ms,
+            "frame_id": latest.frame_id,
             "window_frame_count": len(valid),
             "window_duration_ms": (
-                observations[-1].timestamp_ms - observations[0].timestamp_ms
+                valid[-1].timestamp_ms - valid[0].timestamp_ms
             ),
             "gaze_direction": mean_direction.tolist(),
             "gaze_confidence": mean(eye_confidences),
             "head_pose_deg": {
-                "yaw": mean([item.head_yaw_deg for item in observations]),
-                "pitch": mean([item.head_pitch_deg for item in observations]),
-                "roll": mean([item.head_roll_deg for item in observations]),
+                "yaw": mean([item.head_yaw_deg for item in valid]),
+                "pitch": mean([item.head_pitch_deg for item in valid]),
+                "roll": mean([item.head_roll_deg for item in valid]),
             },
             "left_iris_relative": mean_pair(
-                [item.left_iris_relative for item in observations]
+                [item.left_iris_relative for item in valid]
             ),
             "right_iris_relative": mean_pair(
-                [item.right_iris_relative for item in observations]
+                [item.right_iris_relative for item in valid]
             ),
             "left_eye_center_normalized": (
                 mean_pair(left_eye_centers) if left_eye_centers else None
@@ -121,11 +118,13 @@ class GazeSampleStore:
             "right_eye_center_normalized": (
                 mean_pair(right_eye_centers) if right_eye_centers else None
             ),
-            "target": estimate.target,
-            "probability": estimate.probability,
-            "second_best_probability": estimate.second_best_probability,
-            "stability": mean([item.stability for item in estimates]),
-            "lock_state": latest.lock_state,
+            "target": latest.target,
+            "probability": latest.probability,
+            "second_best_probability": latest.second_best_probability,
+            "stability": mean(
+                [item.smoothed_stability or 0.0 for item in valid]
+            ),
+            "lock_state": str(latest.lock_state),
         }
         self._samples.append(sample)
         self._save()

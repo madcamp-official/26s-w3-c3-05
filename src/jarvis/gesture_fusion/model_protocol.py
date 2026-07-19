@@ -161,7 +161,7 @@ class GestureModel(Protocol):
         ...
 
 
-def normalized_entropy(probs: npt.NDArray[np.floating]) -> float:
+def normalized_entropy(probs: FloatArray) -> float:
     """확률 분포의 엔트로피를 [0, 1]로 정규화한 불확실성 지표.
 
     클래스가 균등분포에 가까울수록(어느 gesture인지 모호할수록) 1에 가깝고, 한
