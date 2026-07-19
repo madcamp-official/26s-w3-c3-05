@@ -95,7 +95,8 @@ def test_first_frame_has_zero_velocity_and_acceleration() -> None:
 
 
 def test_velocity_is_per_second_causal_difference() -> None:
-    extractor = HandFeatureExtractor()
+    # 이 테스트는 raw 차분 수학을 검증하므로 평활화를 끈다(평활화 동작은 별도 테스트).
+    extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=False))
     first = _zeros()
     second = _zeros()
     second[0] = [0.1, 0.0, 0.0]  # 손목이 0.1만큼 이동
@@ -108,7 +109,7 @@ def test_velocity_is_per_second_causal_difference() -> None:
 
 
 def test_acceleration_from_velocity_change() -> None:
-    extractor = HandFeatureExtractor()
+    extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=False))
     f0 = _zeros()
     f1 = _zeros()
     f1[0] = [0.1, 0.0, 0.0]
@@ -194,3 +195,51 @@ def test_angles_only_config() -> None:
         include_acceleration=False,
     )
     assert feature_dimension(config) == len(JOINT_ANGLE_TRIPLETS)
+
+
+# --- landmark 평활화 (One-Euro, 미분 전 노이즈 제거) ---
+
+
+def test_smoothing_is_on_by_default() -> None:
+    assert GestureConfig().smooth_landmarks is True
+
+
+def _velocity_block(features: object) -> np.ndarray:
+    offset = _POSITION_DIMS + len(JOINT_ANGLE_TRIPLETS)
+    return features.vector[offset:offset + _POSITION_DIMS]  # type: ignore[attr-defined]
+
+
+def test_smoothing_reduces_velocity_noise_on_a_still_hand() -> None:
+    """정지한 손 + 고주파 지터를 넣으면, 평활화가 속도 feature의 노이즈를 줄여야 한다.
+
+    같은 노이즈 시퀀스를 평활화 on/off 두 추출기에 흘려 속도 블록의 에너지를 비교한다.
+    """
+    rng = np.random.default_rng(0)
+    base = _zeros()
+    base[:] = 0.5  # 정지한 손(모든 점 고정)
+    noisy = []
+    for i in range(30):
+        frame = base + rng.normal(0.0, 0.01, size=base.shape)  # ±0.01 지터
+        noisy.append(_obs(frame, timestamp_ms=1000 + i * 33, frame_id=i))
+
+    raw = HandFeatureExtractor(GestureConfig(smooth_landmarks=False))
+    smooth = HandFeatureExtractor(GestureConfig(smooth_landmarks=True))
+    raw_energy = 0.0
+    smooth_energy = 0.0
+    for obs in noisy:
+        raw_energy += float(np.sum(_velocity_block(raw.push(obs)) ** 2))
+        smooth_energy += float(np.sum(_velocity_block(smooth.push(obs)) ** 2))
+
+    # 정지 신호이므로 이상적 속도는 0. 평활화가 미분 노이즈를 확실히 낮춰야 한다.
+    assert smooth_energy < raw_energy * 0.5
+
+
+def test_smoothing_resets_on_tracking_loss() -> None:
+    """추적 손실 뒤 첫 프레임은 평활화 상태가 리셋되어 속도 0(공백 미연결)."""
+    extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=True))
+    moving = _zeros()
+    moving[0] = [0.3, 0.0, 0.0]
+    extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1))
+    extractor.push(_obs(_zeros(), timestamp_ms=1033, frame_id=2, hand_detected=False))
+    after = extractor.push(_obs(moving, timestamp_ms=1066, frame_id=3))
+    assert np.all(_velocity_block(after) == 0.0)

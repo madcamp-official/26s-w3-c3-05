@@ -69,6 +69,23 @@ class GestureConfig:
     0에 가까운 값으로 나눠 좌표가 폭주하는 것을 막는 안전 하한이다.
     """
 
+    # --- Landmark 평활화 (README 8장 "속도·가속도" 앞단, 1€ 필터) ---
+    # 위치 좌표의 프레임별 고주파 지터를 미분(속도·가속도) 전에 줄인다. 지터를 그대로
+    # 두면 이산 미분이 노이즈를 증폭해 모델 입력이 크게 흔들리므로, 여기서 One-Euro
+    # 필터로 평활화한다. 값을 바꾸면 documents/gesture-fusion.md·decisions.md에 기록하고,
+    # **학습 데이터도 같은 설정으로 전처리해야** 추론과 일관된다(모델 재현성).
+    smooth_landmarks: bool = True
+    """정규화된 랜드마크를 속도·가속도 계산 전에 One-Euro로 평활화할지 여부."""
+
+    smoothing_min_cutoff: float = 1.0
+    """기본 평활 강도(Hz). 낮을수록 정지 시 더 부드럽지만 지연이 커진다."""
+
+    smoothing_beta: float = 0.3
+    """속도에 따른 컷오프 개방 계수. 높을수록 빠른 동작에서 지연이 줄어든다."""
+
+    smoothing_d_cutoff: float = 1.0
+    """내부 속도 추정의 평활 컷오프(Hz)."""
+
     # --- Feature engineering (README 8장 "속도·가속도·관절 각도 생성") ---
     # 어떤 feature 그룹을 모델 입력 벡터에 넣을지 켜고 끈다. 모델을 갈아끼우거나
     # 입력 차원을 줄일 때 코드 수정 없이 조절한다. 순서(위치→각도→속도→가속도)는
@@ -120,6 +137,12 @@ class GestureConfig:
             raise ValueError("min_palm_scale must be finite and positive")
         if self.max_frame_gap_ms <= 0:
             raise ValueError("max_frame_gap_ms must be positive")
+        if not math.isfinite(self.smoothing_min_cutoff) or self.smoothing_min_cutoff <= 0.0:
+            raise ValueError("smoothing_min_cutoff must be finite and positive")
+        if not math.isfinite(self.smoothing_d_cutoff) or self.smoothing_d_cutoff <= 0.0:
+            raise ValueError("smoothing_d_cutoff must be finite and positive")
+        if not math.isfinite(self.smoothing_beta) or self.smoothing_beta < 0.0:
+            raise ValueError("smoothing_beta must be finite and non-negative")
         if not any(
             (
                 self.include_positions,

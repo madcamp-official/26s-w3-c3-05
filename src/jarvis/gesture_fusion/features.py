@@ -30,6 +30,7 @@ from jarvis.gesture_fusion.config import (
     GestureConfig,
 )
 from jarvis.gesture_fusion.landmarks import HandObservation
+from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -111,16 +112,30 @@ class HandFeatureExtractor:
         self._prev_landmarks: FloatArray | None = None
         self._prev_velocity: FloatArray | None = None
         self._prev_timestamp_ms: int | None = None
+        # Smooth the landmark positions before differencing so per-frame jitter
+        # is not amplified into the velocity/acceleration features. Disabled by
+        # config for tests that isolate the raw differentiation math.
+        self._smoother: OneEuroFilter | None = (
+            OneEuroFilter(
+                min_cutoff=config.smoothing_min_cutoff,
+                beta=config.smoothing_beta,
+                d_cutoff=config.smoothing_d_cutoff,
+            )
+            if config.smooth_landmarks
+            else None
+        )
 
     @property
     def dimension(self) -> int:
         return self._dimension
 
     def reset(self) -> None:
-        """속도·가속도 history를 비운다(추적 손실·시퀀스 경계에서 호출)."""
+        """속도·가속도 history와 평활화 상태를 비운다(추적 손실·시퀀스 경계에서 호출)."""
         self._prev_landmarks = None
         self._prev_velocity = None
         self._prev_timestamp_ms = None
+        if self._smoother is not None:
+            self._smoother.reset()
 
     def push(self, observation: HandObservation) -> FrameFeatures:
         """관측값 하나를 처리해 이 프레임의 feature를 반환한다(과거만 사용)."""
@@ -128,8 +143,12 @@ class HandFeatureExtractor:
             self.reset()
             return self._empty_features(observation)
 
-        flat = observation.landmarks.reshape(-1)
+        # 공백·역전 판정을 먼저 해 필요하면 평활화 상태까지 함께 리셋한 뒤 평활화한다.
         dt_ms = self._delta_ms(observation.timestamp_ms)
+        landmarks = observation.landmarks
+        if self._smoother is not None:
+            landmarks = self._smoother.filter(landmarks, observation.timestamp_ms)
+        flat = landmarks.reshape(-1)
 
         if dt_ms is None or self._prev_landmarks is None:
             velocity = np.zeros(_POSITION_DIMS, dtype=np.float64)
@@ -143,7 +162,7 @@ class HandFeatureExtractor:
             dt_s = dt_ms / 1000.0
             acceleration = (velocity - self._prev_velocity) / dt_s
 
-        vector = self._assemble(observation.landmarks, velocity, acceleration)
+        vector = self._assemble(landmarks, velocity, acceleration)
 
         self._prev_landmarks = flat
         self._prev_velocity = velocity
