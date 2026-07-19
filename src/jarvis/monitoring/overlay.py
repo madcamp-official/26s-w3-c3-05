@@ -185,11 +185,13 @@ def render_normalized_hand(
                     (90, 90, 100), 1, cv2.LINE_AA)
         return canvas
 
-    # Map normalized coords (roughly ±3 units around the wrist origin) into the
-    # canvas: centered, y flipped (image y grows downward), fixed scale.
-    cx, cy = size // 2, int(size * 0.6)
-    scale = size * 0.16
-    px = [(int(cx + x * scale), int(cy - y * scale)) for x, y in points]
+    # Normalized coords keep MediaPipe's image convention (x right, y DOWN), and
+    # the canvas is drawn in the same convention — so use +y (no flip). Flipping
+    # would render the hand upside down relative to the webcam. The wrist (origin)
+    # sits low so fingers, which have negative y (up in the image), extend upward.
+    cx, cy = size // 2, int(size * 0.72)
+    scale = size * 0.15
+    px = [(int(cx + x * scale), int(cy + y * scale)) for x, y in points]
     for a, b in _HAND_CONNECTIONS:
         cv2.line(canvas, px[a], px[b], color, 2, cv2.LINE_AA)
     for x, y in px:

@@ -129,6 +129,27 @@ def test_render_normalized_hand_handles_no_hand() -> None:
     assert canvas.shape == (120, 120, 3)
 
 
+def test_render_normalized_hand_is_not_vertically_flipped() -> None:
+    """Fingers-up (negative y in image convention) must draw ABOVE the wrist.
+
+    Regression for a y-flip bug that rendered the hand upside down.
+    """
+    from jarvis.monitoring.overlay import render_normalized_hand
+
+    size = 240
+    up = tuple((0.0, -1.5) if i else (0.0, 0.0) for i in range(21))  # fingertips above wrist
+    down = tuple((0.0, 1.5) if i else (0.0, 0.0) for i in range(21))  # fingertips below wrist
+
+    def _mean_row(canvas: np.ndarray) -> float:
+        mask = canvas[30:].sum(axis=2) > 120  # skip the tag row band at top
+        rows = np.nonzero(mask)[0]
+        return float(rows.mean())
+
+    assert _mean_row(render_normalized_hand(up, size=size)) < _mean_row(
+        render_normalized_hand(down, size=size)
+    )
+
+
 def test_placeholder_frame_shape_and_content() -> None:
     frame = placeholder_frame(width=320, height=240, text="NO CAMERA")
     assert frame.shape == (240, 320, 3)
