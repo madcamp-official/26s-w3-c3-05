@@ -18,7 +18,7 @@ from jarvis.gaze.classifier import ClassificationResult, DeviceGazeProfile, Targ
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.features import FaceObservation, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockState, GazeLockStateMachine
-from jarvis.gaze.smoothing import GazeSmoother
+from jarvis.gaze.smoothing import GazeSmoother, SmoothedGaze
 
 
 class GazeTargetingEngine:
@@ -29,10 +29,16 @@ class GazeTargetingEngine:
         self._smoother = GazeSmoother(config)
         self._classifier = TargetClassifier(config)
         self._lock = GazeLockStateMachine(config)
+        self._last_smoothed_gaze: SmoothedGaze | None = None
 
     @property
     def lock_state(self) -> GazeLockState:
         return self._lock.state
+
+    @property
+    def last_smoothed_gaze(self) -> SmoothedGaze | None:
+        """가장 최근 classifier 입력과 동일한 평활화 시선 벡터."""
+        return self._last_smoothed_gaze
 
     def is_gaze_locked_to(self, device_id: str) -> bool:
         """Cursor Control Mapper 게이트(README 6장 `Gaze Lock == laptop`)에서 쓴다."""
@@ -61,6 +67,7 @@ class GazeTargetingEngine:
         """
         gaze_vector = compose_gaze_vector(observation, self._config)
         smoothed = self._smoother.update(gaze_vector)
+        self._last_smoothed_gaze = smoothed
 
         if smoothed is None:
             classification = ClassificationResult(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -12,6 +13,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--camera", type=int, default=0, help="카메라 장치 인덱스 (기본 0)"
+    )
+    parser.add_argument("--model", type=Path, default=Path("models/face_landmarker.task"))
+    parser.add_argument(
+        "--profiles", type=Path, default=Path("data/calibration/profiles.json")
+    )
+    parser.add_argument(
+        "--samples", type=Path, default=Path("data/evaluation/gaze_samples.json")
     )
     args = parser.parse_args(argv)
 
@@ -25,7 +33,12 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(device_index=args.camera)
+    window = MainWindow(
+        device_index=args.camera,
+        model_path=args.model,
+        profiles_path=args.profiles,
+        samples_path=args.samples,
+    )
     window.show()
     return int(app.exec())
 

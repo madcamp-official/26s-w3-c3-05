@@ -82,6 +82,17 @@ def _iris_relative_position(
     )
 
 
+def _eye_center_normalized(
+    landmarks: Any, inner_idx: int, outer_idx: int, upper_idx: int, lower_idx: int
+) -> tuple[float, float]:
+    """눈 네 경계 landmark의 중심을 이미지 정규화 좌표로 반환한다."""
+    points = [landmarks[index] for index in (inner_idx, outer_idx, upper_idx, lower_idx)]
+    return (
+        float(np.clip(sum(point.x for point in points) / len(points), 0.0, 1.0)),
+        float(np.clip(sum(point.y for point in points) / len(points), 0.0, 1.0)),
+    )
+
+
 def rotation_matrix_to_euler_deg(matrix: FloatMatrix) -> tuple[float, float, float]:
     """회전 행렬(3x3 또는 4x4의 좌상단)에서 (yaw, pitch, roll)을 degree로 추출한다.
 
@@ -102,7 +113,9 @@ def rotation_matrix_to_euler_deg(matrix: FloatMatrix) -> tuple[float, float, flo
         pitch = math.atan2(-r[1, 2], r[1, 1])
         yaw = math.atan2(-r[2, 0], sy)
         roll = 0.0
-    return math.degrees(yaw), math.degrees(pitch), math.degrees(roll)
+    # MediaPipe transformation matrix의 x축 회전은 사용자가 위를 볼 때 음수다.
+    # FaceObservation 계약은 pitch 양수를 화면 위쪽으로 정의하므로 여기서 반전한다.
+    return math.degrees(yaw), -math.degrees(pitch), math.degrees(roll)
 
 
 def _lost_tracking_observation(timestamp_ms: int, frame_id: int) -> FaceObservation:
@@ -180,6 +193,20 @@ class FaceLandmarkerAdapter:
             _RIGHT_EYE_UPPER_LID,
             _RIGHT_EYE_LOWER_LID,
         )
+        left_eye_center = _eye_center_normalized(
+            landmarks,
+            _LEFT_EYE_INNER_CORNER,
+            _LEFT_EYE_OUTER_CORNER,
+            _LEFT_EYE_UPPER_LID,
+            _LEFT_EYE_LOWER_LID,
+        )
+        right_eye_center = _eye_center_normalized(
+            landmarks,
+            _RIGHT_EYE_INNER_CORNER,
+            _RIGHT_EYE_OUTER_CORNER,
+            _RIGHT_EYE_UPPER_LID,
+            _RIGHT_EYE_LOWER_LID,
+        )
 
         # Face Landmarker Tasks API는 얼굴 전체에 대한 단일 confidence 스칼라를
         # 내주지 않는다. 얼굴이 검출된 프레임은 1.0으로 다루고, 검출 실패(위에서
@@ -198,4 +225,6 @@ class FaceLandmarkerAdapter:
             eye_tracking_confidence=confidence,
             face_tracking_confidence=confidence,
             face_detected=True,
+            left_eye_center_normalized=left_eye_center,
+            right_eye_center_normalized=right_eye_center,
         )

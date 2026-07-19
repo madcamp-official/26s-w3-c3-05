@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -114,6 +116,14 @@ def test_confidence_is_minimum_of_eye_and_face() -> None:
     )
     assert gaze is not None
     assert gaze.confidence == pytest.approx(0.6)
+
+
+def test_face_observation_accepts_normalized_eye_centers() -> None:
+    observation = _observation()
+    assert observation.left_eye_center_normalized is None
+
+    with pytest.raises(ValueError):
+        replace(observation, left_eye_center_normalized=(1.1, 0.5))
 
 
 @pytest.mark.parametrize(

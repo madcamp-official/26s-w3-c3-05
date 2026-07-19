@@ -54,6 +54,7 @@ def test_tracking_loss_yields_unknown_with_zero_stability() -> None:
     assert estimate.target == UNKNOWN
     assert estimate.stability == 0.0
     assert engine.lock_state == GazeLockState.SEARCHING
+    assert engine.last_smoothed_gaze is None
 
 
 def test_dwell_leads_to_target_locked_and_estimate_matches() -> None:

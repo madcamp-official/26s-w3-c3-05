@@ -12,6 +12,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from jarvis.monitoring.gaze_source import GazeSnapshot
+
 Frame = NDArray[np.uint8]
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -36,6 +38,65 @@ def draw_hud(frame: Frame, lines: list[str], *, recording: bool = True) -> Frame
 
     if recording:
         cv2.circle(frame, (frame.shape[1] - 18, 18), 6, (60, 60, 220), thickness=-1)
+    return frame
+
+
+def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
+    """Draw real gaze/head/target state from the current camera frame."""
+    height, width = frame.shape[:2]
+    observation = snapshot.observation
+    estimate = snapshot.estimate
+
+    if snapshot.gaze_vector is not None:
+        direction = snapshot.gaze_vector.direction
+        left_eye = observation.left_eye_center_normalized
+        right_eye = observation.right_eye_center_normalized
+        if left_eye is not None and right_eye is not None:
+            origin = (
+                int((left_eye[0] + right_eye[0]) * 0.5 * width),
+                int((left_eye[1] + right_eye[1]) * 0.5 * height),
+            )
+        else:
+            origin = (width // 2, height // 2)
+        endpoint = (
+            int(origin[0] + float(direction[0]) * width * 0.28),
+            int(origin[1] + float(direction[1]) * height * 0.28),
+        )
+        cv2.arrowedLine(frame, origin, endpoint, (80, 220, 255), 3, cv2.LINE_AA, tipLength=0.18)
+        cv2.circle(frame, origin, 5, (255, 255, 255), thickness=-1)
+
+    # Mini eye indicators: center cross + measured relative iris offset.
+    for center, iris in (
+        ((width - 110, height - 48), observation.left_iris_relative),
+        ((width - 45, height - 48), observation.right_iris_relative),
+    ):
+        cv2.ellipse(frame, center, (25, 13), 0, 0, 360, (210, 210, 210), 1, cv2.LINE_AA)
+        iris_center = (int(center[0] + iris[0] * 18), int(center[1] - iris[1] * 9))
+        cv2.circle(frame, iris_center, 5, (255, 180, 60), thickness=-1)
+
+    target_color = (80, 210, 100) if estimate.target != "UNKNOWN" else (80, 180, 240)
+    lines = [
+        f"TARGET  {estimate.target}",
+        f"P {estimate.probability:.2f}  STABLE {estimate.stability:.2f}",
+        f"LOCK  {snapshot.lock_state}",
+        (
+            f"HEAD y={observation.head_yaw_deg:+.1f} "
+            f"p={observation.head_pitch_deg:+.1f} r={observation.head_roll_deg:+.1f}"
+        ),
+    ]
+    x = 12
+    y = height - 84
+    for index, text in enumerate(lines):
+        cv2.putText(
+            frame,
+            text,
+            (x, y + index * 20),
+            _FONT,
+            0.5,
+            target_color if index == 0 else (235, 235, 235),
+            1,
+            cv2.LINE_AA,
+        )
     return frame
 
 

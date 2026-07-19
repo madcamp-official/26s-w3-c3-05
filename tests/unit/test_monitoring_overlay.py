@@ -7,7 +7,11 @@ import pytest
 
 cv2 = pytest.importorskip("cv2")
 
-from jarvis.monitoring.overlay import draw_hud, placeholder_frame  # noqa: E402
+from jarvis.contracts import TargetEstimate  # noqa: E402
+from jarvis.gaze.features import FaceObservation  # noqa: E402
+from jarvis.gaze.smoothing import SmoothedGaze  # noqa: E402
+from jarvis.monitoring.gaze_source import GazeSnapshot  # noqa: E402
+from jarvis.monitoring.overlay import draw_gaze_overlay, draw_hud, placeholder_frame  # noqa: E402
 
 
 def test_draw_hud_modifies_frame() -> None:
@@ -30,3 +34,33 @@ def test_placeholder_frame_shape_and_content() -> None:
     assert frame.shape == (240, 320, 3)
     assert frame.dtype == np.uint8
     assert frame.any()  # not all black — has text and background
+
+
+def test_draw_gaze_overlay_uses_real_snapshot() -> None:
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    observation = FaceObservation(
+        timestamp_ms=100,
+        frame_id=3,
+        left_iris_relative=(0.2, -0.1),
+        right_iris_relative=(0.1, -0.1),
+        head_yaw_deg=10.0,
+        head_pitch_deg=-3.0,
+        head_roll_deg=1.0,
+        eye_tracking_confidence=1.0,
+        face_tracking_confidence=1.0,
+        face_detected=True,
+        left_eye_center_normalized=(0.40, 0.35),
+        right_eye_center_normalized=(0.60, 0.35),
+    )
+    snapshot = GazeSnapshot(
+        observation=observation,
+        gaze_vector=SmoothedGaze(np.array([0.2, 0.0, 0.9797959]), 1.0, 100, 3),
+        estimate=TargetEstimate(100, 3, "UNKNOWN", 0.0, 0.0, 1.0),
+        lock_state="SEARCHING",
+    )
+
+    draw_gaze_overlay(frame, snapshot)
+
+    assert frame.any()
+    # 양쪽 눈 중간점: normalized (0.5, 0.35) → pixel (160, 84).
+    assert frame[84, 160].any()
