@@ -256,7 +256,8 @@ def evaluate(
     the resulting ``TargetEstimate`` is identical to what the engine emits; the
     only addition is that the intermediate values are kept for display.
     """
-    gaze_vector = compose_gaze_vector(observation, config)
+    blink_hold = observation.face_detected and not observation.eyes_open
+    gaze_vector = None if blink_hold else compose_gaze_vector(observation, config)
     calibration_features = (
         observation_features(observation, gaze_vector) if gaze_vector is not None else None
     )
@@ -266,7 +267,7 @@ def evaluate(
             smoother.update(gaze_vector)
             if gaze_vector is not None
             else smoother.hold(observation.timestamp_ms, observation.frame_id)
-            if observation.face_detected and not observation.eyes_open
+            if blink_hold
             else smoother.hold_tracking_loss(observation.timestamp_ms, observation.frame_id)
         )
 

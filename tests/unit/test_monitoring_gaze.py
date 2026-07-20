@@ -29,6 +29,7 @@ def _observation(
     pitch: float = 0.0,
     detected: bool = True,
     confidence: float = 1.0,
+    eyes_open: bool = True,
 ) -> FaceObservation:
     return FaceObservation(
         timestamp_ms=timestamp_ms,
@@ -41,6 +42,7 @@ def _observation(
         eye_tracking_confidence=confidence,
         face_tracking_confidence=confidence,
         face_detected=detected,
+        eyes_open=eyes_open,
     )
 
 
@@ -89,6 +91,29 @@ def test_short_face_dropout_uses_recovering_hold() -> None:
     assert held.tracking_lost is False
     assert held.tracking_recovering is True
     assert held.smoothed_gaze_direction == first.smoothed_gaze_direction
+
+
+def test_short_blink_holds_last_gaze_without_composing_jumpy_raw_vector() -> None:
+    smoother, classifier, lock, config = _fresh()
+    first = evaluate(
+        _observation(timestamp_ms=1_000, yaw=0.0),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+    blink = evaluate(
+        _observation(timestamp_ms=1_100, yaw=35.0, eyes_open=False),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+
+    assert first.smoothed_gaze_direction is not None
+    assert blink.gaze_direction is None
+    assert blink.gaze_confidence is None
+    assert blink.smoothed_gaze_direction == first.smoothed_gaze_direction
 
 
 # --- no calibration profiles --------------------------------------------------

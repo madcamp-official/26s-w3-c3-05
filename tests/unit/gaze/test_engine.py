@@ -20,6 +20,7 @@ def _observation(
     *,
     face_detected: bool = True,
     head_yaw_deg: float = 0.0,
+    eyes_open: bool = True,
 ) -> FaceObservation:
     return FaceObservation(
         timestamp_ms=timestamp_ms,
@@ -32,6 +33,7 @@ def _observation(
         eye_tracking_confidence=1.0,
         face_tracking_confidence=1.0,
         face_detected=face_detected,
+        eyes_open=eyes_open,
     )
 
 
@@ -55,6 +57,17 @@ def test_tracking_loss_yields_unknown_with_zero_stability() -> None:
     assert estimate.stability == 0.0
     assert engine.lock_state == GazeLockState.SEARCHING
     assert engine.last_smoothed_gaze is None
+
+
+def test_short_blink_holds_last_smoothed_gaze() -> None:
+    engine = GazeTargetingEngine(GazeConfig(blink_hold_ms=200))
+    first = engine.process(_observation(0, 1_000, head_yaw_deg=0.0))
+    held = engine.process(_observation(1, 1_100, head_yaw_deg=35.0, eyes_open=False))
+
+    assert engine.last_smoothed_gaze is not None
+    assert held.frame_id == 1
+    assert held.target == first.target
+    assert held.stability == first.stability
 
 
 def test_dwell_leads_to_target_locked_and_estimate_matches() -> None:

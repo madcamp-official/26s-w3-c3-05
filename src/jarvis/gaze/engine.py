@@ -72,12 +72,13 @@ class GazeTargetingEngine:
         반환한다 — 이때 target은 `config.UNKNOWN_TARGET`이고 probability·
         stability는 0.0이다(성공을 지어내지 않는다, development-principles.md 1절).
         """
-        gaze_vector = compose_gaze_vector(observation, self._config)
+        blink_hold = observation.face_detected and not observation.eyes_open
+        gaze_vector = None if blink_hold else compose_gaze_vector(observation, self._config)
         smoothed = (
             self._smoother.update(gaze_vector)
             if gaze_vector is not None
             else self._smoother.hold(observation.timestamp_ms, observation.frame_id)
-            if observation.face_detected and not observation.eyes_open
+            if blink_hold
             else self._smoother.hold_tracking_loss(observation.timestamp_ms, observation.frame_id)
         )
         self._last_smoothed_gaze = smoothed
