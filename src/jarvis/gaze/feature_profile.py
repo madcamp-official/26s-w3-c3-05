@@ -159,8 +159,8 @@ class TargetAreaProfile:
 def build_area_profile(
     yaw_pitch_samples: list[tuple[float, float]],
     *,
-    minimum_radius_deg: float = 4.0,
-    padding_scale: float = 1.15,
+    minimum_radius_deg: float = 3.0,
+    padding_scale: float = 1.0,
 ) -> TargetAreaProfile:
     if not yaw_pitch_samples:
         raise ValueError("at least one yaw/pitch sample is required")
@@ -169,7 +169,7 @@ def build_area_profile(
         raise ValueError("yaw/pitch samples must be finite pairs")
     center = np.median(matrix, axis=0)
     deviations = np.abs(matrix - center)
-    radius = np.max(deviations, axis=0) * padding_scale
+    radius = np.percentile(deviations, 95, axis=0) * padding_scale
     radius = np.maximum(radius, minimum_radius_deg)
     return TargetAreaProfile(
         center_yaw=float(center[0]),

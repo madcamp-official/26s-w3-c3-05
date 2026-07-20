@@ -50,8 +50,8 @@ def test_registration_uses_robust_center_and_minimum_spread() -> None:
         assert session.add(_gaze(frame, yaw), 1.0)
     record = session.finalize()
     assert record.direction.yaw == pytest.approx(10.0)
-    assert record.spread.yaw == 6.0
-    assert record.spread.pitch == 6.0
+    assert record.spread.yaw == 4.0
+    assert record.spread.pitch == 4.0
 
 
 def test_registration_builds_feature_profile() -> None:
@@ -76,7 +76,7 @@ def test_registration_builds_feature_profile() -> None:
     assert record.feature_profile is not None
     assert record.feature_profile.sample_count == 3
     assert record.area_profile is not None
-    assert record.area_profile.contains(10.0, 5.0)
+    assert record.area_profile.contains(10.0, 0.0)
     assert record.reference_face_scale == pytest.approx(0.11)
 
 

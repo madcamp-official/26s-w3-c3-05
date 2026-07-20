@@ -149,10 +149,10 @@ class GazeConfig:
 
     target_minimum_angular_variance_deg: float = 4.0
 
-    registration_min_spread_deg: float = 6.0
+    registration_min_spread_deg: float = 4.0
     """Lower bound for angle-profile spread saved during look-to-register."""
 
-    registration_max_spread_deg: float = 12.0
+    registration_max_spread_deg: float = 8.0
     """Upper bound for angle-profile spread saved during look-to-register."""
     """3D 모드에서 계산한 각도 분산(atan(radius/depth)^2)의 하한(도).
 
