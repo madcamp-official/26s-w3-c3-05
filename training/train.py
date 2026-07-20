@@ -255,10 +255,21 @@ def train(
     epochs_without_improvement = 0
     epoch_limit = max_epochs if max_epochs is not None else training_config.max_epochs
 
+    # 코사인 스케줄(2026-07-20) — 고정 LR로는 val macro-F1이 뚜렷한 수렴 없이
+    # 진동만 하는 패턴이 관찰됐다. T_max를 실제 epoch 상한(early stopping으로
+    # 더 일찍 끝날 수 있음)에 맞춰, 학습이 진행될수록 step을 줄여 진동을 가라앉힌다.
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(1, epoch_limit),
+        eta_min=training_config.learning_rate * training_config.lr_min_factor,
+    )
+
     for epoch in range(epoch_limit):
         train_loss, train_report = _run_epoch(net, loss_fn, train_loader, optimizer, device)
         val_loss, val_report = _run_epoch(net, loss_fn, val_loader, None, device)
+        scheduler.step()
 
+        writer.add_scalar("lr", scheduler.get_last_lr()[0], epoch)
         writer.add_scalar("loss/train", train_loss, epoch)
         writer.add_scalar("loss/val", val_loss, epoch)
         writer.add_scalar("macro_f1/train", train_report.macro_f1, epoch)

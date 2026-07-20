@@ -32,8 +32,15 @@ def test_default_training_config_singleton_matches_defaults() -> None:
         {"onset_fraction": 0.6},
         {"ending_fraction": 0.0},
         {"onset_fraction": 0.5, "ending_fraction": 0.5},
+        {"lr_min_factor": -0.1},
+        {"lr_min_factor": 1.1},
     ],
 )
 def test_rejects_invalid_overrides(overrides: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         TrainingConfig(**overrides)  # type: ignore[arg-type]
+
+
+def test_lr_min_factor_accepts_boundary_values() -> None:
+    TrainingConfig(lr_min_factor=0.0)  # 완전히 0까지 감쇠 — 허용.
+    TrainingConfig(lr_min_factor=1.0)  # 감쇠 없음(상수 LR)과 동일 — 허용.

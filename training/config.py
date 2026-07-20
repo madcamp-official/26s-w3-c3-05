@@ -50,6 +50,13 @@ class TrainingConfig:
     weight_decay: float = 1e-4
     """AdamW weight decay."""
 
+    lr_min_factor: float = 0.01
+    """코사인 학습률 스케줄의 최솟값을 `learning_rate`에 대한 비율로 정한다(2026-07-20
+    추가). 고정 LR로는 val macro-F1이 수렴 없이 진동만 하는 패턴이 관찰됐다
+    (documents/decisions.md 참조) — 매 epoch이 끝날 때마다
+    `CosineAnnealingLR(T_max=실제 epoch 상한)`로 `learning_rate` -> `learning_rate *
+    lr_min_factor`까지 감쇠시킨다. 1.0이면 감쇠 없음(상수 LR)과 동일하다."""
+
     max_epochs: int = 100
     """최대 epoch 수(early stopping으로 더 일찍 끝날 수 있음)."""
 
@@ -99,6 +106,8 @@ class TrainingConfig:
             raise ValueError("learning_rate must be finite and positive")
         if not math.isfinite(self.weight_decay) or self.weight_decay < 0.0:
             raise ValueError("weight_decay must be finite and non-negative")
+        if not math.isfinite(self.lr_min_factor) or not (0.0 <= self.lr_min_factor <= 1.0):
+            raise ValueError("lr_min_factor must be finite and within [0, 1]")
         if self.max_epochs < 1:
             raise ValueError("max_epochs must be at least 1")
         if self.early_stopping_patience < 1:
