@@ -59,6 +59,10 @@ README [8장 핵심 기능 2](../README.md), [9장 핵심 기능 3](../README.md
 
 `PoseStateMachine` 이벤트를 `InputSink`(macOS Quartz / Windows user32)로 옮긴다. 판정(순수)과 실행(부수효과)을 분리해 상태기계를 OS 없이 테스트하고 실행을 끄고도 판정을 관찰한다. 디버깅 툴에서 토글(양 탭 공유), 드래그 중 손 놓침·제어 끄기 시 눌린 버튼을 반드시 놓는다.
 
+- **F11 외 모든 동작이 Windows·macOS 양쪽에서 대응**된다(클릭·우클릭·드래그·스크롤·커서). `Win32InputSink`·`MacOSInputSink`가 같은 `InputSink` Protocol을 구현하고 `default_input_sink()`가 플랫폼으로 고른다.
+- **드래그 실시간 이동**: macOS는 버튼을 누른 채 움직일 때 `MouseMoved`가 아니라 `LeftMouseDragged`를 받아야 창·선택 영역이 실시간으로 따라온다(그렇지 않으면 버튼을 뗄 때까지 최종 위치로만 튄다). `move_cursor(dragging=)`로 드래그 중임을 실어 이벤트 종류를 바꾼다. Windows는 `MOUSEEVENTF_MOVE`가 버튼 눌린 채면 OS가 드래그로 해석해 별도 처리가 필요 없다.
+- **주먹→보 전이 키는 플랫폼별**: macOS=F11(바탕화면 표시), Windows=재생/일시정지(`_transition_key()`가 `sys.platform`으로 선택). 스크롤은 30fps 그대로면 감당이 안 돼 `SCROLL_INTERVAL_MS`(60ms)로 솎아내며, 이 스로틀은 실행·UI 기록 양쪽에 적용한다.
+
 ## 통합 규약 (배선 계층 주의)
 
 Task 1·2는 mediapipe·카메라 없이 단위 테스트되는 순수 경계다. 실제 캡처와 붙이는 앱/배선 계층에서 아래를 지켜야 한다. 이 책임은 gesture_fusion 패키지가 아니라 배선 계층에 있다(모듈 경계 규칙: gesture_fusion은 `runtime_protocol` 내부 타입을 import하지 않는다).
