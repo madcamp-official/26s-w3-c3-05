@@ -43,8 +43,15 @@ class SpotterConfig:
     min_onset_gesture_confidence: float = 0.5
     """ONSET을 확정할 때 gesture 분류 확신도가 이 값 미만이면 제스처 시작으로 인정하지 않는다."""
 
-    background_label: str = DEFAULT_GESTURE_LABELS[0]
-    """"제스처 없음"을 뜻하는 배경 클래스 label. ONSET 확정 시 이 label이면 거부한다."""
+    background_labels: frozenset[str] = frozenset({DEFAULT_GESTURE_LABELS[0]})
+    """"제스처 없음"을 뜻하는 배경 label 집합. ONSET 확정 시 이 중 하나면 거부한다.
+
+    `DEFAULT_GESTURE_LABELS[0]`("none")만 기본값으로 두지만, 학습 라벨 구성에
+    따라 "타겟 제스처가 아닌 동작"을 별도 label(예: "doing_other_things")로 두는
+    경우가 있다 — capability map에 매핑이 없어 런타임 결과는 "동작 없음"으로
+    none과 동일한데, 이 필드가 문자열 하나뿐이면 그 label의 ONSET을 걸러내지
+    못해 진짜 제스처 시작과 경합하는 채로 label lock을 잡는다(2026-07-20 발견).
+    호출자가 학습 라벨 집합에 맞는 배경 label들을 명시적으로 넘겨야 한다."""
 
     def __post_init__(self) -> None:
         if self.min_consecutive_frames < 1:
@@ -53,8 +60,10 @@ class SpotterConfig:
             0.0 <= self.min_onset_gesture_confidence <= 1.0
         ):
             raise ValueError("min_onset_gesture_confidence must be finite and within [0, 1]")
-        if not self.background_label:
-            raise ValueError("background_label must not be empty")
+        if not self.background_labels:
+            raise ValueError("background_labels must not be empty")
+        if any(not label for label in self.background_labels):
+            raise ValueError("background_labels must not contain empty strings")
 
 
 DEFAULT_SPOTTER_CONFIG = SpotterConfig()
@@ -109,7 +118,10 @@ class GestureSpotter:
             return GestureEstimate(
                 timestamp_ms=timestamp_ms,
                 frame_id=frame_id,
-                gesture=self._config.background_label,
+                # 손 추적 손실 시 보고할 자리표시자 값 — 어떤 배경 label이 예측됐는지와
+                # 무관한 합성 상태이므로, background_labels 중 임의의 하나가 아니라
+                # 계약상 정본인 DEFAULT_GESTURE_LABELS[0]("none")을 쓴다.
+                gesture=DEFAULT_GESTURE_LABELS[0],
                 gesture_confidence=0.0,
                 phase=GesturePhase.IDLE,
                 phase_confidence=0.0,
@@ -158,7 +170,7 @@ class GestureSpotter:
 
         if confirmed_phase == GesturePhase.ONSET:
             if (
-                prediction.gesture == self._config.background_label
+                prediction.gesture in self._config.background_labels
                 or prediction.gesture_confidence < self._config.min_onset_gesture_confidence
             ):
                 # 배경 클래스거나 확신이 낮으면 제스처 시작으로 인정하지 않는다.
