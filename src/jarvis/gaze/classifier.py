@@ -197,7 +197,11 @@ class TargetClassifier:
         angular_distances = np.empty(len(device_ids), dtype=np.float64)
         for i, device_id in enumerate(device_ids):
             profile = self._profiles[device_id]
-            geometry = self._geometries.get(device_id)
+            geometry = (
+                self._geometries.get(device_id)
+                if self._config.enable_3d_target_matching
+                else None
+            )
             angular_distance, variance = effective_distance_and_variance(
                 direction, origin, profile, geometry, self._config
             )

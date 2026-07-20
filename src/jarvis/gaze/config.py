@@ -70,6 +70,14 @@ class GazeConfig:
 
     UNKNOWN_TARGET: str = "UNKNOWN"
 
+    enable_3d_target_matching: bool = False
+    """Use triangulated 3D geometry for live matching.
+
+    Disabled by default for webcam demos: head translation from a monocular
+    face model is noisy, so registration may store 3D diagnostics while
+    classification stays on the more stable angle profile.
+    """
+
     # 3D triangulation (calibration/triangulation.py) — 10초 등록 동안 머리를
     # 움직여 얻은 여러 시선 광선으로 물체의 실제 위치·크기를 추정할 때의 품질
     # 기준. 기준을 만족하지 못하면 각도 기반(mean_direction + variance) 등록으로

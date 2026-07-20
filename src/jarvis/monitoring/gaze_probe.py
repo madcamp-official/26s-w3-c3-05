@@ -171,7 +171,7 @@ def _device_details(
     geometries = classifier.geometries
     details = []
     for device_id, profile in profiles.items():
-        geometry = geometries.get(device_id)
+        geometry = geometries.get(device_id) if config.enable_3d_target_matching else None
         angular_distance, _variance = effective_distance_and_variance(
             gaze, ray_origin, profile, geometry, config
         )

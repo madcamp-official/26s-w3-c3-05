@@ -101,7 +101,7 @@ def test_unregister_device_falls_back_to_unknown() -> None:
 def test_3d_registered_device_resolves_correctly_through_full_pipeline() -> None:
     """head_position_mm이 프레임마다 주어지면 smoothing이 origin을 평균 내
     engine 전체 파이프라인을 통해 3D geometry 매칭까지 이어져야 한다."""
-    config = GazeConfig(unknown_probability_threshold=0.5)
+    config = GazeConfig(unknown_probability_threshold=0.5, enable_3d_target_matching=True)
     engine = GazeTargetingEngine(config)
     engine.register_device(
         DeviceGazeProfile("laptop", np.array([0.0, 0.0, 1.0]), variance=0.05),

@@ -155,7 +155,7 @@ def test_3d_geometry_corrects_for_head_movement_since_registration() -> None:
     3D geometry가 있으면 현재 머리 위치(origin) 기준으로 매 프레임 새로 방향을
     계산하므로, 각도 전용 모델이 오답을 내는 상황에서도 올바른 기기를 고른다.
     """
-    config = GazeConfig(unknown_probability_threshold=0.5)
+    config = GazeConfig(unknown_probability_threshold=0.5, enable_3d_target_matching=True)
     classifier = TargetClassifier(config)
 
     bulb_position = np.array([300.0, 0.0, 2000.0])
@@ -179,6 +179,28 @@ def test_3d_geometry_corrects_for_head_movement_since_registration() -> None:
     # origin이 주어지면 bulb의 3D geometry로 매 프레임 새로 계산해 올바르게 고른다.
     corrected_result = classifier.classify(true_direction_to_bulb, origin=runtime_origin)
     assert corrected_result.target == "bulb"
+
+
+def test_3d_geometry_is_diagnostic_only_by_default() -> None:
+    """Webcam demo stability: geometry may be stored, but live matching uses the
+    angle profile unless `enable_3d_target_matching` is explicitly enabled."""
+    config = GazeConfig(unknown_probability_threshold=0.5)
+    classifier = TargetClassifier(config)
+
+    bulb_position = np.array([300.0, 0.0, 2000.0])
+    bulb_registered_direction = _unit(bulb_position.tolist())
+    classifier.register_profile(DeviceGazeProfile("laptop", _unit([0.0, 0.0, 1.0]), variance=0.02))
+    classifier.register_profile(
+        DeviceGazeProfile("bulb", bulb_registered_direction, variance=0.02),
+        geometry_3d=TargetGeometry3D(center_mm=bulb_position, radius_mm=50.0),
+    )
+
+    runtime_origin = np.array([800.0, 0.0, 0.0])
+    true_direction_to_bulb = _unit((bulb_position - runtime_origin).tolist())
+
+    result = classifier.classify(true_direction_to_bulb, origin=runtime_origin)
+
+    assert result.target == "laptop"
 
 
 def test_classify_without_origin_ignores_registered_geometry() -> None:
