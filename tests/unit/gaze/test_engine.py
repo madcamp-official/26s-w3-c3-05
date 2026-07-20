@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from jarvis.contracts.messages import TargetEstimate
-from jarvis.gaze.classifier import DeviceGazeProfile
+from jarvis.gaze.classifier import DeviceGazeProfile, TargetGeometry3D
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.engine import GazeTargetingEngine
 from jarvis.gaze.features import FaceObservation
@@ -20,6 +20,7 @@ def _observation(
     *,
     face_detected: bool = True,
     head_yaw_deg: float = 0.0,
+    eyes_open: bool = True,
 ) -> FaceObservation:
     return FaceObservation(
         timestamp_ms=timestamp_ms,
@@ -32,6 +33,7 @@ def _observation(
         eye_tracking_confidence=1.0,
         face_tracking_confidence=1.0,
         face_detected=face_detected,
+        eyes_open=eyes_open,
     )
 
 
@@ -55,6 +57,17 @@ def test_tracking_loss_yields_unknown_with_zero_stability() -> None:
     assert estimate.stability == 0.0
     assert engine.lock_state == GazeLockState.SEARCHING
     assert engine.last_smoothed_gaze is None
+
+
+def test_short_blink_holds_last_smoothed_gaze() -> None:
+    engine = GazeTargetingEngine(GazeConfig(blink_hold_ms=200))
+    first = engine.process(_observation(0, 1_000, head_yaw_deg=0.0))
+    held = engine.process(_observation(1, 1_100, head_yaw_deg=35.0, eyes_open=False))
+
+    assert engine.last_smoothed_gaze is not None
+    assert held.frame_id == 1
+    assert held.target == first.target
+    assert held.stability == first.stability
 
 
 def test_dwell_leads_to_target_locked_and_estimate_matches() -> None:
@@ -96,3 +109,37 @@ def test_unregister_device_falls_back_to_unknown() -> None:
     engine.unregister_device("laptop")
     estimate = engine.process(_observation(0, 1_000))
     assert estimate.target == UNKNOWN
+
+
+def test_3d_registered_device_resolves_correctly_through_full_pipeline() -> None:
+    """head_position_mm이 프레임마다 주어지면 smoothing이 origin을 평균 내
+    engine 전체 파이프라인을 통해 3D geometry 매칭까지 이어져야 한다."""
+    config = GazeConfig(unknown_probability_threshold=0.5, enable_3d_target_matching=True)
+    engine = GazeTargetingEngine(config)
+    engine.register_device(
+        DeviceGazeProfile("laptop", np.array([0.0, 0.0, 1.0]), variance=0.05),
+        geometry_3d=TargetGeometry3D(np.array([0.0, 0.0, 500.0]), radius_mm=50.0),
+    )
+
+    head_position = np.array([0.0, 0.0, 0.0])
+    estimate = None
+    for i in range(config.smoothing_window_frames + 2):
+        observation = FaceObservation(
+            timestamp_ms=i * 30,
+            frame_id=i,
+            left_iris_relative=(0.0, 0.0),
+            right_iris_relative=(0.0, 0.0),
+            head_yaw_deg=0.0,
+            head_pitch_deg=0.0,
+            head_roll_deg=0.0,
+            eye_tracking_confidence=1.0,
+            face_tracking_confidence=1.0,
+            face_detected=True,
+            head_position_mm=head_position,
+        )
+        estimate = engine.process(observation)
+
+    assert estimate is not None
+    assert estimate.target == "laptop"
+    assert engine.last_smoothed_gaze is not None
+    assert engine.last_smoothed_gaze.origin is not None

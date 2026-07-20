@@ -32,6 +32,17 @@ Gaze와 Gesture 모델 파일의 로컬 위치다. 대용량 모델 바이너리
   가정한 값이며, 실제 카메라로 첫 통합 테스트를 할 때(README 16장 Day 1) yaw/pitch 부호나
   축이 뒤바뀌어 보이면 그 함수만 조정하면 된다 — calibration·classifier는 등록·실사용에
   동일한 변환을 쓰는 한 절대적인 부호 규약에 의존하지 않는다.
+- **머리 위치(3D 등록용, 2026-07-20 추가)**: `landmarks.py`의 `translation_from_transform`이
+  같은 `facial_transformation_matrixes`의 `[:3, 3]`(이동 성분)에서 머리의 카메라 기준 3D
+  위치 근사(`FaceObservation.head_position_mm`)를 추출한다. 이 값은 카메라 내부 파라미터
+  보정 없이 MediaPipe의 표준 얼굴 모델 크기 가정만으로 얻은 근사 스케일이며, 실측 눈금으로
+  검증하지 않았다 — `calibration/triangulation.py`의 물체 위치·유효 반경 추정과
+  `documents/decisions.md`(2026-07-20)의 3D 등록 결정은 모두 이 근사가 물체 간 상대적
+  거리 구분(가까운 노트북 vs 먼 전구)에는 충분하다는 가정 위에 있다. 삼각측량 품질 게이트
+  (`minimum_triangulation_baseline_mm`·`minimum_triangulation_eigenvalue`·
+  `maximum_triangulation_residual_mm`, `jarvis.gaze.config.GazeConfig`)를 만족하지 못하면
+  항상 기존 각도 기반(mean_direction+variance) 등록으로 대체되므로, 이 근사가 부정확해도
+  지어낸 3D 위치가 쓰이지는 않는다.
 
 ## hand_landmarker.task (Gesture)
 

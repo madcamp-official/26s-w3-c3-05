@@ -63,6 +63,13 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
   화면 위쪽이 양수가 되도록 수정 완료, yaw·roll 최종 확인 필요)
 - [ ] Gesture·Fusion·Runtime과의 실제 통합(코드 조립은 Runtime composition root 몫)
 - [ ] 환경 변화(조명/안경/거리) 조건에서 실측 Target Selection Accuracy 수집
+- [x] 10초·다양한 자세 물체 등록 + 머리 이동 삼각측량 3D 위치·유효 반경 추정
+  (`calibration/triangulation.py`, `target_registration.py`)
+- [x] 3D geometry ↔ 각도 모드 통합 classifier(`effective_distance_and_variance`) —
+  origin 없거나 깊이 퇴화 시 프레임 단위 폴백
+- [x] 모니터링 앱(`gaze_probe.py`/`app.py`) origin 배선 + 재시작 후 3D geometry 보존
+- [ ] 실제 카메라로 삼각측량 baseline/eigenvalue/residual 임계값 재보정(현재는 합성
+  광선으로만 보정한 값)
 
 ## 이슈 / 의사결정 필요 사항
 
@@ -97,3 +104,56 @@ MVP operating assumptions:
 - Real-camera yaw/pitch sign and scale still need one final fixed-camera sanity check before demo.
 - The current `CalibratedGaze` is geometric yaw/pitch from the smoothed gaze vector. A learned Ridge/MLP personal correction
   can be added later when labeled calibration samples are available.
+
+## 3D object position update (2026-07-20)
+
+사용자 요청: 등록을 10초로 늘리고 다양한 각도·자세로 물체를 바라보게 해, 방향+각도
+분산이 아니라 물체의 실제 좌표와 크기를 예측한 뒤 그것으로 시선 대상을 판정한다.
+머리 이동(parallax)으로 3D 위치를 삼각측량 시도하고, 신뢰도가 낮으면(baseline 부족,
+광선이 거의 평행, 잔차 과다) 2026-07-19의 각도 기반 등록으로 조용히 대체한다
+(documents/decisions.md 2026-07-20 항목들).
+
+핵심 설계: 3D 위치+반경도 매 프레임 `(각도 거리, 분산)` 쌍으로 환산해 기존
+classifier의 Gaussian score·softmax·UNKNOWN 임계값 로직을 그대로 재사용한다 —
+3D 전용 판정 경로를 새로 만들지 않았다.
+
+구현 파일:
+
+- `src/jarvis/gaze/landmarks.py`: `translation_from_transform()`이 MediaPipe
+  facial transformation matrix의 `[:3, 3]`(기존에는 버리던 부분)을 머리의
+  카메라 기준 3D 위치 근사(`FaceObservation.head_position_mm`)로 추출한다.
+- `src/jarvis/gaze/features.py` / `smoothing.py`: `GazeVector`/`SmoothedGaze`에
+  `origin` 필드 추가(전부 optional, 기본 None — 하위 호환). smoothing은 버퍼의
+  모든 프레임에 origin이 있을 때만 confidence-가중 평균을 낸다.
+- `src/jarvis/calibration/triangulation.py`: 여러 시선 광선(origin, direction)의
+  최소자승 교차점(`np.linalg.lstsq`, 조건 분기 없음)과 세 가지 독립 품질 지표
+  (baseline_mm, min_eigenvalue, residual_rms_mm)를 계산한다. 하나만으로는 서로
+  다른 퇴화 상황(머리 고정+눈만 이동 vs 머리 이동+물체가 멀어 광선이 평행)을
+  잡아내지 못해 셋 다 게이트로 쓴다.
+- `src/jarvis/calibration/target_registration.py`: `finalize()`가 각도 기반
+  direction/spread(항상 계산, 기존 동작 그대로)에 더해 3D 삼각측량을 시도하고,
+  품질 기준을 만족할 때만 `TargetRecord.position_3d`를 채운다. 실패해도
+  `session.triangulation_result`에 진단 정보(baseline·잔차·고유값)를 남겨
+  왜 대체됐는지 보여준다(성공을 지어내지 않는다).
+- `src/jarvis/calibration/registry.py`: `TargetGeometry3DRecord`(plain tuple —
+  `TargetRecord`가 `asdict()`로 직접 JSON 직렬화되므로 numpy 배열 불가)가
+  `position_3d`로 영속화된다. 예전 JSON(필드 없음)도 `None`으로 그대로 로드된다.
+- `src/jarvis/gaze/classifier.py`: `TargetGeometry3D` 등록 시
+  `effective_distance_and_variance()`가 현재 origin에서 물체 중심까지의 방향을
+  매 프레임 새로 계산(`atan(radius_mm/depth)`로 각도 분산 변환, 각도 모드 최소
+  퍼짐 이하로 떨어지지 않도록 바닥 적용)한다. origin이 없거나 깊이가 퇴화하면
+  등록 시 저장한 고정 방향(각도 모드)으로 자동 대체된다 — 이 폴백은 기기 단위
+  (등록 품질 미달)와 프레임 단위(이번 프레임만 origin 없음) 둘 다에서 동작한다.
+- `src/jarvis/monitoring/gaze_probe.py` / `app.py`: 실제 데모 앱은
+  `GazeTargetingEngine`을 감싸지 않고 같은 단계를 독립적으로 재구현하므로
+  (`evaluate()`), 여기서도 origin을 별도로 배선하고 `_device_details`가
+  `classify()`와 같은 `effective_distance_and_variance`를 재사용하도록
+  맞췄다 — 그러지 않으면 테스트는 통과해도 실제 데모는 계속 각도 전용으로만
+  동작하는 채로 남는다. `GazeProbe._load_profiles`도 평평한 `profiles.py`
+  로더 대신 `TargetRegistry`로 바꿔 앱을 재시작해도 3D geometry가 사라지지
+  않게 했다.
+
+실측 캘리브레이션 값(합성 광선으로만 검증, 실제 카메라 미검증):
+`minimum_triangulation_baseline_mm=60`, `minimum_triangulation_eigenvalue=0.004`,
+`maximum_triangulation_residual_mm=35` — Day 1 통합 테스트에서 재보정 필요할 수 있음
+(config.py 필드 docstring에 근거 수치 기록).

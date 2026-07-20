@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from jarvis.gaze.config import GazeConfig
+from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.features import FaceObservation, compose_gaze_vector
 
 
@@ -57,7 +58,7 @@ def test_head_only_and_eye_only_rotation_compose_to_same_vector() -> None:
     config = GazeConfig()
 
     head_only = compose_gaze_vector(_observation(head_yaw_deg=15.0))
-    eye_offset = 15.0 / config.max_eye_offset_deg
+    eye_offset = 15.0 * config.head_yaw_weight / config.max_eye_offset_deg
     eye_only = compose_gaze_vector(
         _observation(left_iris_relative=(eye_offset, 0.0), right_iris_relative=(eye_offset, 0.0))
     )
@@ -70,13 +71,18 @@ def test_head_and_eye_contributions_add() -> None:
     combined = compose_gaze_vector(
         _observation(
             head_yaw_deg=10.0,
-            left_iris_relative=(0.5, 0.0),
-            right_iris_relative=(0.5, 0.0),
+            left_iris_relative=(-0.5, 0.0),
+            right_iris_relative=(-0.5, 0.0),
         )
     )
     config = GazeConfig()
     equivalent_head_only = compose_gaze_vector(
-        _observation(head_yaw_deg=10.0 + 0.5 * config.max_eye_offset_deg)
+        _observation(
+            head_yaw_deg=(
+                10.0 * config.head_yaw_weight - 0.5 * config.max_eye_offset_deg
+            )
+            / config.head_yaw_weight
+        )
     )
     assert combined is not None and equivalent_head_only is not None
     np.testing.assert_allclose(combined.direction, equivalent_head_only.direction, atol=1e-9)
@@ -98,6 +104,54 @@ def test_head_roll_derotates_eye_offset() -> None:
     assert rolled is not None and upright_vertical is not None
     np.testing.assert_allclose(rolled.direction, upright_vertical.direction, atol=1e-6)
     assert config.max_eye_offset_deg > 0  # sanity: config actually used above
+
+
+def test_head_pose_weight_reduces_head_contribution() -> None:
+    weighted = compose_gaze_vector(
+        _observation(head_yaw_deg=20.0),
+        GazeConfig(head_yaw_weight=0.4, max_eye_offset_deg=45.0),
+    )
+    equivalent_eye_only = compose_gaze_vector(
+        _observation(
+            left_iris_relative=(8.0 / 45.0, 0.0),
+            right_iris_relative=(8.0 / 45.0, 0.0),
+        ),
+        GazeConfig(head_yaw_weight=0.4, max_eye_offset_deg=45.0),
+    )
+    assert weighted is not None and equivalent_eye_only is not None
+    np.testing.assert_allclose(weighted.direction, equivalent_eye_only.direction, atol=1e-9)
+
+
+def test_closed_eyes_fall_back_to_head_only_gaze() -> None:
+    config = GazeConfig(head_yaw_weight=0.5, head_pitch_weight=0.5, max_eye_offset_deg=45.0)
+    gaze = compose_gaze_vector(
+        replace(
+            _observation(
+                head_yaw_deg=20.0,
+                head_pitch_deg=10.0,
+                left_iris_relative=(1.0, 1.0),
+                right_iris_relative=(1.0, 1.0),
+            ),
+            eyes_open=False,
+        ),
+        config,
+    )
+    equivalent = compose_gaze_vector(
+        _observation(head_yaw_deg=10.0, head_pitch_deg=5.0),
+        GazeConfig(head_yaw_weight=1.0, head_pitch_weight=1.0, max_eye_offset_deg=45.0),
+    )
+    assert gaze is not None and equivalent is not None
+    np.testing.assert_allclose(gaze.direction, equivalent.direction, atol=1e-9)
+    assert gaze.confidence == pytest.approx(config.head_only_confidence_scale)
+
+
+def test_horizontal_axis_sign_maps_camera_left_to_positive_yaw() -> None:
+    gaze = compose_gaze_vector(
+        _observation(left_iris_relative=(-0.4, 0.0), right_iris_relative=(-0.4, 0.0))
+    )
+    assert gaze is not None
+    yaw, _pitch = direction_to_yaw_pitch(gaze.direction)
+    assert yaw > 0.0
 
 
 def test_face_not_detected_returns_none() -> None:

@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from jarvis.gaze.features import FaceObservation
+from jarvis.gaze.features import FaceObservation, Vector3
 
 FloatMatrix = npt.NDArray[np.float64]
 RgbFrame = npt.NDArray[np.uint8]
@@ -131,6 +131,17 @@ def rotation_matrix_to_euler_deg(matrix: FloatMatrix) -> tuple[float, float, flo
     return math.degrees(yaw), -math.degrees(pitch), math.degrees(roll)
 
 
+def translation_from_transform(matrix: FloatMatrix) -> Vector3:
+    """4x4 변환 행렬에서 머리(얼굴 모델 원점)의 카메라 기준 위치를 추출한다.
+
+    `matrix[:3, 3]`(마지막 열의 위쪽 3개 성분)이 표준 동차좌표 변환의 translation
+    성분이다. MediaPipe의 표준 얼굴 모델 크기 가정에 기반한 근사 스케일이며 실측
+    검증된 계량값이 아니다(models/README.md 참고) — 3D 삼각측량의 원점으로만
+    쓰이고, 각도 기반 경로(rotation_matrix_to_euler_deg)에는 영향을 주지 않는다.
+    """
+    return np.array(matrix[:3, 3], dtype=np.float64)
+
+
 def _lost_tracking_observation(timestamp_ms: int, frame_id: int) -> FaceObservation:
     """얼굴을 찾지 못한 프레임의 관측값 — 추적 손실을 지어낸 값으로 감추지 않는다."""
     return FaceObservation(
@@ -192,6 +203,7 @@ class FaceLandmarkerAdapter:
             result.facial_transformation_matrixes[0], dtype=np.float64
         )
         yaw_deg, pitch_deg, roll_deg = rotation_matrix_to_euler_deg(transform)
+        head_position_mm = translation_from_transform(transform)
 
         left_iris = _iris_relative_position(
             landmarks,
@@ -258,4 +270,5 @@ class FaceLandmarkerAdapter:
             left_eye_center_normalized=left_eye_center,
             right_eye_center_normalized=right_eye_center,
             eyes_open=min(left_eye_open_ratio, right_eye_open_ratio) >= 0.12,
+            head_position_mm=head_position_mm,
         )

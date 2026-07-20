@@ -43,6 +43,14 @@ _LOCK_BGR = {
     "EXPIRED": (100, 100, 240),
     "COMMITTED": (80, 220, 120),
 }
+_TARGET_COLORS: tuple[tuple[int, int, int], ...] = (
+    (80, 170, 255),
+    (80, 220, 120),
+    (230, 180, 60),
+    (220, 100, 220),
+    (120, 220, 220),
+    (180, 120, 255),
+)
 
 
 def draw_hud(frame: Frame, lines: list[str], *, recording: bool = True) -> Frame:
@@ -83,6 +91,78 @@ def _text_block(frame: Frame, lines: list[tuple[str, tuple[int, int, int]]], ori
         cv2.putText(frame, text, (x + 5, ty), _FONT, 0.48, color, 1, cv2.LINE_AA)
 
 
+def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = False) -> Frame:
+    """Draw a coarse target-direction heatmap over the webcam frame.
+
+    This is a debugging visualization, not object detection.  It projects the
+    registered yaw/pitch target profiles into a rough camera FOV and colors the
+    area by the nearest registered direction, dimming pixels outside the
+    registered radius.
+    """
+    details = tuple(
+        sorted(
+            (d for d in snapshot.device_details if not np.isnan(d.angular_distance_deg)),
+            key=lambda d: d.device_id,
+        )
+    )
+    if not details:
+        return frame
+
+    h, w = frame.shape[:2]
+    grid_w = 80
+    grid_h = max(45, int(grid_w * h / max(w, 1)))
+    yaw_span = 70.0
+    pitch_span = 50.0
+    xs = np.linspace(-yaw_span * 0.5, yaw_span * 0.5, grid_w, dtype=np.float64)
+    ys = np.linspace(pitch_span * 0.5, -pitch_span * 0.5, grid_h, dtype=np.float64)
+    yaw_grid, pitch_grid = np.meshgrid(xs, ys)
+
+    heat = np.zeros((grid_h, grid_w, 3), dtype=np.float32)
+    alpha = np.zeros((grid_h, grid_w), dtype=np.float32)
+    for index, detail in enumerate(details[: len(_TARGET_COLORS)]):
+        if np.isnan(detail.target_yaw_deg) or np.isnan(detail.target_pitch_deg):
+            continue
+        center_yaw = -detail.target_yaw_deg if mirror else detail.target_yaw_deg
+        center_pitch = detail.target_pitch_deg
+        radius = max(detail.allowed_radius_deg, 1.0)
+        distance = np.hypot((yaw_grid - center_yaw) / radius, (pitch_grid - center_pitch) / radius)
+        influence = np.exp(-(distance**2) * 1.4)
+        mask = influence > alpha
+        color_bgr = _TARGET_COLORS[index % len(_TARGET_COLORS)]
+        heat[mask] = np.asarray(color_bgr, dtype=np.float32)
+        alpha[mask] = influence[mask]
+
+    heat_bgr = cv2.resize(heat.astype(np.uint8), (w, h), interpolation=cv2.INTER_LINEAR)
+    alpha_full = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_LINEAR)
+    alpha_full = np.clip(alpha_full * 0.28, 0.0, 0.28)
+    blended = (
+        frame.astype(np.float32) * (1.0 - alpha_full[..., None])
+        + heat_bgr.astype(np.float32) * alpha_full[..., None]
+    )
+    frame[:] = blended.astype(np.uint8)
+
+    for index, detail in enumerate(details[: len(_TARGET_COLORS)]):
+        color_bgr = _TARGET_COLORS[index % len(_TARGET_COLORS)]
+        if np.isnan(detail.target_yaw_deg) or np.isnan(detail.target_pitch_deg):
+            continue
+        target_yaw = -detail.target_yaw_deg if mirror else detail.target_yaw_deg
+        cx = int((target_yaw / yaw_span + 0.5) * w)
+        cy = int((0.5 - detail.target_pitch_deg / pitch_span) * h)
+        cv2.circle(
+            frame,
+            (cx, cy),
+            max(6, int(detail.allowed_radius_deg / yaw_span * w)),
+            color_bgr,
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.circle(frame, (cx, cy), 4, color_bgr, thickness=-1)
+        y = min(h - 10, 58 + index * 18)
+        cv2.circle(frame, (14, y - 5), 5, color_bgr, thickness=-1)
+        cv2.putText(frame, detail.device_id, (25, y), _FONT, 0.45, color_bgr, 1, cv2.LINE_AA)
+    return frame
+
+
 def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = False) -> Frame:
     """Overlay the live Gaze pipeline result: gaze ray, head angles, lock state.
 
@@ -103,9 +183,46 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
             _FONT, 0.6, (90, 90, 240), 2, cv2.LINE_AA,
         )
         return frame
+    if snapshot.tracking_recovering:
+        cv2.rectangle(frame, (0, h - 30), (w, h), (0, 0, 0), thickness=-1)
+        cv2.putText(
+            frame,
+            "FACE RECOVERING / last gaze hold",
+            (10, h - 9),
+            _FONT,
+            0.6,
+            (80, 190, 230),
+            2,
+            cv2.LINE_AA,
+        )
 
     state = str(snapshot.lock_state)
     ray_color = _LOCK_BGR.get(state, grey)
+    looking_unknown = snapshot.target == "UNKNOWN"
+    looking_color = (90, 90, 240) if looking_unknown else ray_color
+    looking_text = f"LOOKING AT: {snapshot.target_label}"
+    (text_w, text_h), _ = cv2.getTextSize(looking_text, _FONT, 0.9, 2)
+    box_x = max(8, (w - text_w) // 2 - 14)
+    box_y = 44
+    overlay = frame.copy()
+    cv2.rectangle(
+        overlay,
+        (box_x, box_y),
+        (min(w - 8, box_x + text_w + 28), box_y + text_h + 22),
+        (0, 0, 0),
+        thickness=-1,
+    )
+    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
+    cv2.putText(
+        frame,
+        looking_text,
+        (box_x + 14, box_y + text_h + 9),
+        _FONT,
+        0.9,
+        looking_color,
+        2,
+        cv2.LINE_AA,
+    )
 
     # Gaze ray: use the same smoothed direction that the classifier consumes.
     left_eye = snapshot.left_eye_center_normalized
@@ -129,9 +246,21 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
         cv2.arrowedLine(frame, center, tip, ray_color, 2, cv2.LINE_AA, tipLength=0.2)
 
     stability = snapshot.smoothed_stability
+    nearest = snapshot.device_details[0] if snapshot.device_details else None
+    if nearest is None or np.isnan(nearest.angular_distance_deg):
+        range_line = "range  --"
+        range_color = grey
+    else:
+        range_line = (
+            f"range {nearest.device_id} "
+            f"{nearest.angular_distance_deg:.1f}/{nearest.allowed_radius_deg:.1f}deg "
+            f"x{nearest.normalized_distance:.2f} {nearest.range_status}"
+        )
+        range_color = (80, 200, 80) if nearest.within_profile_radius else (90, 90, 240)
     lines: list[tuple[str, tuple[int, int, int]]] = [
         (f"LOCK  {state}", ray_color),
-        (f"TARGET  {snapshot.target}  {snapshot.probability:.0%}", white),
+        (f"TARGET  {snapshot.target_label}  {snapshot.probability:.0%}", white),
+        (range_line, range_color),
         (
             f"yaw {snapshot.head_yaw_deg:+5.0f}  pitch {snapshot.head_pitch_deg:+5.0f}"
             f"  roll {snapshot.head_roll_deg:+5.0f}",

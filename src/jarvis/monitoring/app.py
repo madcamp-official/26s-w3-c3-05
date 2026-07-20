@@ -59,6 +59,8 @@ from PySide6.QtWidgets import (
 from jarvis.calibration.registry import TargetRecord, TargetRegistry
 from jarvis.calibration.target_registration import TargetRegistrationSession
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
+from jarvis.gaze.calibration_model import GazeCalibrationSample, GazeCalibrationStore
+from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.lock import GazeLockState
 from jarvis.gaze.smoothing import SmoothedGaze
@@ -70,6 +72,7 @@ from jarvis.monitoring.hand_probe import HandProbe, HandSnapshot
 from jarvis.monitoring.messages import MessageLevel, MessageLog
 from jarvis.monitoring.overlay import (
     Frame,
+    draw_target_heatmap,
     draw_gaze_overlay,
     draw_hand_overlay,
     draw_hud,
@@ -100,6 +103,13 @@ _LOCK_COLOR = {
     GazeLockState.EXPIRED: "#f85149",
     GazeLockState.COMMITTED: "#2ea043",
 }
+_REGISTRATION_GUIDANCE_PHASES: tuple[tuple[int, str], ...] = (
+    (3_000, "1/5 move face to LEFT-UP, keep looking at target"),
+    (6_000, "2/5 move face to RIGHT-DOWN, keep looking at target"),
+    (9_000, "3/5 move face to LEFT-DOWN, keep looking at target"),
+    (12_000, "4/5 move face to RIGHT-UP, keep looking at target"),
+    (15_000, "5/5 move slightly NEAR/FAR, keep looking at target"),
+)
 _MONO = "font-family:Consolas,monospace; font-size:12px; color:#c9d1d9;"
 
 
@@ -244,13 +254,36 @@ class GazePanel(QScrollArea):
         self._reject.setText(f"UNKNOWN 사유: {s.reject_reason}" if s.reject_reason else "")
 
         self._devices.clear()
-        if not s.device_details:
-            self._devices.addItem("등록된 기기 프로파일 없음 — jarvis-gaze calibrate 필요")
-        for d in s.device_details:
-            angle = "--" if np.isnan(d.angular_distance_deg) else f"{d.angular_distance_deg:6.1f}°"
-            mark = "◀ 선택" if d.is_selected else ""
-            self._devices.addItem(f"{d.device_id:<16} {angle}  {mark}")
-
+        if s.area_details:
+            self._devices.addItem("[target area / edge loop]")
+            for area_detail in s.area_details:
+                mark = "selected" if area_detail.is_selected else ""
+                self._devices.addItem(
+                    f"{area_detail.device_id:<16} x{area_detail.normalized_distance:4.2f} "
+                    f"{area_detail.range_status}  {mark}"
+                )
+        if s.feature_details:
+            self._devices.addItem("[feature profile / Mahalanobis]")
+            for feature_detail in s.feature_details:
+                mark = "selected" if feature_detail.is_selected else ""
+                self._devices.addItem(
+                    f"{feature_detail.device_id:<16} dist {feature_detail.distance:5.2f} / thr {feature_detail.threshold:4.2f}  "
+                    f"x{feature_detail.normalized_distance:4.2f} {feature_detail.range_status}  {mark}"
+                )
+            self._devices.addItem("[angle fallback]")
+        if not s.device_details and not s.feature_details and not s.area_details:
+            self._devices.addItem("no registered target profile")
+        for device_detail in s.device_details:
+            if np.isnan(device_detail.angular_distance_deg):
+                angle = "err -- / radius --"
+                ratio = "x--"
+            else:
+                angle = f"err {device_detail.angular_distance_deg:5.1f}deg / radius {device_detail.allowed_radius_deg:4.1f}deg"
+                ratio = f"x{device_detail.normalized_distance:4.2f}"
+            mark = "selected" if device_detail.is_selected else ""
+            self._devices.addItem(
+                f"{device_detail.device_id:<16} {angle}  {ratio} {device_detail.range_status}  {mark}"
+            )
         self._track_conf.set_value(s.tracking_confidence, color="#58a6ff")
         self._gaze_conf.set_value(s.gaze_confidence, color="#58a6ff")
         self._stability.set_value(s.smoothed_stability, color="#58a6ff")
@@ -260,13 +293,29 @@ class GazePanel(QScrollArea):
             if s.gaze_direction is not None
             else "추적 손실 (None)"
         )
+        feature = (
+            "  ".join(
+                (
+                    f"gy={s.feature_sample.gaze_yaw:+.1f}",
+                    f"gp={s.feature_sample.gaze_pitch:+.1f}",
+                    f"hy={s.feature_sample.head_yaw:+.1f}",
+                    f"hp={s.feature_sample.head_pitch:+.1f}",
+                    f"hr={s.feature_sample.head_roll:+.1f}",
+                    f"scale={s.feature_sample.face_scale:.3f}",
+                )
+            )
+            if s.feature_sample is not None
+            else "None"
+        )
         est = s.target_estimate
         self._numeric.setText(
             f"face_detected : {s.face_detected}\n"
             f"head (deg)    : yaw {s.head_yaw_deg:+7.2f}  pitch {s.head_pitch_deg:+7.2f}  "
             f"roll {s.head_roll_deg:+7.2f}\n"
             f"iris L / R    : {s.left_iris_relative}  /  {s.right_iris_relative}\n"
+            f"face_scale    : {s.face_scale if s.face_scale is not None else 'None'}\n"
             f"gaze vector   : {direction}\n"
+            f"feature       : {feature}\n"
             f"smoothing buf : {s.buffer_fill}/{s.buffer_capacity} frames\n"
             "── TargetEstimate (contract) ──────────────\n"
             f"target={est.target}  p={est.probability:.3f}  "
@@ -682,10 +731,14 @@ class VideoView(QLabel):
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
         self._hand: HandSnapshot | None = None
+        self._show_target_heatmap = False
         self._show_placeholder("카메라 시작 중…")
 
     def set_gaze(self, snapshot: GazeSnapshot) -> None:
         self._gaze = snapshot
+
+    def set_target_heatmap_visible(self, visible: bool) -> None:
+        self._show_target_heatmap = visible
 
     def set_hand(self, snapshot: HandSnapshot) -> None:
         self._hand = snapshot
@@ -706,6 +759,8 @@ class VideoView(QLabel):
         h, w = display.shape[:2]
         draw_hud(display, [f"{w}x{h}  {fps:4.1f} FPS", f"frame #{self._frame_count}"])
         if self._gaze is not None:
+            if self._show_target_heatmap:
+                draw_target_heatmap(display, self._gaze, mirror=True)
             draw_gaze_overlay(display, self._gaze, mirror=True)
         if self._hand is not None:
             draw_hand_overlay(display, self._hand, mirror=True)
@@ -843,13 +898,26 @@ class MainWindow(QMainWindow):
         self._sample_store = GazeSampleStore(
             samples_path or Path("data/evaluation/gaze_samples.json")
         )
+        self._gaze_config = GazeConfig(
+            enable_3d_target_matching=False,
+            require_3d_target_registration=False,
+        )
+        self._calibration_store = GazeCalibrationStore(_default_calibration_model_path())
         self._target_registry = TargetRegistry(self._profiles_path)
+        # Diagnostic experiment #1: keep learned gaze calibration OFF so raw/head
+        # composition can be inspected without a regression model shifting final y/p.
+        self._active_calibration_model = None
         self._registration: TargetRegistrationSession | None = None
         self._registration_points: list[tuple[float, float]] = []
+        self._registration_calibration_features: list[tuple[float, ...]] = []
+        self._registration_phase_index: int | None = None
         self._target_list = QListWidget()
         self._register_target_button = QPushButton()
         self._probe = GazeProbe(
-            model_path=self._model_path, profiles_path=self._profiles_path
+            model_path=self._model_path,
+            profiles_path=self._profiles_path,
+            config=self._gaze_config,
+            calibration_model=self._active_calibration_model,
         )
         self._hand_probe = HandProbe(model_path=self._hand_model_path)
 
@@ -907,9 +975,12 @@ class MainWindow(QMainWindow):
         self._sample_button.clicked.connect(self._save_gaze_sample)
         self._clear_samples_button = QPushButton("샘플 초기화")
         self._clear_samples_button.clicked.connect(self._clear_gaze_samples)
+        self._target_heatmap_toggle = QCheckBox("Target heatmap / 물체 영역 표시")
+        self._target_heatmap_toggle.toggled.connect(self._video.set_target_heatmap_visible)
         sample_controls = QHBoxLayout()
         sample_controls.addWidget(self._sample_button, 1)
         sample_controls.addWidget(self._clear_samples_button)
+        sample_controls.addWidget(self._target_heatmap_toggle)
         layout.addLayout(sample_controls)
         self._sample_list = QListWidget()
         self._sample_list.setMaximumHeight(130)
@@ -918,10 +989,15 @@ class MainWindow(QMainWindow):
             self._sample_list.addItem(format_gaze_sample(sample))
         layout.addWidget(self._sample_list)
         self._refresh_sample_button()
-        return container
+        self._registration_status = QLabel("등록 대기")
+        self._registration_status.setStyleSheet(
+            "background:#161b22; color:#8b949e; border:1px solid #30363d;"
+            " border-radius:6px; padding:8px; font-weight:600;"
+        )
+        layout.addWidget(self._registration_status)
 
         target_controls = QHBoxLayout()
-        self._register_target_button = QPushButton("기기 바라보고 등록")
+        self._register_target_button = QPushButton("물체 등록")
         self._register_target_button.clicked.connect(self._start_target_registration)
         self._reregister_target_button = QPushButton("위치 다시 등록")
         self._reregister_target_button.clicked.connect(self._reregister_selected_target)
@@ -1019,11 +1095,18 @@ class MainWindow(QMainWindow):
             smoothed = self._smoothed_from_snapshot(snapshot)
             if (
                 self._registration.add(
-                    smoothed, snapshot.tracking_confidence, eyes_open=snapshot.eyes_open
+                    smoothed,
+                    snapshot.tracking_confidence,
+                    eyes_open=snapshot.eyes_open,
+                    face_scale=snapshot.face_scale,
+                    feature_sample=snapshot.feature_sample,
                 )
                 and smoothed is not None
             ):
                 self._registration_points.append(direction_to_yaw_pitch(smoothed.direction))
+                if snapshot.calibration_features is not None:
+                    self._registration_calibration_features.append(snapshot.calibration_features)
+            self._update_registration_guidance(snapshot.timestamp_ms)
             if self._registration.is_elapsed(snapshot.timestamp_ms):
                 self._finish_target_registration()
 
@@ -1031,11 +1114,17 @@ class MainWindow(QMainWindow):
     def _smoothed_from_snapshot(snapshot: GazeSnapshot) -> SmoothedGaze | None:
         if snapshot.smoothed_gaze_direction is None or snapshot.smoothed_stability is None:
             return None
+        origin = (
+            np.array(snapshot.smoothed_gaze_origin, dtype=np.float64)
+            if snapshot.smoothed_gaze_origin is not None
+            else None
+        )
         return SmoothedGaze(
             direction=np.array(snapshot.smoothed_gaze_direction, dtype=np.float64),
             stability=snapshot.smoothed_stability,
             timestamp_ms=snapshot.timestamp_ms,
             frame_id=snapshot.frame_id,
+            origin=origin,
         )
 
     def _selected_target(self) -> TargetRecord | None:
@@ -1044,23 +1133,20 @@ class MainWindow(QMainWindow):
         return records[row] if 0 <= row < len(records) else None
 
     def _start_target_registration(self) -> None:
-        target_id, ok = QInputDialog.getText(self, "기기 등록", "Target ID")
-        if not ok or not target_id.strip():
-            return
-        name, ok = QInputDialog.getText(self, "기기 등록", "표시 이름", text=target_id.strip())
+        name, ok = QInputDialog.getText(self, "물체 등록", "물체 이름")
         if not ok or not name.strip():
             return
-        device_type, ok = QInputDialog.getText(self, "기기 등록", "기기 종류", text="LIGHT")
-        if not ok or not device_type.strip():
-            return
-        device_id, ok = QInputDialog.getText(
-            self, "기기 등록", "Adapter Device ID", text=target_id.strip()
-        )
-        if not ok or not device_id.strip():
-            return
-        self._begin_registration(
-            target_id.strip(), name.strip(), device_type.strip(), device_id.strip()
-        )
+        target_id = self._next_target_id()
+        self._begin_registration(target_id, name.strip(), "UNKNOWN", target_id)
+
+    def _next_target_id(self) -> str:
+        existing = {record.target_id for record in self._target_registry.records}
+        index = 1
+        while True:
+            target_id = f"target_{index:03d}"
+            if target_id not in existing:
+                return target_id
+            index += 1
 
     def _begin_registration(
         self, target_id: str, name: str, device_type: str, device_id: str
@@ -1068,10 +1154,50 @@ class MainWindow(QMainWindow):
         if self._registration is not None:
             self._log.warn("이미 기기 등록이 진행 중입니다")
             return
-        self._registration = TargetRegistrationSession(target_id, name, device_type, device_id)
+        self._registration = TargetRegistrationSession(
+            target_id, name, device_type, device_id, config=self._gaze_config
+        )
         self._registration_points = []
+        self._registration_calibration_features = []
+        self._registration_phase_index = None
         self._register_target_button.setEnabled(False)
-        self._log.info(f"'{name}'을 2초 동안 바라보며 고개를 조금씩 움직여 주세요")
+        self._registration_status.setText(
+            f"'{name}' registration ready: keep looking at the target; "
+            "move face center diagonally and near/far for 15s"
+        )
+        self._registration_status.setStyleSheet(
+            "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
+            " border-radius:6px; padding:8px; font-weight:700;"
+        )
+        self._log.info(
+            f"'{name}' registration start: do not only rotate your head; "
+            "move face/body LEFT-UP -> RIGHT-DOWN -> LEFT-DOWN -> RIGHT-UP -> NEAR/FAR "
+            "while continuously looking at the target"
+        )
+
+    def _update_registration_guidance(self, timestamp_ms: int) -> None:
+        assert self._registration is not None
+        if self._registration.started_at_ms is None:
+            self._registration_status.setText("등록 대기: 얼굴과 시선이 안정적으로 잡히길 기다리는 중")
+            return
+        elapsed_ms = max(0, timestamp_ms - self._registration.started_at_ms)
+        phase_index = 0
+        for index, (end_ms, _label) in enumerate(_REGISTRATION_GUIDANCE_PHASES):
+            if elapsed_ms < end_ms:
+                phase_index = index
+                break
+        else:
+            phase_index = len(_REGISTRATION_GUIDANCE_PHASES) - 1
+        phase_end_ms, label = _REGISTRATION_GUIDANCE_PHASES[phase_index]
+        remaining_s = max(0.0, (phase_end_ms - elapsed_ms) / 1000.0)
+        status = (
+            f"등록 중: {label}  |  남은 {remaining_s:0.1f}s  |  "
+            f"valid {self._registration.valid_frame_count}/{self._registration.minimum_valid_frames}"
+        )
+        self._registration_status.setText(status)
+        if phase_index != self._registration_phase_index:
+            self._registration_phase_index = phase_index
+            self._log.info(status)
 
     def _finish_target_registration(self) -> None:
         assert self._registration is not None
@@ -1088,17 +1214,61 @@ class MainWindow(QMainWindow):
                 names = ", ".join(item.name for item in nearby)
                 self._log.warn(f"등록 방향이 기존 기기와 가깝습니다: {names}")
             self._target_registry.upsert(record)
-            self._probe.register_profile(record.to_profile())
+            self._probe.register_profile(
+                record.to_profile(),
+                geometry_3d=record.to_geometry_3d(),
+                feature_profile=record.feature_profile,
+                area_profile=record.area_profile,
+                label=record.name,
+            )
+            calibration_samples = [
+                GazeCalibrationSample(
+                    features=features,
+                    target_yaw=record.direction.yaw,
+                    target_pitch=record.direction.pitch,
+                )
+                for features in self._registration_calibration_features
+            ]
+            model = self._calibration_store.add_samples(calibration_samples)
+            self._active_calibration_model = None
+            self._probe.set_calibration_model(self._active_calibration_model)
             self._log.info(
-                f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames)"
+                f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames) "
+                f"— {self._describe_triangulation_outcome(record)} | "
+                f"{self._registration.diagnostic_summary()} | "
+                f"gaze calibration samples={model.sample_count}"
             )
         except ValueError as exc:
-            self._log.warn(f"기기 등록 실패: {exc}")
+            self._log.warn(f"기기 등록 실패: {exc} | {self._registration.diagnostic_summary()}")
         finally:
             self._registration = None
             self._registration_points = []
+            self._registration_calibration_features = []
+            self._registration_phase_index = None
             self._register_target_button.setEnabled(True)
+            self._registration_status.setText("등록 대기")
+            self._registration_status.setStyleSheet(
+                "background:#161b22; color:#8b949e; border:1px solid #30363d;"
+                " border-radius:6px; padding:8px; font-weight:600;"
+            )
             self._refresh_targets()
+
+    def _describe_triangulation_outcome(self, record: TargetRecord) -> str:
+        """3D 위치 추정이 성공했는지, 실패했다면 왜 각도 모드로 대체됐는지를
+        그대로 보여준다 — 성공을 지어내지 않는다(development-principles.md 1절)."""
+        assert self._registration is not None
+        triangulation = self._registration.triangulation_result
+        if record.position_3d is not None:
+            if triangulation is None:
+                return "3D 위치 추정 성공"
+            return f"3D 위치 추정 성공 (baseline {triangulation.baseline_mm:.0f}mm)"
+        if triangulation is None:
+            return "각도 모드로 대체 (머리 움직임 데이터 부족)"
+        return (
+            "각도 모드로 대체 (baseline "
+            f"{triangulation.baseline_mm:.0f}mm, 잔차 {triangulation.residual_rms_mm:.0f}mm, "
+            f"고유값 {triangulation.min_eigenvalue:.4f} — 머리를 더 크게 움직여 보세요)"
+        )
 
     def _reregister_selected_target(self) -> None:
         record = self._selected_target()
@@ -1115,7 +1285,14 @@ class MainWindow(QMainWindow):
             return
         name, ok = QInputDialog.getText(self, "이름 변경", "표시 이름", text=record.name)
         if ok and name.strip():
-            self._target_registry.rename(record.target_id, name.strip())
+            updated = self._target_registry.rename(record.target_id, name.strip())
+            self._probe.register_profile(
+                updated.to_profile(),
+                geometry_3d=updated.to_geometry_3d(),
+                feature_profile=updated.feature_profile,
+                area_profile=updated.area_profile,
+                label=updated.name,
+            )
             self._refresh_targets()
 
     def _delete_selected_target(self) -> None:
@@ -1134,9 +1311,27 @@ class MainWindow(QMainWindow):
     def _refresh_targets(self) -> None:
         self._target_list.clear()
         for record in self._target_registry.records:
+            scale_label = (
+                f" scale={record.reference_face_scale:.3f}"
+                if record.reference_face_scale is not None
+                else ""
+            )
+            feature_label = (
+                f" feature={record.feature_profile.sample_count}/thr{record.feature_profile.threshold:.2f}"
+                if record.feature_profile is not None
+                else " feature=none"
+            )
+            area_label = (
+                f" area={record.area_profile.radius_yaw:.1f}/{record.area_profile.radius_pitch:.1f}"
+                f" cap={self._gaze_config.registration_max_area_radius_deg:.1f}"
+                if record.area_profile is not None
+                else " area=none"
+            )
             self._target_list.addItem(
                 f"{record.name} [{record.target_id}]  "
                 f"yaw={record.direction.yaw:+.1f} pitch={record.direction.pitch:+.1f}"
+                f" spread={record.spread.yaw:.1f}/{record.spread.pitch:.1f}"
+                f"{scale_label}{feature_label}{area_label}"
             )
 
     def _save_gaze_sample(self) -> None:
@@ -1144,7 +1339,7 @@ class MainWindow(QMainWindow):
             self._log.warn("저장할 Gaze 값이 아직 없습니다")
             return
         try:
-            sample = self._sample_store.add_window(list(self._gaze_history))
+            sample = self._sample_store.add_window(list(self._gaze_history), minimum_frames=3)
         except ValueError as exc:
             self._log.warn(f"Gaze 샘플 저장 실패: {exc}")
             return
@@ -1200,6 +1395,10 @@ def _default_hand_model_path() -> Path | None:
 
 def _default_profiles_path() -> Path:
     return Path("data/calibration/profiles.json")
+
+
+def _default_calibration_model_path() -> Path:
+    return Path("data/calibration/gaze_regressor.json")
 
 
 def _load_env() -> dict[str, str]:
