@@ -117,7 +117,7 @@ def test_short_blink_holds_last_gaze_without_composing_jumpy_raw_vector() -> Non
     assert blink.smoothed_gaze_direction == first.smoothed_gaze_direction
 
 
-def test_iris_jump_holds_last_gaze_before_smoothing() -> None:
+def test_iris_jump_keeps_live_vector_with_low_confidence() -> None:
     smoother, classifier, lock, config = _fresh()
     first = evaluate(
         _observation(timestamp_ms=1_000, iris_relative=(0.0, 0.0)),
@@ -136,8 +136,10 @@ def test_iris_jump_holds_last_gaze_before_smoothing() -> None:
     )
 
     assert first.smoothed_gaze_direction is not None
-    assert jumped.gaze_direction is None
-    assert jumped.smoothed_gaze_direction == first.smoothed_gaze_direction
+    assert jumped.gaze_direction is not None
+    assert jumped.gaze_confidence == config.ema_min_alpha
+    assert jumped.smoothed_gaze_direction is not None
+    assert jumped.smoothed_gaze_direction != first.smoothed_gaze_direction
 
 
 def test_blink_recovery_holds_until_iris_settles() -> None:

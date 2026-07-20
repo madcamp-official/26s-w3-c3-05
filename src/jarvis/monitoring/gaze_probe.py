@@ -44,7 +44,7 @@ from jarvis.gaze.feature_profile import (
     TargetFeatureProfile,
     TargetFeatureSample,
 )
-from jarvis.gaze.features import FaceObservation, Vector3, compose_gaze_vector
+from jarvis.gaze.features import FaceObservation, GazeVector, Vector3, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
 from jarvis.gaze.smoothing import GazeSmoother
 
@@ -417,8 +417,17 @@ def evaluate(
         previous_iris_offset=previous_iris_offset,
         last_closed_eye_ms=last_closed_eye_ms,
     )
-    hold_gaze = blink_hold or unstable_iris is not None
+    jumpy_iris = unstable_iris is not None and unstable_iris.startswith("iris jump")
+    hold_gaze = blink_hold or (unstable_iris is not None and not jumpy_iris)
     raw_gaze_vector = None if hold_gaze else compose_gaze_vector(observation, config)
+    if raw_gaze_vector is not None and jumpy_iris:
+        raw_gaze_vector = GazeVector(
+            direction=raw_gaze_vector.direction,
+            confidence=min(raw_gaze_vector.confidence, config.ema_min_alpha),
+            timestamp_ms=raw_gaze_vector.timestamp_ms,
+            frame_id=raw_gaze_vector.frame_id,
+            origin=raw_gaze_vector.origin,
+        )
     calibration_features = (
         observation_features(observation, raw_gaze_vector)
         if raw_gaze_vector is not None
