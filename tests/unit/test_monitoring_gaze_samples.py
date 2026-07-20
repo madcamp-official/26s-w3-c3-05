@@ -54,6 +54,7 @@ def test_store_persists_snapshot_as_json(tmp_path: Path) -> None:
     assert payload[0]["head_pose_deg"]["pitch"] == -4.0
     assert payload[0]["left_iris_relative"] == [0.1, -0.2]
     assert payload[0]["gaze_yaw_pitch_deg"]["yaw"] == pytest.approx(7.4, abs=0.1)
+    assert payload[0]["target_label"] == "UNKNOWN"
     assert payload[0]["nearest_target_range"] is None
 
 
@@ -77,7 +78,7 @@ def test_format_sample_shows_vector_head_and_target(tmp_path: Path) -> None:
     assert "gaze=(+0.128, +0.149, +0.981)" in rendered
     assert "gaze_y/p=(+7.4, -8.6)" in rendered
     assert "head=(+3.0, -4.0, +1.0)" in rendered
-    assert "target=UNKNOWN P=0.00" in rendered
+    assert "판단=응시대상 없음 P=0.00" in rendered
 
 
 def test_window_averages_multiple_smoothed_frames(tmp_path: Path) -> None:

@@ -126,6 +126,7 @@ class GazeSampleStore:
                 mean_pair(right_eye_centers) if right_eye_centers else None
             ),
             "target": latest.target,
+            "target_label": latest.target_label,
             "probability": latest.probability,
             "second_best_probability": latest.second_best_probability,
             "reject_reason": latest.reject_reason,
@@ -194,13 +195,20 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
     gaze_pitch = number(gaze_yaw_pitch.get("pitch"))
     index = sample.get("sample_index", "?")
     target = sample.get("target", "UNKNOWN")
+    target_label = sample.get("target_label", target)
     probability = number(sample.get("probability"))
     frame_count = sample.get("window_frame_count", 1)
+    if target == "UNKNOWN":
+        judged = "응시대상 없음"
+    elif isinstance(target_label, str) and target_label != target:
+        judged = f"{target_label}[{target}]"
+    else:
+        judged = str(target)
     row = (
         f"#{index} [{frame_count}f] gaze=({x:+.3f}, {y:+.3f}, {z:+.3f})  "
         f"gaze_y/p=({gaze_yaw:+.1f}, {gaze_pitch:+.1f})  "
         f"head=({yaw:+.1f}, {pitch:+.1f}, {roll:+.1f})  "
-        f"target={target} P={probability:.2f}"
+        f"판단={judged} P={probability:.2f}"
     )
     if range_detail is not None:
         device_id = range_detail.get("device_id", "--")
