@@ -88,8 +88,18 @@ def time_warp(clip: CachedClip, rate: float) -> CachedClip:
         handedness_score=_resample(
             clip.handedness_score.reshape(-1, 1), old_index, new_index
         ).reshape(-1),
-        # 캐시된 클립은 손 미검출 프레임이 없는 것만 남아 있다(extract_jester.py가
-        # 검출 실패 클립 전체를 제외) — 리샘플 후에도 전부 검출된 것으로 채운다.
-        hand_detected=np.ones(new_length, dtype=np.bool_),
+        # 캐시된 클립은 이제 간헐적 미검출(hand_detected=False) 프레임을 포함할 수
+        # 있다(2026-07-20, extract_jester.py가 클립 전체를 버리는 대신 일정 비율까지
+        # 허용하도록 바뀜) — 다른 스칼라 필드와 같은 방식(선형보간)으로 리샘플한 뒤
+        # 0.5 임계로 되돌려, 미검출 구간이 리샘플 후에도 대략 같은 위치에 남게 한다.
+        # 여기서 없앨 경우 dataset.py의 IGNORE_INDEX 마스킹이 깨져 "미검출=0벡터"
+        # 프레임에 실제 제스처 라벨을 붙여 학습하게 된다(development-principles.md
+        # 2절: 불확실한 신호를 실행 가능한 값처럼 지어내지 않는다).
+        hand_detected=(
+            _resample(
+                clip.hand_detected.astype(np.float64).reshape(-1, 1), old_index, new_index
+            ).reshape(-1)
+            >= 0.5
+        ),
         timestamp_ms=new_timestamps.astype(np.int64),
     )

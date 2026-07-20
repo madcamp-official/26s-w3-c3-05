@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -98,10 +100,26 @@ def test_time_warp_regenerates_evenly_spaced_timestamps() -> None:
     assert np.all(diffs > 0)  # monotonic 증가 유지
 
 
-def test_time_warp_marks_all_frames_as_detected() -> None:
+def test_time_warp_marks_all_frames_as_detected_when_source_is_fully_detected() -> None:
     clip = _clip("swipe_down", length=15)
     warped = time_warp(clip, rate=1.5)
     assert np.all(warped.hand_detected)
+
+
+def test_time_warp_preserves_missing_frame_region_after_resample() -> None:
+    """미검출 구간(2026-07-20부터 클립에 남을 수 있음)이 리샘플 후에도 살아남아야 한다.
+
+    이걸 다시 전부 True로 덮어쓰면 dataset.py의 IGNORE_INDEX 마스킹이 깨져서
+    0벡터(신호 없음) 프레임에 실제 제스처 라벨이 붙어버린다.
+    """
+    clip = _clip("swipe_down", length=20)
+    hand_detected = np.ones(20, dtype=np.bool_)
+    hand_detected[8:14] = False  # 클립 중간에 미검출 구간
+    clip = replace(clip, hand_detected=hand_detected)
+
+    warped = time_warp(clip, rate=2.0)
+    assert not np.all(warped.hand_detected)  # 미검출 구간이 완전히 사라지지 않음
+    assert np.any(warped.hand_detected)  # 검출 구간도 남아 있음
 
 
 def test_time_warp_rejects_non_positive_rate() -> None:

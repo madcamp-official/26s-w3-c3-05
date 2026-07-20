@@ -2,9 +2,10 @@
 
 파인튜닝 단계(Phase 5)의 데이터 수집 도구다. `gaze_samples.py`(atomic-write·저장
 전 검증 패턴)와 같은 원칙: 클립 하나가 완결될 때만(SPACE로 시작→SPACE로 종료)
-캐시에 쓰고, 녹화 도중 손 검출이 실패한 프레임이 하나라도 있으면 저장하지 않는다
-— `extract_jester.py`와 동일한 정책(학습 파이프라인 인터뷰 결정: 검출 실패
-클립 전체 제외).
+캐시에 쓴다. 손 검출 실패 프레임 허용 정책은 `extract_jester.py`와 동일하다
+(2026-07-20): 미검출 프레임 비율이 `TrainingConfig.max_missing_frame_fraction`을
+넘을 때만 클립을 버린다 — 웹캠 클립은 사람이 직접 다시 녹화해야 하는 만큼
+Jester보다 한 프레임 실패로 통째로 버리는 비용이 더 크다.
 
 저장 경로는 `<cache_dir>/webcam/<person_id>/*.npz`다 — `training/train.py --stage
 finetune`이 `--train-persons`/`--val-persons`로 사람 단위 split을 할 때 이 폴더
@@ -40,7 +41,13 @@ def _prompt_gesture_label() -> str:
         print("잘못된 입력입니다.")
 
 
-def run(person_id: str, model_path: Path, cache_dir: Path, camera_index: int = 0) -> None:
+def run(
+    person_id: str,
+    model_path: Path,
+    cache_dir: Path,
+    camera_index: int = 0,
+    max_missing_frame_fraction: float = DEFAULT_TRAINING_CONFIG.max_missing_frame_fraction,
+) -> None:
     out_dir = cache_dir / "webcam" / person_id
     clip_counter = len(sorted(out_dir.glob("*.npz"))) if out_dir.exists() else 0
 
@@ -54,7 +61,7 @@ def run(person_id: str, model_path: Path, cache_dir: Path, camera_index: int = 0
     recording = False
     observations: list[HandObservation] = []
     frame_id = 0
-    dropped_this_clip = False
+    missing_this_clip = 0
     gesture_label = _prompt_gesture_label()
 
     print("SPACE=녹화 시작/종료, g=제스처 변경, q/ESC=종료")
@@ -82,7 +89,7 @@ def run(person_id: str, model_path: Path, cache_dir: Path, camera_index: int = 0
                     observation = landmarker.process(rgb, timestamp_ms, frame_id)
                     frame_id += 1
                     if not observation.hand_detected:
-                        dropped_this_clip = True
+                        missing_this_clip += 1
                     observations.append(observation)
 
                 key = cv2.waitKey(1) & 0xFF
@@ -91,14 +98,19 @@ def run(person_id: str, model_path: Path, cache_dir: Path, camera_index: int = 0
                         recording = True
                         observations = []
                         frame_id = 0
-                        dropped_this_clip = False
+                        missing_this_clip = 0
                         print("녹화 시작")
                     else:
                         recording = False
-                        if dropped_this_clip:
-                            print(f"손 미검출 프레임이 있어 이 클립을 버립니다 ({len(observations)}프레임 중).")
-                        elif not observations:
+                        missing_fraction = missing_this_clip / len(observations) if observations else 1.0
+                        if not observations:
                             print("빈 클립 — 저장하지 않음")
+                        elif missing_fraction > max_missing_frame_fraction:
+                            print(
+                                f"미검출 프레임 비율이 너무 높아 이 클립을 버립니다 "
+                                f"({missing_this_clip}/{len(observations)}프레임, "
+                                f"허용 {max_missing_frame_fraction:.0%})."
+                            )
                         else:
                             clip_id = f"{person_id}-{gesture_label}-{clip_counter:04d}"
                             clip = observations_to_cached_clip(observations, gesture_label, clip_id)
@@ -122,9 +134,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_TRAINING_CONFIG.cache_dir)
     parser.add_argument("--camera-index", type=int, default=0)
+    parser.add_argument(
+        "--max-missing-frame-fraction",
+        type=float,
+        default=DEFAULT_TRAINING_CONFIG.max_missing_frame_fraction,
+        help="클립 내 미검출 프레임 비율이 이 값을 넘으면 클립을 버린다(기본 %(default)s)",
+    )
     args = parser.parse_args(argv)
 
-    run(args.person_id, args.model, args.cache_dir, args.camera_index)
+    run(
+        args.person_id,
+        args.model,
+        args.cache_dir,
+        args.camera_index,
+        max_missing_frame_fraction=args.max_missing_frame_fraction,
+    )
     return 0
 
 
