@@ -67,6 +67,20 @@ class TrainingConfig:
     phase_loss_weight: float = 0.3
     """gesture loss 대비 phase loss 가중치. phase 라벨이 휴리스틱(노이즈 있음)이라 낮게 둔다."""
 
+    background_class_weight_scale: float = 1.0
+    """배경 클래스(`DEFAULT_BACKGROUND_LABELS`) 가중치에 곱하는 배수(2026-07-20 추가).
+
+    `compute_class_weights`는 9개 클래스 각각에 동등한 총 loss 기여를 주므로,
+    배경이 3개로 나뉘어 있으면 **배경 : 전경 = 3 : 6 = 1 : 2**가 된다. 배경을 하나로
+    합쳐 세는 것(1 : 6)에 비해 배경이 3배 강조된 셈인데, 이는 의도한 설계가 아니라
+    "학습은 세분화, 평가는 병합"(`collapse_background_probabilities`) 구조에서
+    자동으로 따라온 부작용이다.
+
+    오탐(배경을 제스처로 오인)을 줄이는 방향이라 유리할 수 있어 기본값은 1.0으로
+    두어 **기존 실험과의 연속성을 유지**하되, 이제 그 강조가 암묵적이지 않고 이
+    필드로 드러난다. `1/배경 클래스 수`(현재 3개이므로 약 0.333)로 두면 배경을 한
+    클래스로 합쳐 가중치를 계산한 것과 같은 1 : 6이 된다."""
+
     # --- Augmentation ---
     flip_probability: float = 0.5
     """샘플마다 좌우반전(+라벨 스왑)을 적용할 확률."""
@@ -114,6 +128,11 @@ class TrainingConfig:
             raise ValueError("early_stopping_patience must be at least 1")
         if not math.isfinite(self.phase_loss_weight) or self.phase_loss_weight < 0.0:
             raise ValueError("phase_loss_weight must be finite and non-negative")
+        if (
+            not math.isfinite(self.background_class_weight_scale)
+            or self.background_class_weight_scale <= 0.0
+        ):
+            raise ValueError("background_class_weight_scale must be finite and positive")
         for name, value in (
             ("flip_probability", self.flip_probability),
             ("time_warp_probability", self.time_warp_probability),
