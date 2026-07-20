@@ -1,22 +1,21 @@
-"""기존 엔진 vs 이식한 레거시 엔진 랜드마크 A/B — `python -m jarvis.engine_port.compare`.
+"""기존 엔진 vs 참고 레포 엔진 랜드마크 A/B — `python -m jarvis.engine_port.compare`.
 
-**같은 카메라 프레임**을 두 개의 서로 다른 랜드마크 엔진에 그대로 흘려 좌/우 패널에
-그린다. 이전 실험(`reference_port`)의 A/B와 달리 여기서 다른 것은 설정이 아니라
-**엔진 자체**다:
+**같은 프레임**을 두 랜드마크 엔진에 그대로 흘려 좌/우 패널에 그리고, 차이를 눈이
+아니라 숫자로 남긴다:
 
-- 왼쪽 "기존 엔진"  : 이 프로젝트의 mediapipe Tasks API `HandLandmarker` (같은 프로세스)
-- 오른쪽 "이식 엔진": 참고 레포의 레거시 `mp.solutions.hands` (격리 venv의 자식 프로세스)
+- 왼쪽 "기존 엔진"  : Tasks API `HandLandmarker` (`models/hand_landmarker.task` 필요)
+- 오른쪽 "참고 엔진": 레거시 `mp.solutions.hands` (모델 파일 불필요 — 휠에 내장)
 
-두 mediapipe 버전은 한 프로세스에 공존할 수 없어 오른쪽은 서브프로세스로 돈다.
-프레임은 **동기 요청/응답**으로 주고받으므로 좌우 패널은 항상 동일한 프레임이다 —
-그래야 편차 수치가 의미를 갖는다.
+mediapipe 0.10.14는 두 API를 **모두** 제공하므로 둘 다 한 프로세스에서 돈다. 예전에
+쓰던 격리 venv·서브프로세스 브리지는 필요 없어져 제거했다.
 
-공정한 엔진 비교를 위해 기본적으로 **양쪽에 같은 검출 신뢰도**를 주고 **평활화는
-양쪽 다 끈다**(One-Euro는 우리 파이프라인의 후처리이지 엔진의 능력이 아니다).
+공정한 엔진 비교를 위해 **양쪽에 같은 검출 신뢰도**를 주고 **평활화는 양쪽 다 끈다**
+(One-Euro는 우리 파이프라인의 후처리이지 엔진의 능력이 아니다). 두 엔진에 같은 원본
+프레임을 넣고, 좌우 반전은 표시할 때만 한다.
 
-    python -m jarvis.engine_port.setup_legacy_env   # 최초 1회: 격리 venv 생성
-    python -m jarvis.engine_port.compare            # 웹캠 A/B
-    python -m jarvis.engine_port.compare --dump ab.csv   # 프레임별 수치를 CSV로
+    python -m jarvis.engine_port.compare                          # 웹캠 A/B
+    python -m jarvis.engine_port.compare --video clip.mp4 --dump ab.csv
+    python -m jarvis.engine_port.compare --video clip.mp4 --headless
 
 ESC로 종료하면 편차·검출 일치율·지터 요약이 출력된다.
 """
@@ -25,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import sys
 import time
 from contextlib import suppress
@@ -35,9 +35,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from jarvis.engine_port.client import LegacyEngineClient, LegacyEngineError, resolve_legacy_python
-from jarvis.engine_port.metrics import ComparisonAccumulator
-from jarvis.engine_port.protocol import FloatArray
+from jarvis.engine_port.metrics import ComparisonAccumulator, FloatArray
 
 if TYPE_CHECKING:
     import _csv
@@ -47,10 +45,12 @@ if TYPE_CHECKING:
 #: 좌우 패널을 합친 창의 기본 가로 크기(px). 640x480 웹캠이면 패널당 800px이 된다.
 DEFAULT_WINDOW_WIDTH = 1600
 
-_WINDOW_NAME = "engine A/B  (left=기존 / right=이식)  ESC=quit"
+_WINDOW_NAME = "engine A/B  (left=기존 / right=참고)  ESC=quit"
 
 _LABEL_A = "기존 엔진"
-_LABEL_B = "이식 엔진"
+_LABEL_B = "참고 엔진"
+_SUBTITLE_A = "Tasks API HandLandmarker"
+_SUBTITLE_B = "레거시 mp.solutions.hands"
 _COLOR_A = (80, 200, 80)
 _COLOR_B = (80, 180, 240)
 
@@ -107,6 +107,25 @@ def _detect_tasks_api(
     return np.array([[lm.x, lm.y] for lm in result.hand_landmarks[0]], dtype=np.float64)
 
 
+def _scale_for_display(
+    frame_bgr: npt.NDArray[np.uint8], panel_width: int
+) -> npt.NDArray[np.uint8]:
+    """표시용으로만 프레임을 확대한다 — 엔진에는 원본 해상도를 그대로 넣는다.
+
+    그리기 **전에** 키워야 랜드마크 선과 글자가 또렷하다. 합친 뒤 확대하면 전부
+    뭉개진다. 랜드마크는 정규화 좌표라 해상도가 바뀌어도 그대로 쓸 수 있다.
+    """
+    height, width = frame_bgr.shape[:2]
+    if panel_width <= 0 or panel_width == width:
+        return frame_bgr
+    panel_height = max(1, round(height * panel_width / width))
+    interpolation = cv2.INTER_LINEAR if panel_width > width else cv2.INTER_AREA
+    return cast(
+        "npt.NDArray[np.uint8]",
+        cv2.resize(frame_bgr, (panel_width, panel_height), interpolation=interpolation),
+    )
+
+
 def _draw_panel(
     frame_bgr: npt.NDArray[np.uint8],
     points: FloatArray | None,
@@ -150,25 +169,6 @@ def _draw_panel(
     return display
 
 
-def _scale_for_display(
-    frame_bgr: npt.NDArray[np.uint8], panel_width: int
-) -> npt.NDArray[np.uint8]:
-    """표시용으로만 프레임을 확대한다 — 엔진에는 원본 해상도를 그대로 넣는다.
-
-    그리기 **전에** 키워야 랜드마크 선과 글자가 또렷하다. 합친 뒤 확대하면 전부
-    뭉개진다. 랜드마크는 정규화 좌표라 해상도가 바뀌어도 그대로 쓸 수 있다.
-    """
-    height, width = frame_bgr.shape[:2]
-    if panel_width <= 0 or panel_width == width:
-        return frame_bgr
-    panel_height = max(1, round(height * panel_width / width))
-    interpolation = cv2.INTER_LINEAR if panel_width > width else cv2.INTER_AREA
-    return cast(
-        "npt.NDArray[np.uint8]",
-        cv2.resize(frame_bgr, (panel_width, panel_height), interpolation=interpolation),
-    )
-
-
 def _draw_deviation_banner(
     combined: npt.NDArray[np.uint8], frame_deviation: float | None, frame_width: int
 ) -> None:
@@ -191,14 +191,21 @@ def run(
     *,
     source: int | str,
     model_path: Path,
-    legacy_python: Path,
     min_detection: float,
     dump_path: Path | None,
     max_frames: int,
     headless: bool,
     window_width: int,
 ) -> int:
+    from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG
+    from jarvis.gesture_fusion.solutions_hands import SolutionsHandDetector
+
     landmarker = _make_landmarker(model_path, min_detection)
+    # 참고 엔진에도 같은 검출 신뢰도를 준다 — 설정 차이가 엔진 차이로 오해되지 않도록.
+    detector = SolutionsHandDetector(
+        dataclasses.replace(DEFAULT_GESTURE_CONFIG, min_hand_detection_confidence=min_detection)
+    )
+
     accumulator = ComparisonAccumulator()
     dump_file: TextIO | None = None
     dump_writer: "_csv._writer | None" = None
@@ -211,6 +218,7 @@ def run(
     if not capture.isOpened():
         print(f"입력을 열 수 없습니다: {source}", file=sys.stderr)
         landmarker.close()
+        detector.close()
         if dump_file is not None:
             dump_file.close()
         return 1
@@ -223,68 +231,66 @@ def run(
     window_ready = False
 
     print(
-        f"엔진 A/B 실행 중 — 좌: {_LABEL_A}(Tasks API) / 우: {_LABEL_B}(mp.solutions.hands)\n"
+        f"엔진 A/B 실행 중 — 좌: {_LABEL_A}({_SUBTITLE_A}) / 우: {_LABEL_B}({_SUBTITLE_B})\n"
         f"양쪽 검출 신뢰도 {min_detection}, 평활화 없음. ESC로 종료하면 요약이 출력됩니다."
     )
     try:
-        with LegacyEngineClient(legacy_python, min_detection=min_detection) as legacy:
-            while True:
-                ok, frame_raw = capture.read()
-                if not ok:
+        while True:
+            ok, frame_raw = capture.read()
+            if not ok:
+                break
+            frame = cast("npt.NDArray[np.uint8]", frame_raw)
+            frame_width = int(frame.shape[1])
+            rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            timestamp = max(int((time.monotonic() - started) * 1000), last_timestamp + 1)
+            last_timestamp = timestamp
+
+            points_a = _detect_tasks_api(landmarker, rgb, timestamp)
+            detection_b = detector.detect(rgb)
+            points_b = None if detection_b is None else detection_b.points
+
+            frame_deviation = accumulator.update(points_a, points_b)
+            frame_index += 1
+            if dump_writer is not None:
+                dump_writer.writerow([
+                    frame_index,
+                    timestamp,
+                    int(points_a is not None),
+                    int(points_b is not None),
+                    "" if frame_deviation is None else f"{frame_deviation:.6f}",
+                ])
+
+            if not headless:
+                if not window_ready:
+                    # WINDOW_NORMAL이라야 사용자가 창을 자유롭게 늘릴 수 있다.
+                    cv2.namedWindow(_WINDOW_NAME, cv2.WINDOW_NORMAL)
+                    panel_height = round(frame.shape[0] * panel_width / frame.shape[1])
+                    cv2.resizeWindow(_WINDOW_NAME, panel_width * 2, panel_height)
+                    window_ready = True
+                display_frame = _scale_for_display(frame, panel_width)
+                panel_a = _draw_panel(
+                    display_frame, points_a,
+                    title=_LABEL_A, subtitle=_SUBTITLE_A,
+                    color=_COLOR_A, status="hand" if points_a is not None else "no hand",
+                )
+                panel_b = _draw_panel(
+                    display_frame, points_b,
+                    title=_LABEL_B, subtitle=_SUBTITLE_B,
+                    color=_COLOR_B, status="hand" if points_b is not None else "no hand",
+                )
+                combined = cast("npt.NDArray[np.uint8]", cv2.hconcat([panel_a, panel_b]))
+                _draw_deviation_banner(combined, frame_deviation, frame_width)
+                cv2.imshow(_WINDOW_NAME, combined)
+                if cv2.waitKey(1) & 0xFF == 27:
                     break
-                frame = cast("npt.NDArray[np.uint8]", frame_raw)
-                frame_width = int(frame.shape[1])
-                rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                timestamp = max(int((time.monotonic() - started) * 1000), last_timestamp + 1)
-                last_timestamp = timestamp
-
-                points_a = _detect_tasks_api(landmarker, rgb, timestamp)
-                points_b = legacy.detect(frame, timestamp).points
-
-                frame_deviation = accumulator.update(points_a, points_b)
-                frame_index += 1
-                if dump_writer is not None:
-                    dump_writer.writerow([
-                        frame_index,
-                        timestamp,
-                        int(points_a is not None),
-                        int(points_b is not None),
-                        "" if frame_deviation is None else f"{frame_deviation:.6f}",
-                    ])
-
-                if not headless:
-                    if not window_ready:
-                        # WINDOW_NORMAL이라야 사용자가 창을 자유롭게 늘릴 수 있다.
-                        cv2.namedWindow(_WINDOW_NAME, cv2.WINDOW_NORMAL)
-                        panel_height = round(frame.shape[0] * panel_width / frame.shape[1])
-                        cv2.resizeWindow(_WINDOW_NAME, panel_width * 2, panel_height)
-                        window_ready = True
-                    display_frame = _scale_for_display(frame, panel_width)
-                    panel_a = _draw_panel(
-                        display_frame, points_a,
-                        title=_LABEL_A, subtitle="mediapipe Tasks API HandLandmarker",
-                        color=_COLOR_A, status="hand" if points_a is not None else "no hand",
-                    )
-                    panel_b = _draw_panel(
-                        display_frame, points_b,
-                        title=_LABEL_B, subtitle="참고 레포 레거시 mp.solutions.hands",
-                        color=_COLOR_B, status="hand" if points_b is not None else "no hand",
-                    )
-                    combined = cast("npt.NDArray[np.uint8]", cv2.hconcat([panel_a, panel_b]))
-                    _draw_deviation_banner(combined, frame_deviation, frame_width)
-                    cv2.imshow(_WINDOW_NAME, combined)
-                    if cv2.waitKey(1) & 0xFF == 27:
-                        break
-                if 0 < max_frames <= frame_index:
-                    break
-    except LegacyEngineError as exc:
-        print(f"\n레거시 엔진 오류: {exc}", file=sys.stderr)
-        return 1
+            if 0 < max_frames <= frame_index:
+                break
     finally:
         capture.release()
         with suppress(cv2.error):
             cv2.destroyAllWindows()
         landmarker.close()
+        detector.close()
         if dump_file is not None:
             dump_file.close()
             print(f"\n프레임별 수치를 저장했습니다: {dump_path}")
@@ -296,17 +302,15 @@ def run(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="랜드마크 엔진 A/B (기존 Tasks API vs 이식 레거시)")
+    parser = argparse.ArgumentParser(
+        description="랜드마크 엔진 A/B (기존 Tasks API vs 참고 Solutions)"
+    )
     parser.add_argument("--device", type=int, default=0, help="웹캠 인덱스")
     parser.add_argument(
         "--video", type=str, default=None,
         help="웹캠 대신 쓸 녹화 파일 경로 — 같은 영상으로 비교를 재현할 수 있다",
     )
     parser.add_argument("--model", type=str, default=None, help="hand_landmarker.task 경로")
-    parser.add_argument(
-        "--legacy-python", type=str, default=None,
-        help="격리 venv 파이썬 경로 (기본: 저장소 루트 .venv-legacy)",
-    )
     parser.add_argument(
         "--min-detection", type=float, default=0.5,
         help="양쪽 엔진에 동일하게 주는 검출 신뢰도 (기본 0.5 — 우리 파이프라인 기본값)",
@@ -315,7 +319,7 @@ def main() -> int:
     parser.add_argument("--max-frames", type=int, default=0, help="N>0이면 N 프레임 후 자동 종료")
     parser.add_argument(
         "--window-width", type=int, default=DEFAULT_WINDOW_WIDTH,
-        help=f"좌우 패널을 합친 창의 가로 크기 px (기본 {DEFAULT_WINDOW_WIDTH}). 창은 드래그로도 조절 가능",
+        help=f"좌우 패널 합친 창의 가로 px (기본 {DEFAULT_WINDOW_WIDTH}). 드래그로도 조절 가능",
     )
     parser.add_argument(
         "--headless", action="store_true",
@@ -325,18 +329,15 @@ def main() -> int:
 
     model_path = _find_model(args.model)
     if model_path is None:
-        print("hand_landmarker.task 모델을 찾지 못했습니다. --model 로 경로를 지정하세요.", file=sys.stderr)
-        return 1
-    try:
-        legacy_python = resolve_legacy_python(args.legacy_python)
-    except LegacyEngineError as exc:
-        print(str(exc), file=sys.stderr)
+        print(
+            "hand_landmarker.task 모델을 찾지 못했습니다. --model 로 경로를 지정하세요.",
+            file=sys.stderr,
+        )
         return 1
 
     return run(
         source=args.video if args.video else args.device,
         model_path=model_path,
-        legacy_python=legacy_python,
         min_detection=args.min_detection,
         dump_path=Path(args.dump) if args.dump else None,
         max_frames=args.max_frames,

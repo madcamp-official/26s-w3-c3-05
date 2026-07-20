@@ -1,39 +1,31 @@
-"""참고 레포의 랜드마크 **엔진 자체**를 이식해 기존 엔진과 비교하는 실험 패키지.
+"""두 랜드마크 엔진의 추출 품질을 정량 비교하는 실험 패키지.
 
-Kazuhito00/hand-gesture-recognition-using-mediapipe가 쓰는 레거시
-`mp.solutions.hands`를 실제로 구동해, 이 프로젝트의 Tasks API `HandLandmarker`와
-**같은 프레임 위에서** 랜드마크 품질을 A/B 비교한다. 프로덕션 `gesture_fusion`
-파이프라인과는 완전히 별개인 실험용이다.
+이 프로젝트의 Tasks API `HandLandmarker`와, 참고 레포
+(Kazuhito00/hand-gesture-recognition-using-mediapipe)가 쓰는 레거시
+`mp.solutions.hands`를 **같은 프레임 위에서** 나란히 돌려 편차·검출 일치율·지터를
+잰다. 프로덕션 `gesture_fusion` 파이프라인과는 별개인 비교 도구다.
 
-두 mediapipe 버전(0.10.35 slim vs solutions가 있는 0.10.14)은 한 프로세스에 공존할
-수 없으므로 레거시 엔진은 격리 venv의 **자식 프로세스**로 돌리고 파이프로 프레임을
-주고받는다. 구성:
+참고 엔진 자체는 `jarvis.gesture_fusion.solutions_hands`로 본체에 이식돼 있다 —
+이 패키지는 그것을 **평가**할 뿐이고, 디버그 툴(`jarvis.monitoring`)은 백엔드
+선택으로 같은 엔진을 직접 쓴다.
 
-- `protocol` : 파이프 와이어 포맷 (양쪽 venv에서 공유, 의존성 없음)
-- `legacy_worker` : 격리 venv에서 도는 레거시 엔진 워커 (여기서 import하지 않는다)
-- `client` : 메인 프로세스에서 워커를 부리는 동기 클라이언트
-- `metrics` : 두 엔진 출력의 편차·검출 일치율·지터 정량화
+mediapipe 0.10.14가 Tasks와 Solutions를 모두 제공하므로 두 엔진은 한 프로세스에서
+돈다(예전에 쓰던 격리 venv·서브프로세스 브리지는 필요 없어져 제거했다).
+
+- `metrics` : 편차·검출 일치율·지터 정량화 (순수 numpy — 카메라·mediapipe 불필요)
 - `compare` : 좌우 A/B 시각화 CLI
-- `setup_legacy_env` : 격리 venv 생성 CLI
-
-`legacy_worker`는 구버전 mediapipe를 요구하므로 이 `__init__`에서 import하지 않는다 —
-메인 환경의 import·테스트·타입체크가 깨지지 않도록.
 """
 
-from jarvis.engine_port.client import LegacyEngineClient, LegacyEngineError
 from jarvis.engine_port.metrics import (
     ComparisonAccumulator,
     ComparisonSummary,
+    JitterTracker,
     landmark_deviation,
 )
-from jarvis.engine_port.protocol import LandmarkResult, ProtocolError
 
 __all__ = [
     "ComparisonAccumulator",
     "ComparisonSummary",
-    "LandmarkResult",
-    "LegacyEngineClient",
-    "LegacyEngineError",
-    "ProtocolError",
+    "JitterTracker",
     "landmark_deviation",
 ]

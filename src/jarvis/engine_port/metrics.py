@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 import numpy as np
 import numpy.typing as npt
 
-from jarvis.engine_port.protocol import LANDMARK_COUNT, FloatArray
+from jarvis.gesture_fusion.config import HAND_LANDMARK_COUNT as LANDMARK_COUNT
+
+FloatArray = npt.NDArray[np.float64]
 
 
 def landmark_deviation(a: npt.ArrayLike, b: npt.ArrayLike) -> FloatArray:

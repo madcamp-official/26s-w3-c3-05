@@ -1,88 +1,25 @@
-"""engine_port 검증 — 파이프 규약 왕복과 비교 지표 집계.
+"""engine_port 비교 지표 검증.
 
-레거시 엔진 자체는 격리 venv가 있어야 돌아가므로 여기서는 다루지 않는다. 대신
-**엔진 없이도 깨질 수 있는 부분**을 덮는다: 프레임/결과 직렬화가 정확히 왕복하는가,
-편차·검출 일치율 집계가 맞는가. 이 둘이 틀리면 A/B 수치 전체가 무의미해진다.
+랜드마크 엔진 자체는 mediapipe가 있어야 돌아가므로 여기서는 다루지 않는다(엔진
+어댑터는 `test_solutions_hands.py`). 대신 **엔진 없이도 깨질 수 있는 부분**을
+덮는다: 편차·검출 일치율·지터 집계가 맞는가. 이게 틀리면 A/B 수치 전체가 무의미하다.
 """
 
 from __future__ import annotations
 
-import io
-
 import numpy as np
 import pytest
 
-from jarvis.engine_port.metrics import ComparisonAccumulator, JitterTracker, landmark_deviation
-from jarvis.engine_port.protocol import (
-    FRAME_HEADER_SIZE,
+from jarvis.engine_port.metrics import (
     LANDMARK_COUNT,
-    LandmarkResult,
-    ProtocolError,
-    decode_frame_header,
-    decode_result,
-    encode_frame_header,
-    encode_result,
-    read_exactly,
+    ComparisonAccumulator,
+    JitterTracker,
+    landmark_deviation,
 )
 
 
 def _points(seed: int) -> np.ndarray:
     return np.random.default_rng(seed).random((LANDMARK_COUNT, 2))
-
-
-def test_frame_header_round_trip() -> None:
-    header = decode_frame_header(encode_frame_header(480, 640, 12345))
-    assert (header.height, header.width, header.timestamp_ms) == (480, 640, 12345)
-    assert header.payload_size == 480 * 640 * 3
-
-
-def test_frame_header_rejects_wrong_length() -> None:
-    with pytest.raises(ProtocolError):
-        decode_frame_header(encode_frame_header(480, 640, 1)[:-1])
-
-
-def test_frame_header_rejects_bad_magic() -> None:
-    corrupted = b"X" + encode_frame_header(480, 640, 1)[1:]
-    with pytest.raises(ProtocolError):
-        decode_frame_header(corrupted)
-
-
-def test_result_round_trip_preserves_landmarks() -> None:
-    original = LandmarkResult(
-        timestamp_ms=77, points=_points(0), handedness="Left", score=0.93
-    )
-    restored = decode_result(encode_result(original))
-    assert restored.timestamp_ms == 77
-    assert restored.handedness == "Left"
-    assert restored.score == pytest.approx(0.93)
-    assert restored.points is not None
-    np.testing.assert_allclose(restored.points, original.points, atol=1e-12)
-
-
-def test_result_round_trip_without_detection() -> None:
-    restored = decode_result(encode_result(LandmarkResult(timestamp_ms=5, points=None)))
-    assert restored.points is None
-    assert not restored.detected
-
-
-def test_result_rejects_wrong_landmark_shape() -> None:
-    with pytest.raises(ProtocolError):
-        decode_result('{"ts":1,"points":[[0.1,0.2],[0.3,0.4]]}')
-
-
-def test_result_rejects_non_json() -> None:
-    with pytest.raises(ProtocolError):
-        decode_result(b"not json at all\n")
-
-
-def test_read_exactly_reassembles_split_chunks() -> None:
-    payload = bytes(range(256)) * 40
-    assert read_exactly(io.BytesIO(payload), len(payload)) == payload
-
-
-def test_read_exactly_returns_none_on_early_eof() -> None:
-    # 헤더 크기보다 짧은 스트림 = 워커/메인이 먼저 종료한 상황.
-    assert read_exactly(io.BytesIO(b"ab"), FRAME_HEADER_SIZE) is None
 
 
 def test_landmark_deviation_is_zero_for_identical_points() -> None:
@@ -96,12 +33,17 @@ def test_landmark_deviation_matches_known_offset() -> None:
     np.testing.assert_allclose(landmark_deviation(pts, shifted), np.full(LANDMARK_COUNT, 0.05))
 
 
+def test_landmark_deviation_rejects_wrong_shape() -> None:
+    with pytest.raises(ValueError, match="랜드마크"):
+        landmark_deviation(np.zeros((2, 2)), np.zeros((2, 2)))
+
+
 def test_accumulator_counts_detection_agreement() -> None:
     acc = ComparisonAccumulator()
     a, b = _points(3), _points(4)
-    acc.update(a, b)      # 둘 다 검출
-    acc.update(a, None)   # A만
-    acc.update(None, b)   # B만
+    acc.update(a, b)        # 둘 다 검출
+    acc.update(a, None)     # A만
+    acc.update(None, b)     # B만
     acc.update(None, None)  # 둘 다 미검출
 
     summary = acc.summary()
