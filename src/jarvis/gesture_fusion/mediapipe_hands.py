@@ -35,6 +35,7 @@ from jarvis.gesture_fusion.landmarks import (
     HandObservation,
     RawHandLandmarks,
     _lost_tracking_observation,
+    palm_tilt_degrees,
     normalize_hand,
 )
 
@@ -118,6 +119,11 @@ class MediaPipeHandLandmarker:
         if points.shape != (HAND_LANDMARK_COUNT, LANDMARK_DIMS):
             # 모델이 21점을 채우지 못한 비정상 프레임은 추적 손실로 처리한다.
             return _lost_tracking_observation(timestamp_ms, frame_id)
+        # 기울기만은 z에서 계산해 넘긴다 — 화면 밖 회전은 원리적으로 z에만 있는 정보고,
+        # 좌표가 아니라 각도 하나로 요약해 게이트 판정에만 쓴다(landmarks.palm_tilt_degrees).
+        tilt = palm_tilt_degrees(
+            np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float64), self._config
+        )
 
         handedness, handedness_score = self._primary_handedness(result, best_index)
 
@@ -132,6 +138,7 @@ class MediaPipeHandLandmarker:
             handedness=handedness,
             detection_confidence=handedness_score,
             handedness_score=handedness_score,
+            palm_tilt_degrees=tilt,
         )
         return normalize_hand(raw, self._config)
 

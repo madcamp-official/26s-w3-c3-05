@@ -119,6 +119,28 @@ class GestureConfig:
     palm_scale_smoothing_d_cutoff: float = 1.0
     """palm_scale 내부 변화율 추정의 평활 컷오프(Hz)."""
 
+    # --- 손 기울기 게이트 ---
+    max_palm_tilt_degrees: float = 20.0
+    """이 각도를 넘게 기울어진 손은 자세 판정을 **거부**한다(0이면 게이트 없음).
+
+    각도는 손바닥 축(손목→중지 MCP)이 이미지 평면과 이루는 각이다. 손을 카메라 쪽으로
+    눕히면 이 축이 2D에서 단축되어 자세 정보가 실제로 소실된다 — 좌표를 어떻게 정규화해도
+    복원되지 않는다(2026-07-20 측정: 정규화 방식 4종이 정확도에서 통계적 동률).
+
+    측정된 구간별 분류 정확도(6클래스, 에피소드 단위 홀드아웃):
+         0~10°  90.8%     20~30°  47.3%
+        10~20°  76.6%     30~90°  37.0%
+    기울기 구간만 따로 학습해도 10~20°에서 39.8%, 20° 초과에서 25.9%(우연 17%)라
+    데이터를 더 모아 해결되는 문제가 아니다.
+
+    임계 20°는 판정률 85.1%에 정확도 88.7%인 지점이다(15°는 80.6%/90.0%, 30°는
+    92.0%/85.5%). 실제 조작에서 손을 화면과 완벽히 나란히 유지할 수 없으므로 어느 정도
+    기울기는 허용해야 한다는 요구와, 20° 초과에서 급락하는 성능 사이의 타협점이다.
+
+    거부는 조용히 무시하지 말고 사용자에게 표시해야 한다 — 왜 반응이 없는지 알아야
+    손을 세울 수 있다(development-principles.md: 실패를 감추지 않는다).
+    """
+
     # --- Feature engineering (README 8장 "속도·관절 각도 생성") ---
     # 어떤 feature 그룹을 모델 입력 벡터에 넣을지 켜고 끈다. 모델을 갈아끼우거나
     # 입력 차원을 줄일 때 코드 수정 없이 조절한다. 순서(위치→각도→속도)는
@@ -185,6 +207,8 @@ class GestureConfig:
             raise ValueError("min_palm_scale must be finite and positive")
         if self.max_frame_gap_ms <= 0:
             raise ValueError("max_frame_gap_ms must be positive")
+        if not math.isfinite(self.max_palm_tilt_degrees) or not 0.0 <= self.max_palm_tilt_degrees <= 90.0:
+            raise ValueError("max_palm_tilt_degrees must be finite and within [0, 90]")
         if not math.isfinite(self.smoothing_min_cutoff) or self.smoothing_min_cutoff <= 0.0:
             raise ValueError("smoothing_min_cutoff must be finite and positive")
         if not math.isfinite(self.smoothing_d_cutoff) or self.smoothing_d_cutoff <= 0.0:

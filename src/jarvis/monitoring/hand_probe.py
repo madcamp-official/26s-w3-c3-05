@@ -33,7 +33,11 @@ import numpy.typing as npt
 
 from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG, LANDMARK_DIMS, GestureConfig
 from jarvis.gesture_fusion.features import HandFeatureExtractor
-from jarvis.gesture_fusion.landmarks import RawHandLandmarks, normalize_hand
+from jarvis.gesture_fusion.landmarks import (
+    RawHandLandmarks,
+    normalize_hand,
+    palm_tilt_degrees,
+)
 from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 Point2D = tuple[float, float]
@@ -283,6 +287,10 @@ class HandProbe:
         points = np.array([[lm.x, lm.y] for lm in landmarks], dtype=np.float64)
         if points.shape != (21, LANDMARK_DIMS):
             return self._lost(timestamp_ms, frame_id, inference_ms)
+        # 기울기만 z에서 계산해 넘긴다(좌표는 2D 유지) — 화면 밖 회전은 z에만 있다.
+        tilt = palm_tilt_degrees(
+            np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float64), self._config
+        )
 
         handedness, score = self._primary_handedness(result)
         raw = RawHandLandmarks(
@@ -292,6 +300,7 @@ class HandProbe:
             handedness=handedness,
             detection_confidence=score,
             handedness_score=score,
+            palm_tilt_degrees=tilt,
         )
         observation = normalize_hand(raw, self._config)
         if not observation.hand_detected:
