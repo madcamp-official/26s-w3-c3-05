@@ -164,6 +164,9 @@ class GazeConfig:
     registration_max_area_radius_deg: float = 6.0
     """Runtime/storage cap for edge-loop target area radii."""
 
+    target_area_scale_flex: float = 0.25
+    """Allowed fractional target-area radius change from face-scale distance changes."""
+
     target_match_tolerance: float = 1.10
     """Accept near-boundary target matches up to this normalized distance."""
 
@@ -254,6 +257,8 @@ class GazeConfig:
             raise ValueError(
                 "registration_max_area_radius_deg must satisfy min_spread <= area <= max_spread"
             )
+        if not math.isfinite(self.target_area_scale_flex) or not 0.0 <= self.target_area_scale_flex <= 1.0:
+            raise ValueError("target_area_scale_flex must be finite and within [0, 1]")
         if not math.isfinite(self.target_match_tolerance) or not 1.0 <= self.target_match_tolerance <= 2.0:
             raise ValueError("target_match_tolerance must be finite and within [1, 2]")
 

@@ -154,6 +154,46 @@ def test_area_profile_accepts_near_boundary_with_tolerance() -> None:
     assert result.target == "monitor"
 
 
+def test_area_profile_flexes_with_face_scale_for_apparent_target_size() -> None:
+    classifier = TargetClassifier(
+        GazeConfig(
+            unknown_probability_threshold=0.0,
+            registration_max_area_radius_deg=6.0,
+            target_match_tolerance=1.0,
+            target_area_scale_flex=0.25,
+        )
+    )
+    classifier.register_profile(
+        DeviceGazeProfile(
+            "screen",
+            _unit([0.0, 0.0, 1.0]),
+            variance=0.01,
+            reference_face_scale=0.10,
+        ),
+        area_profile=TargetAreaProfile(
+            center_yaw=0.0,
+            center_pitch=0.0,
+            radius_yaw=6.0,
+            radius_pitch=6.0,
+            sample_count=80,
+        ),
+    )
+
+    far_without_scale_flex = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(7.0, 0.0, 0.0, 0.0, 0.0, 0.10),
+        current_face_scale=0.10,
+    )
+    closer_with_larger_apparent_target = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(7.0, 0.0, 0.0, 0.0, 0.0, 0.125),
+        current_face_scale=0.125,
+    )
+
+    assert far_without_scale_flex.target == GazeConfig().UNKNOWN_TARGET
+    assert closer_with_larger_apparent_target.target == "screen"
+
+
 def test_built_feature_profile_tolerates_head_pose_when_gaze_matches() -> None:
     profile = build_feature_profile(
         [

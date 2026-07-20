@@ -167,7 +167,11 @@ class TargetAreaProfile:
             raise ValueError("target area profile sample_count must be positive")
 
     def normalized_distance(
-        self, gaze_yaw: float, gaze_pitch: float, max_radius_deg: float | None = None
+        self,
+        gaze_yaw: float,
+        gaze_pitch: float,
+        max_radius_deg: float | None = None,
+        radius_scale: float = 1.0,
     ) -> float:
         radius_yaw = (
             min(self.radius_yaw, max_radius_deg)
@@ -177,15 +181,26 @@ class TargetAreaProfile:
         radius_pitch = (
             min(self.radius_pitch, max_radius_deg) if max_radius_deg is not None else self.radius_pitch
         )
+        radius_yaw *= radius_scale
+        radius_pitch *= radius_scale
         return math.hypot(
             (gaze_yaw - self.center_yaw) / radius_yaw,
             (gaze_pitch - self.center_pitch) / radius_pitch,
         )
 
     def contains(
-        self, gaze_yaw: float, gaze_pitch: float, max_radius_deg: float | None = None
+        self,
+        gaze_yaw: float,
+        gaze_pitch: float,
+        max_radius_deg: float | None = None,
+        radius_scale: float = 1.0,
     ) -> bool:
-        return self.normalized_distance(gaze_yaw, gaze_pitch, max_radius_deg) <= 1.0
+        return self.normalized_distance(
+            gaze_yaw,
+            gaze_pitch,
+            max_radius_deg,
+            radius_scale,
+        ) <= 1.0
 
 
 def build_area_profile(

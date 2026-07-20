@@ -317,6 +317,7 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 | `target_match_tolerance` | `1.10` | 등록 반경 경계값을 살짝 넘는 gaze를 허용하는 정규화 거리 상한 |
 | `registration_min_spread_deg` / `registration_max_spread_deg` | `4.0` / `8.0` | 등록 target의 각도 profile spread 하한/상한 |
 | `registration_max_area_radius_deg` | `6.0` | edge-loop target area가 과하게 커졌을 때 런타임에서 적용하는 반경 cap |
+| `target_area_scale_flex` | `0.25` | 등록 당시 대비 얼굴 scale 변화에 따라 target area 반경을 ±25%까지 유동 조정 |
 | `minimum_triangulation_baseline_mm` | `40.0` | 3D 등록 시 머리 origin 이동량 최소 기준 |
 | `minimum_triangulation_eigenvalue` | `0.0025` | 3D 등록 시 gaze ray 방향 다양성 최소 기준 |
 | `maximum_triangulation_residual_mm` | `35.0` | 3D 등록 시 ray-교차 residual RMS 상한 |
@@ -329,7 +330,8 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 1. 위/아래 고개 움직임이 덜 반영되면 `head_pitch_weight`를 조정한다.
 2. 좌/우 고개 움직임이 과하거나 부족하면 `head_yaw_weight`를 조정한다.
 3. 등록 target을 보고 있는데 경계에서 자주 `UNKNOWN`이 되면 `target_match_tolerance`를 조정한다.
-4. 안 보고 있는데 target으로 빨려 들어가면 `registration_max_area_radius_deg` 또는 등록 profile 자체를 다시 확인한다.
+4. 사용자-카메라 거리가 바뀔 때만 target이 빡빡하거나 넓어지면 `target_area_scale_flex`를 조정한다.
+5. 안 보고 있는데 target으로 빨려 들어가면 `registration_max_area_radius_deg` 또는 등록 profile 자체를 다시 확인한다.
 
 ## 기기 등록 방식
 

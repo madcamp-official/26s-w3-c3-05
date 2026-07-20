@@ -217,6 +217,7 @@ Debug monitor policy: simple `iris jump` no longer freezes the vector completely
 | `registration_min_spread_deg` | `4.0` | Minimum angular spread saved for a registered target. Prevents overly tiny target regions. |
 | `registration_max_spread_deg` | `8.0` | Maximum angular spread saved for a registered target. Prevents one target from swallowing too much space. |
 | `registration_max_area_radius_deg` | `6.0` | Runtime cap for edge-loop target area radius, even if an old JSON profile saved a larger area. |
+| `target_area_scale_flex` | `0.25` | Allows the target area radius to flex by ±25% from face-scale changes. If the user is closer than during registration, the apparent target area grows slightly; if farther, it shrinks slightly. |
 
 ### 3D registration diagnostics
 
@@ -237,6 +238,7 @@ Debug monitor policy: simple `iris jump` no longer freezes the vector completely
 - Up/down head motion dominates or flips targets too easily: decrease `head_pitch_weight`.
 - Left/right feels reversed: check `horizontal_axis_sign`.
 - Looking at a target but logs show near-boundary values such as `8.3/8.0deg x1.03 OUT`: check `target_match_tolerance`.
+- If target matching changes mostly when the user moves closer/farther from the camera: check `target_area_scale_flex`.
 - Not looking at a target but it is still selected: check duplicate target records, `registration_max_area_radius_deg`, and the saved target profile/area.
 - Blink causes vector spikes: check `blink_hold_ms`, `blink_recovery_hold_ms`, and `iris_jump_threshold`.
 - Vector freezes too much: `iris_jump_threshold` may be too low, or blink-recovery hold may be too aggressive.

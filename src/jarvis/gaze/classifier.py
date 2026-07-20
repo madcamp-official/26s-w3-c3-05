@@ -245,7 +245,27 @@ class TargetClassifier:
             )
 
         if feature_sample is not None and (self._feature_profiles or self._area_profiles):
-            return self._classify_by_feature_profile(feature_sample, direction, origin)
+            return self._classify_by_feature_profile(
+                feature_sample,
+                direction,
+                origin,
+                current_face_scale,
+            )
+
+        return self._classify_by_direction_profile(direction, origin, current_face_scale)
+
+    def _classify_by_direction_profile(
+        self,
+        direction: Vector3,
+        origin: Vector3 | None,
+        current_face_scale: float | None = None,
+    ) -> ClassificationResult:
+        if not self._profiles:
+            return ClassificationResult(
+                target=self._config.UNKNOWN_TARGET,
+                probability=0.0,
+                second_best_probability=0.0,
+            )
 
         device_ids = list(self._profiles.keys())
         scores = np.empty(len(device_ids), dtype=np.float64)
@@ -306,8 +326,14 @@ class TargetClassifier:
         feature_sample: TargetFeatureSample,
         direction: Vector3 | None = None,
         origin: Vector3 | None = None,
+        current_face_scale: float | None = None,
     ) -> ClassificationResult:
-        area_result = self._classify_by_area_profile(feature_sample, direction, origin)
+        area_result = self._classify_by_area_profile(
+            feature_sample,
+            direction,
+            origin,
+            current_face_scale,
+        )
         if area_result is not None:
             return area_result
         if not self._feature_profiles:
@@ -400,6 +426,7 @@ class TargetClassifier:
         feature_sample: TargetFeatureSample,
         direction: Vector3 | None,
         origin: Vector3 | None,
+        current_face_scale: float | None,
     ) -> ClassificationResult | None:
         if not self._area_profiles:
             return None
@@ -409,6 +436,7 @@ class TargetClassifier:
                     feature_sample.gaze_yaw,
                     feature_sample.gaze_pitch,
                     self._config.registration_max_area_radius_deg,
+                    self._area_radius_scale(device_id, current_face_scale),
                 ),
                 device_id,
             )
@@ -435,3 +463,18 @@ class TargetClassifier:
             probability=best / total if total > 0.0 else 1.0,
             second_best_probability=second / total if total > 0.0 else 0.0,
         )
+
+    def _area_radius_scale(self, device_id: str, current_face_scale: float | None) -> float:
+        profile = self._profiles.get(device_id)
+        if (
+            profile is None
+            or profile.reference_face_scale is None
+            or current_face_scale is None
+            or current_face_scale <= 0.0
+        ):
+            return 1.0
+        ratio = current_face_scale / profile.reference_face_scale
+        if not math.isfinite(ratio) or ratio <= 0.0:
+            return 1.0
+        flex = self._config.target_area_scale_flex
+        return min(1.0 + flex, max(1.0 - flex, ratio))
