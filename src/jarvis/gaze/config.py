@@ -53,6 +53,9 @@ class GazeConfig:
 
     head_pitch_weight: float = 0.45
     """How strongly head pitch contributes to gaze pitch before iris correction."""
+
+    head_only_confidence_scale: float = 0.45
+    """Confidence multiplier when iris/eyes are unavailable and only head pose is used."""
     """홍채 상대 위치(-1..1)를 각도로 환산할 때 사용하는 눈 최대 회전각."""
 
     # Smoothing (README 7장에 정의되지 않은 구현 세부값 — gaze.md에 기록)
@@ -146,6 +149,7 @@ class GazeConfig:
             "minimum_margin": self.minimum_margin,
             "unknown_probability_threshold": self.unknown_probability_threshold,
             "minimum_tracking_confidence": self.minimum_tracking_confidence,
+            "head_only_confidence_scale": self.head_only_confidence_scale,
             "ema_min_alpha": self.ema_min_alpha,
             "ema_max_alpha": self.ema_max_alpha,
         }

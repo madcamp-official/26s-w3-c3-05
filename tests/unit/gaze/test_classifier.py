@@ -91,6 +91,29 @@ def test_accepts_nearest_profile_when_inside_registered_range_despite_low_probab
     assert result.probability < config.unknown_probability_threshold
 
 
+def test_closer_target_wins_over_looser_higher_probability_profile() -> None:
+    config = GazeConfig(unknown_probability_threshold=0.0)
+    classifier = TargetClassifier(config)
+    classifier.register_profile(
+        DeviceGazeProfile(
+            "close_tight",
+            _unit([math.sin(math.radians(4.0)), 0.0, math.cos(math.radians(4.0))]),
+            variance=math.radians(4.5) ** 2,
+        )
+    )
+    classifier.register_profile(
+        DeviceGazeProfile(
+            "far_loose",
+            _unit([math.sin(math.radians(-10.0)), 0.0, math.cos(math.radians(-10.0))]),
+            variance=math.radians(30.0) ** 2,
+        )
+    )
+
+    result = classifier.classify(_unit([0.0, 0.0, 1.0]))
+
+    assert result.target == "close_tight"
+
+
 def test_single_registered_device_rejects_gaze_far_from_profile() -> None:
     """기기가 하나여도 상대확률 1.0만으로 먼 시선을 선택하면 안 된다."""
     config = GazeConfig(unknown_probability_threshold=0.8, unknown_max_angle_deg=25.0)

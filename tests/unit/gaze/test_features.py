@@ -118,6 +118,29 @@ def test_head_pose_weight_reduces_head_contribution() -> None:
     np.testing.assert_allclose(weighted.direction, equivalent_eye_only.direction, atol=1e-9)
 
 
+def test_closed_eyes_fall_back_to_head_only_gaze() -> None:
+    config = GazeConfig(head_yaw_weight=0.5, head_pitch_weight=0.5, max_eye_offset_deg=45.0)
+    gaze = compose_gaze_vector(
+        replace(
+            _observation(
+                head_yaw_deg=20.0,
+                head_pitch_deg=10.0,
+                left_iris_relative=(1.0, 1.0),
+                right_iris_relative=(1.0, 1.0),
+            ),
+            eyes_open=False,
+        ),
+        config,
+    )
+    equivalent = compose_gaze_vector(
+        _observation(head_yaw_deg=10.0, head_pitch_deg=5.0),
+        GazeConfig(head_yaw_weight=1.0, head_pitch_weight=1.0, max_eye_offset_deg=45.0),
+    )
+    assert gaze is not None and equivalent is not None
+    np.testing.assert_allclose(gaze.direction, equivalent.direction, atol=1e-9)
+    assert gaze.confidence == pytest.approx(config.head_only_confidence_scale)
+
+
 def test_face_not_detected_returns_none() -> None:
     assert compose_gaze_vector(_observation(face_detected=False)) is None
 

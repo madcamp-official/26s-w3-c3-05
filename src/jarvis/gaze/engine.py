@@ -74,9 +74,11 @@ class GazeTargetingEngine:
         """
         gaze_vector = compose_gaze_vector(observation, self._config)
         smoothed = (
-            self._smoother.hold(observation.timestamp_ms, observation.frame_id)
+            self._smoother.update(gaze_vector)
+            if gaze_vector is not None
+            else self._smoother.hold(observation.timestamp_ms, observation.frame_id)
             if observation.face_detected and not observation.eyes_open
-            else self._smoother.update(gaze_vector)
+            else self._smoother.update(None)
         )
         self._last_smoothed_gaze = smoothed
 

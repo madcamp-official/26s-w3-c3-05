@@ -153,10 +153,15 @@ def compose_gaze_vector(
     if not observation.face_detected or confidence < config.minimum_tracking_confidence:
         return None
 
-    left_x, left_y = observation.left_iris_relative
-    right_x, right_y = observation.right_iris_relative
-    eye_offset_x = (left_x + right_x) / 2.0
-    eye_offset_y = (left_y + right_y) / 2.0
+    if observation.eyes_open:
+        left_x, left_y = observation.left_iris_relative
+        right_x, right_y = observation.right_iris_relative
+        eye_offset_x = (left_x + right_x) / 2.0
+        eye_offset_y = (left_y + right_y) / 2.0
+    else:
+        eye_offset_x = 0.0
+        eye_offset_y = 0.0
+        confidence *= config.head_only_confidence_scale
 
     # 머리가 기울어진(roll) 만큼 눈 오프셋을 head-upright 좌표계로 되돌린다.
     eye_offset_x, eye_offset_y = _rotate_2d(eye_offset_x, eye_offset_y, -observation.head_roll_deg)

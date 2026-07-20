@@ -245,9 +245,11 @@ def evaluate(
     if gaze_vector is not None and calibration_model is not None:
         gaze_vector = calibration_model.correct(observation, gaze_vector)
     smoothed = (
-        smoother.hold(observation.timestamp_ms, observation.frame_id)
+        smoother.update(gaze_vector)
+        if gaze_vector is not None
+        else smoother.hold(observation.timestamp_ms, observation.frame_id)
         if observation.face_detected and not observation.eyes_open
-        else smoother.update(gaze_vector)
+        else smoother.update(None)
     )
 
     gaze_direction: tuple[float, float, float] | None = None
