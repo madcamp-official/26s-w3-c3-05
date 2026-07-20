@@ -159,10 +159,19 @@ def _reject_reason(
     result: ClassificationResult,
     details: tuple[DeviceGazeDetail, ...],
     config: GazeConfig,
+    feature_details: tuple[FeatureProfileDetail, ...] = (),
 ) -> str | None:
     """Explain why the classifier returned UNKNOWN, including profile range diagnostics."""
     if result.target != config.UNKNOWN_TARGET:
         return None
+    if feature_details:
+        nearest_feature = feature_details[0]
+        if nearest_feature.normalized_distance > 1.0:
+            return (
+                f"nearest feature profile OUT: "
+                f"{nearest_feature.distance:.2f}/{nearest_feature.threshold:.2f} "
+                f"(x{nearest_feature.normalized_distance:.2f})"
+            )
     if not details:
         return "등록된 target 프로파일 없음 (calibration required)"
 
@@ -459,7 +468,7 @@ def evaluate(
         probability=result.probability,
         second_best_probability=result.second_best_probability,
         margin=result.probability - result.second_best_probability,
-        reject_reason=_reject_reason(result, details, config),
+        reject_reason=_reject_reason(result, details, config, profile_details),
         device_details=details,
         feature_sample=feature_sample,
         feature_details=profile_details,

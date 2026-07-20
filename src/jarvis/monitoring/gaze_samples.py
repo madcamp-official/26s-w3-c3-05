@@ -93,6 +93,7 @@ class GazeSampleStore:
                 raw_yaw_deg, raw_pitch_deg = direction_to_yaw_pitch(raw_mean_direction)
                 raw_gaze_yaw_pitch = {"yaw": raw_yaw_deg, "pitch": raw_pitch_deg}
         nearest = latest.device_details[0] if latest.device_details else None
+        nearest_feature = latest.feature_details[0] if latest.feature_details else None
 
         def mean(values: Sequence[float]) -> float:
             return float(np.mean(np.asarray(values, dtype=np.float64)))
@@ -187,6 +188,17 @@ class GazeSampleStore:
                 if nearest is not None
                 else None
             ),
+            "nearest_feature_profile": (
+                {
+                    "device_id": nearest_feature.device_id,
+                    "distance": nearest_feature.distance,
+                    "threshold": nearest_feature.threshold,
+                    "normalized_distance": nearest_feature.normalized_distance,
+                    "status": nearest_feature.range_status,
+                }
+                if nearest_feature is not None
+                else None
+            ),
             "stability": mean(
                 [item.smoothed_stability or 0.0 for item in valid]
             ),
@@ -224,11 +236,13 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
     gaze_angles = sample.get("gaze_yaw_pitch_deg")
     raw_gaze_angles = sample.get("raw_gaze_yaw_pitch_deg")
     nearest_range = sample.get("nearest_target_range")
+    nearest_feature = sample.get("nearest_feature_profile")
     vector = direction if isinstance(direction, list) else []
     head = head_pose if isinstance(head_pose, dict) else {}
     gaze_yaw_pitch = gaze_angles if isinstance(gaze_angles, dict) else {}
     raw_gaze_yaw_pitch = raw_gaze_angles if isinstance(raw_gaze_angles, dict) else {}
     range_detail = nearest_range if isinstance(nearest_range, dict) else None
+    feature_detail = nearest_feature if isinstance(nearest_feature, dict) else None
 
     def number(value: object) -> float:
         return float(value) if isinstance(value, (int, float)) else 0.0
@@ -270,4 +284,14 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
         ratio = number(range_detail.get("normalized_distance"))
         status = range_detail.get("status", "--")
         row += f"  nearest={device_id} {distance:.1f}/{radius:.1f}deg x{ratio:.2f} {status}"
+    if feature_detail is not None:
+        device_id = feature_detail.get("device_id", "--")
+        distance = number(feature_detail.get("distance"))
+        threshold = number(feature_detail.get("threshold"))
+        ratio = number(feature_detail.get("normalized_distance"))
+        status = feature_detail.get("status", "--")
+        row += f"  feature={device_id} {distance:.2f}/{threshold:.2f} x{ratio:.2f} {status}"
+    reject = sample.get("reject_reason")
+    if isinstance(reject, str) and reject:
+        row += f"  reject={reject}"
     return row
