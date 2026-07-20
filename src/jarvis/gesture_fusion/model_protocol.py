@@ -245,6 +245,17 @@ def normalized_entropy(probs: FloatArray) -> float:
     return float(np.clip(entropy / max_entropy, 0.0, 1.0))
 
 
+# 배경 vs 최선 제스처 동점 판정 허용 오차. `background_prob`(합산)과
+# `best_prob`(단일 원소)은 서로 다른 부동소수점 연산 경로를 거치므로, 수학적으로
+# 정확히 같아야 하는 값도 float32 softmax에서는 미세하게(~1e-7) 어긋난다 —
+# 실측: 배경 3클래스 각 1/6일 때 배경합 0.5 vs 전경 0.5000000596046448
+# (diff≈6e-8, 2026-07-20 발견). 엄격한 `>=` 비교는 이런 경우 "동점이면 배경"
+# 규칙이 부동소수점 잡음 때문에 사실상 발동하지 않는다 — 이 규칙의 취지
+# 자체가 "razor-thin 차이로는 액션을 내지 않는다"이므로, 이 정도 잡음은 동점으로
+# 봐야 규칙이 의도대로 작동한다.
+BACKGROUND_TIE_TOLERANCE = 1e-6
+
+
 def collapse_background_probabilities(
     probs: FloatArray,
     background_indices: tuple[int, ...],
@@ -275,7 +286,7 @@ def collapse_background_probabilities(
 
     best = int(np.argmax(foreground_probs))
     best_prob = float(foreground_probs[best])
-    if background_prob >= best_prob:
+    if background_prob >= best_prob - BACKGROUND_TIE_TOLERANCE:
         return background_indices[0], background_prob, collapsed
     return foreground_indices[best], best_prob, collapsed
 
