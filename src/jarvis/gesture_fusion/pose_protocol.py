@@ -26,6 +26,9 @@ import numpy.typing as npt
 
 FloatArray = npt.NDArray[np.float64]
 
+NONE_POSE = "none"
+"""제어 명령이 아님. 이 판정이 나오면 어떤 동작도 실행하지 않는다."""
+
 # 수집·학습에서 쓰는 정적 자세 라벨. 순서가 분류기 출력 인덱스와 일치해야 한다
 # (학습 산출물의 `label_names`가 진실이며, 로드 시 대조한다).
 DEFAULT_POSE_LABELS: tuple[str, ...] = (
@@ -35,6 +38,13 @@ DEFAULT_POSE_LABELS: tuple[str, ...] = (
     "two_fingers",
     "open_palm",
     "fist",
+    # 제어 자세가 아닌 모든 손 상태(전이 구간, 휴지, 일상 동작). 이게 없으면 분류기가
+    # 매 프레임 억지로 6개 중 하나를 골라, 손이 화면에 보이기만 하면 명령이 나간다.
+    # 실측 효과(2026-07-20): 우클릭 직전의 엄지-중지 접근 구간이 two_fingers로 분류돼
+    # 스크롤이 오발동하던 문제가 0건이 됐고, 헐거운 핀치(pinch_index 23.7%,
+    # pinch_middle 32.3%)가 none으로 흡수됐다. 전체 정확도는 93.9%→87.1%로 내려가나
+    # 오류가 안전한 쪽으로 옮겨간 결과다: 오발동 1.7%, 명령 간 오인 2.8%, 놓침 15.4%.
+    NONE_POSE,
 )
 
 # 자세별 기울기 허용 각도(도) — 2026-07-20 실측 기반.
@@ -59,6 +69,9 @@ DEFAULT_POSE_TILT_LIMITS: dict[str, float] = {
     "two_fingers": 40.0,
     "open_palm": 30.0,
     "fist": 20.0,
+    # none은 "명령 아님"이라 기울기와 무관하게 유효하다 — 기울었다고 거부하면
+    # 그 프레임이 다시 명령 후보가 되어버린다(거부의 방향이 반대다).
+    NONE_POSE: 90.0,
 }
 
 
