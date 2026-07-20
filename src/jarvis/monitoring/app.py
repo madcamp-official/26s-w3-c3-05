@@ -700,11 +700,16 @@ class MainWindow(QMainWindow):
             samples_path or Path("data/evaluation/gaze_samples.json")
         )
         self._gaze_config = GazeConfig(
-            enable_3d_target_matching=True,
-            require_3d_target_registration=True,
+            enable_3d_target_matching=False,
+            require_3d_target_registration=False,
         )
         self._calibration_store = GazeCalibrationStore(_default_calibration_model_path())
         self._target_registry = TargetRegistry(self._profiles_path)
+        self._active_calibration_model = (
+            self._calibration_store.model
+            if len(self._target_registry.records) >= 2
+            else None
+        )
         self._registration: TargetRegistrationSession | None = None
         self._registration_points: list[tuple[float, float]] = []
         self._registration_calibration_features: list[tuple[float, ...]] = []
@@ -715,7 +720,7 @@ class MainWindow(QMainWindow):
             model_path=self._model_path,
             profiles_path=self._profiles_path,
             config=self._gaze_config,
-            calibration_model=self._calibration_store.model,
+            calibration_model=self._active_calibration_model,
         )
         self._hand_probe = HandProbe(model_path=self._hand_model_path)
 
@@ -1016,7 +1021,10 @@ class MainWindow(QMainWindow):
                 for features in self._registration_calibration_features
             ]
             model = self._calibration_store.add_samples(calibration_samples)
-            self._probe.set_calibration_model(model)
+            self._active_calibration_model = (
+                model if len(self._target_registry.records) >= 2 else None
+            )
+            self._probe.set_calibration_model(self._active_calibration_model)
             self._log.info(
                 f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames) "
                 f"— {self._describe_triangulation_outcome(record)} | "
