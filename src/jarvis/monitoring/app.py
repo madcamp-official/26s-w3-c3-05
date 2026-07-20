@@ -62,6 +62,7 @@ from jarvis.contracts.messages import Command, GestureEstimate, Intent
 from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.lock import GazeLockState
 from jarvis.gaze.smoothing import SmoothedGaze
+from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
@@ -512,8 +513,15 @@ class HandPanel(QScrollArea):
 
         if s.hand_detected:
             mode = "스무딩됨 (모델 실제 입력)" if s.smoothed else "raw (스무딩 꺼짐)"
+            # 기울기 판정도 자세별 한계를 따른다 — 전역 한계(20°)를 보여주면 40°까지
+            # 허용되는 two_fingers에 "손을 세우세요"가 떠 오버레이와 어긋난다.
             if s.palm_tilt_degrees is None:
                 tilt = "?  (소스가 z를 내지 않아 게이트 없음)"
+            elif s.pose is not None and s.pose.label:
+                limit = DEFAULT_POSE_TILT_LIMITS.get(s.pose.label)
+                allowed = "허용 ?" if limit is None else f"허용 {limit:.0f}°"
+                verdict = "정상" if s.pose.trusted else "판정 거부 — 손을 세우세요"
+                tilt = f"{s.palm_tilt_degrees:5.1f}°  / {allowed} ({s.pose.label})  {verdict}"
             else:
                 tilt = f"{s.palm_tilt_degrees:5.1f}°  " + (
                     "판정 거부 — 손을 세우세요" if s.palm_tilted else "정상"
