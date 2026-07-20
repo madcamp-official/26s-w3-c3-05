@@ -1189,6 +1189,17 @@ class MainWindow(QMainWindow):
         self._messages.refresh()
         self._latency_panel.refresh()
 
+    def keyPressEvent(self, event: object) -> None:  # noqa: N802 - Qt override name
+        """ESC로 창을 닫는다 — 카메라 정리는 closeEvent가 맡는다.
+
+        디버깅 툴은 자세를 바꿔가며 반복해서 띄웠다 닫는 도구라, 창 버튼까지 마우스를
+        옮기지 않고 닫을 수 있어야 한다.
+        """
+        if event.key() == Qt.Key.Key_Escape:  # type: ignore[attr-defined]
+            self.close()
+            return
+        super().keyPressEvent(event)  # type: ignore[arg-type]
+
     def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt override name
         if self._camera is not None:
             self._camera.stop()
