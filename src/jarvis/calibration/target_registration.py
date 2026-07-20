@@ -35,9 +35,9 @@ class TargetRegistrationSession:
         device_id: str,
         *,
         duration_ms: int = 10_000,
-        minimum_valid_frames: int = 30,
-        minimum_confidence: float = 0.5,
-        maximum_jump_deg: float = 12.0,
+        minimum_valid_frames: int = 15,
+        minimum_confidence: float = 0.35,
+        maximum_jump_deg: float = 18.0,
         config: GazeConfig = GazeConfig(),
     ) -> None:
         if duration_ms <= 0 or minimum_valid_frames <= 0:

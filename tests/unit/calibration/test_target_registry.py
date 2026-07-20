@@ -53,8 +53,22 @@ def test_registration_uses_robust_center_and_minimum_spread() -> None:
     assert record.spread.pitch == 4.0
 
 
+def test_registration_defaults_are_demo_tolerant() -> None:
+    session = TargetRegistrationSession("lamp", "조명", "LIGHT", "device-1")
+    assert session.minimum_valid_frames == 15
+    assert session.minimum_confidence == pytest.approx(0.35)
+    assert session.maximum_jump_deg == pytest.approx(18.0)
+
+
 def test_registration_rejects_jump_and_insufficient_frames() -> None:
-    session = TargetRegistrationSession("lamp", "조명", "LIGHT", "device-1", minimum_valid_frames=2)
+    session = TargetRegistrationSession(
+        "lamp",
+        "조명",
+        "LIGHT",
+        "device-1",
+        minimum_valid_frames=2,
+        maximum_jump_deg=12.0,
+    )
     assert session.add(_gaze(0, 0.0), 1.0)
     assert not session.add(_gaze(1, 30.0), 1.0)
     with pytest.raises(ValueError, match="not enough"):
