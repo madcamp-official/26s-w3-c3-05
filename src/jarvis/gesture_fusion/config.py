@@ -86,10 +86,15 @@ class GestureConfig:
     smoothing_d_cutoff: float = 1.5
     """내부 속도 추정의 평활 컷오프(Hz)."""
 
-    # --- Feature engineering (README 8장 "속도·가속도·관절 각도 생성") ---
+    # --- Feature engineering (README 8장 "속도·관절 각도 생성") ---
     # 어떤 feature 그룹을 모델 입력 벡터에 넣을지 켜고 끈다. 모델을 갈아끼우거나
-    # 입력 차원을 줄일 때 코드 수정 없이 조절한다. 순서(위치→각도→속도→가속도)는
+    # 입력 차원을 줄일 때 코드 수정 없이 조절한다. 순서(위치→각도→속도)는
     # 고정이며, 켜진 그룹만 순서대로 이어붙인다.
+    #
+    # 손가락 관절 위치의 가속도(2026-07-19 이전 include_acceleration 필드)는 모델
+    # 입력에서 완전히 제거했다(2026-07-19 결정, documents/decisions.md). 손목
+    # 평행이동 가속도(아래 include_wrist_translation의 wrist_acceleration)는 별개
+    # 신호(swipe 판별에 필요)라 유지한다 — 혼동하지 말 것.
     include_positions: bool = True
     """정규화된 21개 랜드마크 좌표(63차원)를 feature에 포함한다."""
 
@@ -98,9 +103,6 @@ class GestureConfig:
 
     include_velocity: bool = True
     """프레임 간 좌표 속도(초당, causal 차분)를 feature에 포함한다."""
-
-    include_acceleration: bool = True
-    """속도의 프레임 간 변화(초당 가속도, causal 차분)를 feature에 포함한다."""
 
     include_wrist_translation: bool = True
     """손목의 정규화된 평행이동 속도·가속도(각 3차원, 합 6차원)를 feature에 포함한다.
@@ -161,7 +163,6 @@ class GestureConfig:
                 self.include_positions,
                 self.include_joint_angles,
                 self.include_velocity,
-                self.include_acceleration,
                 self.include_wrist_translation,
             )
         ):

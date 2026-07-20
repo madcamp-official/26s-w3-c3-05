@@ -376,7 +376,7 @@ target_lock_ttl_ms: 1500
 MediaPipe Hand Landmark
 → 손목 기준 좌표 정규화
 → 손바닥 크기 정규화
-→ 속도·가속도·관절 각도 생성
+→ 속도·관절 각도 생성
 → Causal TCN/GRU
 → Gesture·Phase 출력
 ```

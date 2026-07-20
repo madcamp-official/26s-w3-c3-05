@@ -90,7 +90,9 @@ MediaPipe 번들과 달리 사전 학습된 파일을 내려받는 게 아니라
   `(window_size, feature_dim)`. `window_size`는 `ModelConfig.receptive_field`(아키텍처가
   결정), `feature_dim`은 `features.feature_dimension(GestureConfig)`(전처리 설정이 결정) —
   두 값이 어긋나면 `predict()`가 `ValueError`로 거부한다.
-- **전처리**: `HandFeatureExtractor`(속도·가속도·관절 각도, task 2)와
+- **전처리**: `HandFeatureExtractor`(속도·관절 각도, task 2 — 손가락 관절 위치 가속도는
+  2026-07-19에 모델 입력에서 제거했다. 손목 평행이동 가속도는 swipe 판별용 별개 신호라
+  유지한다. `documents/decisions.md` 참조)와
   `jarvis.gesture_fusion.model_protocol.SlidingFeatureWindow`(causal 스트리밍 윈도우)를
   그대로 쓴다. 별도 정규화는 하지 않는다 — 입력 feature 자체가 이미 스케일 정규화됨(task 1).
 - **출력**: gesture head(label 집합, 기본 `DEFAULT_GESTURE_LABELS` 7종 — 6개 동적 제스처 +

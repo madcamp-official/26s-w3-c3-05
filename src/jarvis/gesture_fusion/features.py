@@ -2,17 +2,22 @@
 
 README 8장 처리 과정의 세 번째 단계를 구현한다:
 
-    손바닥 크기 정규화 → 속도·가속도·관절 각도 생성 → Causal TCN/GRU
+    손바닥 크기 정규화 → 속도·관절 각도 생성 → Causal TCN/GRU
 
 `HandFeatureExtractor`는 **causal streaming** 추출기다 — 현재와 과거 프레임만 쓰고
 미래 프레임을 보지 않는다(development-principles.md 5.3: 온라인 추론은 causal). 속도는
-직전 프레임과의 차분, 가속도는 속도의 차분으로 만들며, 시간 간격은 계약의 monotonic
-`timestamp_ms`를 그대로 쓴다(자체 시계로 다시 재지 않는다).
+직전 프레임과의 차분으로 만들며, 시간 간격은 계약의 monotonic `timestamp_ms`를 그대로
+쓴다(자체 시계로 다시 재지 않는다).
 
-feature 벡터의 구성(위치·관절각·속도·가속도)과 각 그룹의 on/off는 GestureConfig가
-정한다. 그래서 뒤에 붙는 추론 모델(TCN/GRU 등)을 갈아끼우거나 입력 차원을 줄일 때
-이 모듈이 아니라 config만 바꾸면 된다. 이 모듈은 mediapipe에 의존하지 않으므로 카메라·
-모델 없이 단위 테스트할 수 있다.
+feature 벡터의 구성(위치·관절각·속도)과 각 그룹의 on/off는 GestureConfig가 정한다.
+그래서 뒤에 붙는 추론 모델(TCN/GRU 등)을 갈아끼우거나 입력 차원을 줄일 때 이 모듈이
+아니라 config만 바꾸면 된다. 이 모듈은 mediapipe에 의존하지 않으므로 카메라·모델
+없이 단위 테스트할 수 있다.
+
+손가락 관절 위치의 가속도(2026-07-19 이전 `include_acceleration`)는 모델 입력에서
+제거했다(2026-07-19 결정, documents/decisions.md) — 순수 위치 기반 신호라 손목
+평행이동 가속도(아래 `wrist_acceleration`, swipe 판별용 별개 신호)와는 무관하며
+이 제거로 영향받지 않는다.
 """
 
 from __future__ import annotations
@@ -66,7 +71,7 @@ def compute_joint_angles(
 class FrameFeatures:
     """한 프레임의 모델 입력 feature 벡터.
 
-    `vector`는 config가 켠 그룹만 위치→관절각→속도→가속도 순으로 이어붙인 1차원
+    `vector`는 config가 켠 그룹만 위치→관절각→속도 순으로 이어붙인 1차원
     배열이다. `hand_detected=False`면 추적 손실 프레임으로, `vector`는 0으로 채운
     같은 길이의 배열이며 downstream은 이를 실행이 아니라 대기/거부로 다뤄야 한다.
     """
@@ -94,8 +99,6 @@ def feature_dimension(config: GestureConfig = DEFAULT_GESTURE_CONFIG) -> int:
         dims += len(JOINT_ANGLE_TRIPLETS)
     if config.include_velocity:
         dims += _POSITION_DIMS
-    if config.include_acceleration:
-        dims += _POSITION_DIMS
     if config.include_wrist_translation:
         dims += 2 * _WRIST_DIMS  # 손목 평행이동 속도 + 가속도
     return dims
@@ -104,17 +107,17 @@ def feature_dimension(config: GestureConfig = DEFAULT_GESTURE_CONFIG) -> int:
 class HandFeatureExtractor:
     """HandObservation을 하나씩 밀어넣어 프레임별 FrameFeatures를 얻는 causal 추출기.
 
-    상태(직전 좌표·직전 속도·직전 timestamp)를 들고 속도·가속도를 온라인으로
-    계산한다. 추적 손실 프레임이나 `max_frame_gap_ms`를 넘는 공백 뒤에는 history를
-    리셋해, 공백을 가로지르는 큰 좌표 점프를 허위 속도로 만들지 않는다. 리셋 직후
-    첫 유효 프레임의 속도·가속도는 0이다.
+    상태(직전 좌표·직전 timestamp)를 들고 속도를 온라인으로 계산한다(손가락 관절
+    위치의 가속도는 2026-07-19에 모델 입력에서 제거했다 — 손목 평행이동 가속도
+    `wrist_acceleration`은 별개 신호라 아래에서 계속 계산한다). 추적 손실 프레임이나
+    `max_frame_gap_ms`를 넘는 공백 뒤에는 history를 리셋해, 공백을 가로지르는 큰
+    좌표 점프를 허위 속도로 만들지 않는다. 리셋 직후 첫 유효 프레임의 속도는 0이다.
     """
 
     def __init__(self, config: GestureConfig = DEFAULT_GESTURE_CONFIG) -> None:
         self._config = config
         self._dimension = feature_dimension(config)
         self._prev_landmarks: FloatArray | None = None
-        self._prev_velocity: FloatArray | None = None
         self._prev_timestamp_ms: int | None = None
         # Wrist translation history — differenced with the SAME dt as the landmark
         # features so wrist velocity/acceleration share their timing and reset rules.
@@ -189,9 +192,8 @@ class HandFeatureExtractor:
         )
 
     def reset(self) -> None:
-        """속도·가속도 history와 평활화 상태를 비운다(추적 손실·시퀀스 경계에서 호출)."""
+        """속도 history와 평활화 상태를 비운다(추적 손실·시퀀스 경계에서 호출)."""
         self._prev_landmarks = None
-        self._prev_velocity = None
         self._prev_timestamp_ms = None
         self._prev_wrist_position = None
         self._prev_wrist_velocity = None
@@ -222,12 +224,6 @@ class HandFeatureExtractor:
             dt_s = dt_ms / 1000.0
             velocity = (flat - self._prev_landmarks) / dt_s
 
-        if dt_ms is None or self._prev_velocity is None:
-            acceleration = np.zeros(_POSITION_DIMS, dtype=np.float64)
-        else:
-            dt_s = dt_ms / 1000.0
-            acceleration = (velocity - self._prev_velocity) / dt_s
-
         # 손목 평행이동도 같은 dt로 causal 차분한다. 미분 전에 (설정 시) 평활화해
         # palm_scale·손목 점의 지터가 속도로 증폭되지 않게 한다 — 랜드마크와 동일 규칙.
         wrist_position = observation.wrist_position
@@ -248,12 +244,9 @@ class HandFeatureExtractor:
             dt_s = dt_ms / 1000.0
             wrist_acceleration = (wrist_velocity - self._prev_wrist_velocity) / dt_s
 
-        vector = self._assemble(
-            landmarks, velocity, acceleration, wrist_velocity, wrist_acceleration
-        )
+        vector = self._assemble(landmarks, velocity, wrist_velocity, wrist_acceleration)
 
         self._prev_landmarks = flat
-        self._prev_velocity = velocity
         self._prev_wrist_position = wrist_position
         self._prev_wrist_velocity = wrist_velocity
         self._prev_timestamp_ms = observation.timestamp_ms
@@ -284,7 +277,6 @@ class HandFeatureExtractor:
         self,
         landmarks: FloatArray,
         velocity: FloatArray,
-        acceleration: FloatArray,
         wrist_velocity: FloatArray,
         wrist_acceleration: FloatArray,
     ) -> FloatArray:
@@ -295,9 +287,7 @@ class HandFeatureExtractor:
             parts.append(compute_joint_angles(landmarks))
         if self._config.include_velocity:
             parts.append(velocity)
-        if self._config.include_acceleration:
-            parts.append(acceleration)
-        # 손목 평행이동 그룹은 기존 4개 그룹 뒤에 순수 추가한다(속도 → 가속도 순).
+        # 손목 평행이동 그룹은 기존 3개 그룹 뒤에 순수 추가한다(속도 → 가속도 순).
         # 기존 그룹의 오프셋을 바꾸지 않아 학습된 가중치·기존 슬라이스가 그대로 유효하다.
         if self._config.include_wrist_translation:
             parts.append(wrist_velocity)

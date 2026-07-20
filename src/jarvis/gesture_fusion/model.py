@@ -2,7 +2,7 @@
 
 README 8장 처리 과정의 마지막 단계를 구현한다:
 
-    속도·가속도·관절 각도 생성 → Causal TCN/GRU → Gesture·Phase 출력
+    속도·관절 각도 생성 → Causal TCN/GRU → Gesture·Phase 출력
 
 `jarvis.gesture_fusion` 패키지에서 torch를 직접 import하는 유일한 모듈이다 —
 `mediapipe_hands.py`와 같은 격리 원칙이다(pyproject.toml의 `ml` extra는 이 모듈에서만

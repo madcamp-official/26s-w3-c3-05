@@ -1,4 +1,4 @@
-"""README 8장 "속도·가속도·관절 각도 생성" 단계를 검증한다.
+"""README 8장 "속도·관절 각도 생성" 단계를 검증한다.
 
 핵심 회귀 대상: (1) causal 차분(과거만 사용), (2) monotonic timestamp 기반 dt,
 (3) 추적 손실·프레임 공백에서 허위 속도를 만들지 않는 리셋, (4) config로 feature
@@ -88,14 +88,14 @@ def test_degenerate_joint_angle_is_zero_not_nan() -> None:
     assert np.all(angles == 0.0)
 
 
-# --- 속도·가속도 (causal) ---
+# --- 속도 (causal) ---
 
 
-def test_first_frame_has_zero_velocity_and_acceleration() -> None:
+def test_first_frame_has_zero_velocity() -> None:
     extractor = HandFeatureExtractor()
     features = extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1))
     assert features.hand_detected
-    # 위치·각도 뒤의 속도·가속도 블록이 모두 0이어야 한다.
+    # 위치·각도 뒤의 속도 블록이 모두 0이어야 한다.
     velocity = features.vector[_POSITION_DIMS + len(JOINT_ANGLE_TRIPLETS):
                                _POSITION_DIMS + len(JOINT_ANGLE_TRIPLETS) + _POSITION_DIMS]
     assert np.all(velocity == 0.0)
@@ -113,21 +113,6 @@ def test_velocity_is_per_second_causal_difference() -> None:
     velocity = features.vector[offset:offset + _POSITION_DIMS].reshape(HAND_LANDMARK_COUNT, LANDMARK_DIMS)
     # 0.1 이동 / 0.1초 = 1.0/초
     assert velocity[0, 0] == pytest.approx(1.0)
-
-
-def test_acceleration_from_velocity_change() -> None:
-    extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=False))
-    f0 = _zeros()
-    f1 = _zeros()
-    f1[0] = [0.1, 0.0]
-    f2 = _zeros()
-    f2[0] = [0.3, 0.0]  # 속도 증가
-    extractor.push(_obs(f0, timestamp_ms=1000, frame_id=1))
-    extractor.push(_obs(f1, timestamp_ms=1100, frame_id=2))  # v=1.0
-    features = extractor.push(_obs(f2, timestamp_ms=1200, frame_id=3))  # v=2.0, a=(2-1)/0.1=10
-    offset = _POSITION_DIMS + len(JOINT_ANGLE_TRIPLETS) + _POSITION_DIMS
-    accel = features.vector[offset:offset + _POSITION_DIMS].reshape(HAND_LANDMARK_COUNT, LANDMARK_DIMS)
-    assert accel[0, 0] == pytest.approx(10.0)
 
 
 def test_lost_tracking_resets_history_and_zeros_features() -> None:
@@ -186,7 +171,6 @@ def test_disabling_groups_shrinks_vector() -> None:
         include_positions=True,
         include_joint_angles=True,
         include_velocity=False,
-        include_acceleration=False,
         include_wrist_translation=False,
     )
     assert feature_dimension(config) == _POSITION_DIMS + len(JOINT_ANGLE_TRIPLETS)
@@ -200,7 +184,6 @@ def test_angles_only_config() -> None:
         include_positions=False,
         include_joint_angles=True,
         include_velocity=False,
-        include_acceleration=False,
         include_wrist_translation=False,
     )
     assert feature_dimension(config) == len(JOINT_ANGLE_TRIPLETS)
@@ -276,7 +259,7 @@ _WRIST_DIMS = LANDMARK_DIMS
 
 
 def _wrist_velocity_block(features: object) -> np.ndarray:
-    # 손목 그룹은 벡터 맨 뒤에 속도(3)+가속도(3) 순으로 붙는다.
+    # 손목 그룹은 벡터 맨 뒤에 속도(2)+가속도(2) 순으로 붙는다.
     return features.vector[-2 * _WRIST_DIMS:][:_WRIST_DIMS]  # type: ignore[attr-defined]
 
 
