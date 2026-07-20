@@ -8,7 +8,7 @@ import pytest
 cv2 = pytest.importorskip("cv2")
 
 from jarvis.gaze.config import GazeConfig  # noqa: E402
-from jarvis.gaze.classifier import TargetClassifier  # noqa: E402
+from jarvis.gaze.classifier import DeviceGazeProfile, TargetClassifier  # noqa: E402
 from jarvis.gaze.features import FaceObservation  # noqa: E402
 from jarvis.gaze.lock import GazeLockStateMachine  # noqa: E402
 from jarvis.gaze.smoothing import GazeSmoother  # noqa: E402
@@ -18,6 +18,7 @@ from jarvis.monitoring.overlay import (  # noqa: E402
     draw_gaze_overlay,
     draw_hand_overlay,
     draw_hud,
+    draw_target_heatmap,
     placeholder_frame,
 )
 
@@ -86,6 +87,42 @@ def test_draw_gaze_overlay_draws_when_tracking() -> None:
     draw_gaze_overlay(frame, _snapshot(detected=True))
     assert not np.array_equal(before, frame)  # ray + HUD drawn
     assert frame.shape == (240, 320, 3)
+
+
+def test_draw_target_heatmap_draws_registered_target_regions() -> None:
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    config = GazeConfig()
+    classifier = TargetClassifier(config)
+    classifier.register_profile(
+        DeviceGazeProfile(
+            "monitor",
+            np.array([0.0, 0.0, 1.0], dtype=np.float64),
+            variance=np.radians(15.0) ** 2,
+        )
+    )
+    snapshot = evaluate(
+        FaceObservation(
+            timestamp_ms=0,
+            frame_id=0,
+            left_iris_relative=(0.0, 0.0),
+            right_iris_relative=(0.0, 0.0),
+            head_yaw_deg=0.0,
+            head_pitch_deg=0.0,
+            head_roll_deg=0.0,
+            eye_tracking_confidence=1.0,
+            face_tracking_confidence=1.0,
+            face_detected=True,
+        ),
+        smoother=GazeSmoother(config),
+        classifier=classifier,
+        lock=GazeLockStateMachine(config),
+        config=config,
+    )
+    before = frame.copy()
+
+    draw_target_heatmap(frame, snapshot)
+
+    assert not np.array_equal(before, frame)
 
 
 def test_draw_gaze_overlay_shows_tracking_lost_banner() -> None:

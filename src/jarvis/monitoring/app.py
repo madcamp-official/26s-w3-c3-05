@@ -65,6 +65,7 @@ from jarvis.monitoring.hand_probe import HandProbe, HandSnapshot
 from jarvis.monitoring.messages import MessageLevel, MessageLog
 from jarvis.monitoring.overlay import (
     Frame,
+    draw_target_heatmap,
     draw_gaze_overlay,
     draw_hand_overlay,
     draw_hud,
@@ -535,10 +536,14 @@ class VideoView(QLabel):
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
         self._hand: HandSnapshot | None = None
+        self._show_target_heatmap = False
         self._show_placeholder("카메라 시작 중…")
 
     def set_gaze(self, snapshot: GazeSnapshot) -> None:
         self._gaze = snapshot
+
+    def set_target_heatmap_visible(self, visible: bool) -> None:
+        self._show_target_heatmap = visible
 
     def set_hand(self, snapshot: HandSnapshot) -> None:
         self._hand = snapshot
@@ -554,6 +559,8 @@ class VideoView(QLabel):
         h, w = frame.shape[:2]
         draw_hud(frame, [f"{w}x{h}  {fps:4.1f} FPS", f"frame #{self._frame_count}"])
         if self._gaze is not None:
+            if self._show_target_heatmap:
+                draw_target_heatmap(frame, self._gaze)
             draw_gaze_overlay(frame, self._gaze)
         if self._hand is not None:
             draw_hand_overlay(frame, self._hand)
@@ -757,9 +764,12 @@ class MainWindow(QMainWindow):
         self._sample_button.clicked.connect(self._save_gaze_sample)
         self._clear_samples_button = QPushButton("샘플 초기화")
         self._clear_samples_button.clicked.connect(self._clear_gaze_samples)
+        self._target_heatmap_toggle = QCheckBox("Target heatmap / 물체 영역 표시")
+        self._target_heatmap_toggle.toggled.connect(self._video.set_target_heatmap_visible)
         sample_controls = QHBoxLayout()
         sample_controls.addWidget(self._sample_button, 1)
         sample_controls.addWidget(self._clear_samples_button)
+        sample_controls.addWidget(self._target_heatmap_toggle)
         layout.addLayout(sample_controls)
         self._sample_list = QListWidget()
         self._sample_list.setMaximumHeight(130)

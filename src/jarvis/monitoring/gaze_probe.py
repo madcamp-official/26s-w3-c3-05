@@ -38,6 +38,7 @@ from jarvis.gaze.classifier import (
     effective_distance_and_variance,
 )
 from jarvis.gaze.config import GazeConfig
+from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.features import FaceObservation, Vector3, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
 from jarvis.gaze.smoothing import GazeSmoother
@@ -57,6 +58,8 @@ class DeviceGazeDetail:
     angular_distance_deg: float
     allowed_radius_deg: float
     normalized_distance: float
+    target_yaw_deg: float
+    target_pitch_deg: float
     within_profile_radius: bool
     is_selected: bool
 
@@ -191,6 +194,8 @@ def _device_details(
                 angular_distance_deg=math.nan,
                 allowed_radius_deg=math.nan,
                 normalized_distance=math.nan,
+                target_yaw_deg=math.nan,
+                target_pitch_deg=math.nan,
                 within_profile_radius=False,
                 is_selected=False,
             )
@@ -203,6 +208,13 @@ def _device_details(
     details: list[DeviceGazeDetail] = []
     for device_id, profile in profiles.items():
         geometry = geometries.get(device_id) if config.enable_3d_target_matching else None
+        target_direction = profile.mean_direction
+        if geometry is not None and ray_origin is not None:
+            to_target = geometry.center_mm - ray_origin
+            depth = float(np.linalg.norm(to_target))
+            if depth > 1.0:
+                target_direction = to_target / depth
+        target_yaw_deg, target_pitch_deg = direction_to_yaw_pitch(target_direction)
         angular_distance, variance = effective_distance_and_variance(
             gaze, ray_origin, profile, geometry, config
         )
@@ -217,6 +229,8 @@ def _device_details(
                 angular_distance_deg=angular_distance_deg,
                 allowed_radius_deg=allowed_radius_deg,
                 normalized_distance=normalized_distance,
+                target_yaw_deg=target_yaw_deg,
+                target_pitch_deg=target_pitch_deg,
                 within_profile_radius=normalized_distance <= 1.0,
                 is_selected=(device_id == selected_target),
             )
