@@ -192,6 +192,16 @@ def train(
     max_epochs: int | None = None,
 ) -> Path:
     """`stage`를 학습하고 최선(검증 macro-F1 최고) 체크포인트 경로를 반환한다."""
+    if stage == "finetune" and init_from is None:
+        # 2026-07-20: 이 검사가 없으면 --init-from을 깜빡했을 때 무작위 초기화
+        # 가중치로 조용히 학습된 뒤 "파인튜닝"이라는 이름으로 저장돼(체크포인트
+        # 파일명·ModelMetadata 둘 다), 실제로는 Jester 사전학습을 전혀 거치지 않은
+        # 모델을 파인튜닝 결과물로 오인하게 만든다(development-principles.md 1·2절:
+        # 성공을 지어내지 않는다).
+        raise ValueError(
+            "--stage finetune requires --init-from (Jester로 사전학습한 체크포인트 경로) "
+            "— 없으면 무작위 초기화 가중치에서 학습이 시작되는데도 결과물이 '파인튜닝'으로 저장된다"
+        )
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     net, _model_config = _build_model(gesture_config)

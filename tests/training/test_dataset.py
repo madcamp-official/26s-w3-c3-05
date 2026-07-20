@@ -5,6 +5,7 @@ torch(`ml`/`training` extra) 필요.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -104,6 +105,27 @@ def test_clip_dataset_accepts_multiple_roots(tmp_path: Path) -> None:
 def test_clip_dataset_raises_when_empty(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         ClipDataset(tmp_path, augment=False)
+
+
+def test_getitem_masks_missing_frames_with_ignore_index(tmp_path: Path) -> None:
+    """2026-07-20: 클립이 미검출 프레임을 포함할 수 있게 되면서(extract_jester.py의
+    max_missing_frame_fraction) 그 프레임엔 0벡터만 나온다 — 실제 라벨을 붙이면
+    "신호 없음"을 제스처로 학습시키게 되므로 패딩과 같은 방식(IGNORE_INDEX)으로
+    제외해야 한다."""
+    observations = [_observation(i, 1000 + i * 33) for i in range(10)]
+    clip = observations_to_cached_clip(observations, "swipe_down", "clip-missing")
+    hand_detected = clip.hand_detected.copy()
+    hand_detected[3:6] = False
+    clip = replace(clip, hand_detected=hand_detected)
+    save_clip(tmp_path / "clip-missing.npz", clip)
+
+    dataset = ClipDataset(tmp_path, augment=False)
+    _, gesture_target, phase_target = dataset[0]
+
+    assert torch.all(gesture_target[3:6] == IGNORE_INDEX)
+    assert torch.all(phase_target[3:6] == IGNORE_INDEX)
+    assert torch.all(gesture_target[:3] != IGNORE_INDEX)
+    assert torch.all(gesture_target[6:] != IGNORE_INDEX)
 
 
 def test_collate_fn_pads_variable_length_clips_with_ignore_index() -> None:

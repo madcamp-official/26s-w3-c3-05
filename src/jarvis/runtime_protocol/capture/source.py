@@ -68,13 +68,23 @@ class OpenCVCameraSource:
 
     def _ensure_open(self) -> Any:
         if self._capture is None:
+            import sys
+
             import cv2
 
-            capture = cv2.VideoCapture(self._device_index)
+            # Windows의 기본 백엔드(MSMF)는 내부적으로 프레임을 버퍼링해 지연이
+            # 주기적으로 쌓였다 풀리는 끊김을 유발한다 — DSHOW로 이를 피한다.
+            if sys.platform == "win32":
+                capture = cv2.VideoCapture(self._device_index, cv2.CAP_DSHOW)
+            else:
+                capture = cv2.VideoCapture(self._device_index)
             if not capture.isOpened():
                 raise RuntimeError(
                     f"camera device {self._device_index} could not be opened"
                 )
+            # 버퍼를 1프레임으로 제한해, 소비자가 느려도 오래된 프레임이 쌓여
+            # 나오지 않고(지연 누적 방지) 항상 최신 프레임을 읽게 한다.
+            capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             self._capture = capture
         return self._capture
 

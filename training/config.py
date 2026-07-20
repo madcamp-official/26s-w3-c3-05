@@ -77,6 +77,19 @@ class TrainingConfig:
     ending_fraction: float = 0.15
     """클립 뒷부분 이 비율만큼을 ENDING으로 라벨링한다. 중간은 ACTIVE."""
 
+    # --- Jester 추출 시 프레임 손실 허용 (2026-07-20, 클립 과다 폐기 수정) ---
+    max_missing_frame_fraction: float = 0.3
+    """클립 내 hand_not_detected 프레임 비율이 이 값을 넘으면 클립 전체를 제외한다.
+
+    이전에는 프레임 하나만 검출 실패해도 클립 전체를 버렸다. 클립당 프레임 수가
+    많을수록 이 규칙이 실패율을 지수적으로 증폭한다(프레임별 실패율이 5%만 돼도
+    30프레임 클립의 약 79%가 통째로 버려짐, 1-(1-p)^n). 이제는 간헐적 미검출
+    프레임까지 클립에 남기고(`HandFeatureExtractor.push()`가 실시간 추론과 동일하게
+    추적 손실 → reset → 0벡터로 처리, `training/dataset.py`가 그 프레임의 loss
+    target을 IGNORE_INDEX로 마스킹), 미검출 비율이 이 값을 넘을 때만 클립 전체를
+    제외한다. 0.0=예전과 동일(한 프레임이라도 실패하면 제외), 1.0=이 규칙으로는
+    절대 제외하지 않음(완전 미검출 클립도 비율이 정확히 1.0이라 통과)."""
+
     def __post_init__(self) -> None:
         if self.batch_size < 1:
             raise ValueError("batch_size must be at least 1")
@@ -107,6 +120,10 @@ class TrainingConfig:
             raise ValueError("ending_fraction must be within (0, 0.5)")
         if self.onset_fraction + self.ending_fraction >= 1.0:
             raise ValueError("onset_fraction + ending_fraction must be below 1.0 to leave room for ACTIVE")
+        if not math.isfinite(self.max_missing_frame_fraction) or not (
+            0.0 <= self.max_missing_frame_fraction <= 1.0
+        ):
+            raise ValueError("max_missing_frame_fraction must be finite and within [0, 1]")
 
 
 DEFAULT_TRAINING_CONFIG = TrainingConfig()

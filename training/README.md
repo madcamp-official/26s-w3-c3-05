@@ -57,11 +57,26 @@ pip install -e ".[training]"   # torch + mediapipe + tensorboard + pandas
 tensorboard --logdir training/runs
 ```
 
-## 왜 원시 landmark를 먼저 캐싱하나
+## 캐시에 뭐가 들어있고, 뭐가 읽을 때마다 다시 계산되나
 
-`extract_jester.py`는 `normalize_hand`/`HandFeatureExtractor`를 호출하지 않고 MediaPipe가
-낸 원시 `(21, 2)` 좌표만 캐싱한다. Feature 조립(정규화·평활화·속도·가속도)은
-`training/dataset.py`가 캐시를 읽을 때마다 `jarvis.gesture_fusion`의 실제 함수로
-재생한다 — 그래야 `GestureConfig`(One-Euro 파라미터 등)가 나중에 조정돼도 몇 시간짜리
-MediaPipe 배치를 다시 돌릴 필요가 없다. 학습·추론이 같은 전처리 코드를 타므로
-모델 재현성도 자동으로 보장된다(development-principles.md 7.3).
+`extract_jester.py`는 원시 좌표가 아니라 `MediaPipeHandLandmarker.process()`(런타임과
+동일한 프로덕션 어댑터)가 이미 `normalize_hand`까지 적용한 `HandObservation`(손목
+원점화 + 손바닥 크기 정규화, **평활화 전**)을 캐싱한다. 반면 One-Euro 평활화·속도·
+가속도·관절각 같은 feature 조립은 `training/dataset.py`가 캐시를 읽을 때마다
+`HandFeatureExtractor`로 재생한다 — 그래야 `GestureConfig`의 평활 파라미터나
+`include_*` feature 그룹이 나중에 조정돼도 몇 시간짜리 MediaPipe 배치를 다시 돌릴
+필요가 없다. 단, `origin_index`·`palm_scale_root_index`/`palm_scale_tip_index`·
+`LANDMARK_DIMS`처럼 `normalize_hand` 자체의 좌표계를 바꾸는 변경은 이미 캐시에
+구운(baked-in) 값을 바꾸는 것이므로 재추출이 필요하다. 학습·추론이 같은 전처리
+코드를 타므로 모델 재현성도 자동으로 보장된다(development-principles.md 7.3).
+
+## 손 미검출 프레임 허용 (2026-07-20)
+
+클립 하나에 손 미검출 프레임이 하나라도 있으면 클립 전체를 버리던 이전 규칙은,
+클립당 프레임 수가 많을수록 실패율을 지수적으로 증폭시켜(1-(1-p)^n) 대다수 클립이
+버려지는 문제가 있었다. 이제는 `TrainingConfig.max_missing_frame_fraction`(기본
+0.3)을 넘을 때만 클립을 제외한다 — `--max-missing-frame-fraction`으로
+`extract_jester.py`/`record_webcam_clips.py` 둘 다 조절 가능. 허용 범위 안의
+미검출 프레임은 캐시에 남고, `HandFeatureExtractor`가 실시간 추론과 동일하게
+추적 손실로 처리(reset + 0벡터)하며, `training/dataset.py`가 그 프레임의 loss
+target을 IGNORE_INDEX로 마스킹해 "신호 없음"을 실제 라벨로 학습하지 않게 한다.

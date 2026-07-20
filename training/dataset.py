@@ -45,8 +45,12 @@ PHASE_TO_INDEX: dict[GesturePhase, int] = {phase: i for i, phase in enumerate(PH
 def _cached_clip_to_observations(clip: CachedClip) -> list[HandObservation]:
     """캐시된 배열들을 프레임별 `HandObservation`으로 되돌린다(feature 조립 입력용).
 
-    캐시된 클립은 손 미검출 프레임이 없는 것만 남아 있으므로(추출 시 필터링,
-    `training/extract/extract_jester.py`) `hand_detected`는 항상 True다.
+    `hand_detected`가 프레임마다 False일 수 있다(2026-07-20부터: 추출 시 클립 내
+    일부 프레임만 미검출이면 전체를 버리지 않고 남긴다,
+    `training/extract/extract_jester.py`의 `max_missing_frame_fraction` 참조).
+    `HandFeatureExtractor.push()`가 실시간 추론과 동일하게 그 프레임을 추적 손실로
+    처리(reset + 0벡터)하므로, 이 함수는 그대로 전달하면 된다 — 단 그 프레임의
+    loss target을 IGNORE_INDEX로 마스킹하는 것은 `ClipDataset.__getitem__`의 몫이다.
     """
     return [
         HandObservation(
@@ -150,6 +154,14 @@ class ClipDataset(Dataset):  # type: ignore[type-arg]
         gesture_index = GESTURE_LABEL_TO_INDEX[clip.gesture_label]
         gesture_target = np.full(len(clip), gesture_index, dtype=np.int64)
         phase_target = np.array([PHASE_TO_INDEX[p] for p in phases], dtype=np.int64)
+
+        # 미검출(hand_detected=False) 프레임은 0벡터 feature만 나온다 — 실제 라벨을
+        # 붙여 학습하면 "신호 없음"을 특정 제스처로 가르치게 된다. 패딩 프레임과
+        # 같은 방식(IGNORE_INDEX)으로 gesture/phase loss에서 제외한다(2026-07-20,
+        # extract_jester.py가 클립 내 일부 미검출 프레임을 남기기 시작하면서 필요해짐).
+        missing = ~clip.hand_detected
+        gesture_target[missing] = IGNORE_INDEX
+        phase_target[missing] = IGNORE_INDEX
 
         return (
             torch.from_numpy(features).float(),

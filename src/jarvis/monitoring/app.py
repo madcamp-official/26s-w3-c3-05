@@ -824,6 +824,7 @@ class MainWindow(QMainWindow):
         hand_model_path: Path | None = None,
         samples_path: Path | None = None,
         start_camera: bool = True,
+        gaze_enabled: bool = True,
     ) -> None:
         super().__init__()
         self.setWindowTitle("JARVIS Pipeline Monitor")
@@ -866,7 +867,11 @@ class MainWindow(QMainWindow):
 
         self._camera: CameraWorker | None = None
         if start_camera:
-            if self._probe.start():
+            if not gaze_enabled:
+                # 손 추적 지연 진단용: gaze(FaceLandmarker) 추론을 아예 돌리지 않아
+                # CameraWorker가 프레임당 hand 모델 하나만 실행하게 한다(2026-07-20).
+                self._log.info("gaze 프로브: --no-gaze로 비활성화됨")
+            elif self._probe.start():
                 self._log.info(f"gaze 프로브: {self._probe.status_text}")
             else:
                 self._log.warn(f"gaze 프로브 비활성: {self._probe.status_text}")
