@@ -39,6 +39,7 @@ from jarvis.gesture_fusion.landmarks import (
     normalize_hand,
     palm_tilt_degrees,
 )
+from jarvis.gesture_fusion.pose_protocol import NullPoseClassifier, PoseClassifier, PosePrediction
 from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 Point2D = tuple[float, float]
@@ -143,6 +144,9 @@ class HandSnapshot:
     # 넘어 자세 판정이 거부되는 상태 — 조용히 무시하지 않고 화면에 드러내기 위한 필드다.
     palm_tilt_degrees: float | None = None
     palm_tilted: bool = False
+    # 정적 자세 판정. 모델이 없으면 `trusted=False`에 사유가 담긴다 — 자세를 지어내지
+    # 않으며, 학습 안 한 상태가 "인식이 안 된다"로 오해되지 않게 UI에 그대로 드러낸다.
+    pose: PosePrediction | None = None
 
 
 def _gesture_recognition_status() -> str:
@@ -162,6 +166,22 @@ def _gesture_recognition_status() -> str:
     return " · ".join(parts) + " — 인식 비활성 (손 추적만 라이브)"
 
 
+def _load_pose_classifier(path: Path | None, config: GestureConfig) -> PoseClassifier:
+    """자세 분류기를 싣되, 실패해도 프로브 전체를 죽이지 않는다.
+
+    모델이 없거나 전처리가 어긋나면 `NullPoseClassifier`로 대체하고 그 사유를 판정
+    결과에 담는다 — 손 추적 자체는 계속 보여야 원인을 진단할 수 있다.
+    """
+    if path is None:
+        return NullPoseClassifier()
+    try:
+        from jarvis.gesture_fusion.pose_classifier import TorchPoseClassifier
+
+        return TorchPoseClassifier(path, config)
+    except Exception as exc:  # noqa: BLE001 - 어떤 실패든 사유를 그대로 노출한다
+        return NullPoseClassifier(reason=f"자세 모델 로드 실패: {exc}")
+
+
 class HandProbe:
     """Owns the live MediaPipe Hand Landmarker and turns BGR frames into snapshots.
 
@@ -176,8 +196,10 @@ class HandProbe:
         config: GestureConfig = DEFAULT_GESTURE_CONFIG,
         smoothing: bool = True,
         image_smoothing: ImageSmoothingConfig = DEFAULT_IMAGE_SMOOTHING,
+        pose_model_path: Path | None = None,
     ) -> None:
         self._model_path = model_path
+        self._pose_classifier: PoseClassifier = _load_pose_classifier(pose_model_path, config)
         self._config = config
         self._landmarker: object | None = None
         self._available = False
@@ -341,6 +363,7 @@ class HandProbe:
             image_points_smoothed=image_points_smoothed,
             palm_tilt_degrees=observation.palm_tilt_degrees,
             palm_tilted=is_palm_tilted(observation, self._config),
+            pose=self._classify_pose(model, observation.palm_tilt_degrees),
         )
 
     def _smooth_image_points(
@@ -386,6 +409,20 @@ class HandProbe:
             wrist_velocity=None,
             wrist_acceleration=None,
         )
+
+    def _classify_pose(
+        self, model_points: object, tilt: float | None
+    ) -> PosePrediction:
+        """평활된 모델 입력 좌표로 자세를 판정한다 — 학습과 동일한 값을 넣는다.
+
+        `model_points`가 없으면(첫 프레임 등) 지어내지 않고 거부 사유를 남긴다.
+        """
+        if model_points is None:
+            return PosePrediction(
+                label="", confidence=0.0, trusted=False,
+                reason="모델 입력 준비 전", palm_tilt_degrees=tilt,
+            )
+        return self._pose_classifier.classify(np.asarray(model_points), tilt)
 
     def close(self) -> None:
         if self._landmarker is not None:

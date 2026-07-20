@@ -518,8 +518,17 @@ class HandPanel(QScrollArea):
                 tilt = f"{s.palm_tilt_degrees:5.1f}°  " + (
                     "판정 거부 — 손을 세우세요" if s.palm_tilted else "정상"
                 )
+            if s.pose is None:
+                pose_line = "-"
+            elif s.pose.trusted:
+                pose_line = f"{s.pose.label}  ({s.pose.confidence:.0%})"
+            else:
+                pose_line = f"거부 — {s.pose.reason}" + (
+                    f"  [{s.pose.label} {s.pose.confidence:.0%}]" if s.pose.label else ""
+                )
             self._numeric.setText(
                 f"모델 입력   : {mode}\n"
+                f"자세 판정   : {pose_line}\n"
                 f"손 기울기   : {tilt}\n"
                 f"palm scale  : {s.palm_scale:.4f}\n"
                 f"landmarks   : {s.landmark_count} points (정규화·손목 원점)\n"
@@ -858,7 +867,9 @@ class MainWindow(QMainWindow):
         self._probe = GazeProbe(
             model_path=self._model_path, profiles_path=self._profiles_path
         )
-        self._hand_probe = HandProbe(model_path=self._hand_model_path)
+        self._hand_probe = HandProbe(
+            model_path=self._hand_model_path, pose_model_path=_default_pose_model_path()
+        )
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
@@ -1214,6 +1225,11 @@ def _default_model_path() -> Path | None:
 
 def _default_hand_model_path() -> Path | None:
     return Path("models/hand_landmarker.task")
+
+
+def _default_pose_model_path() -> Path:
+    """`training/train_pose.py`의 기본 산출물 경로. 없으면 프로브가 사유를 표시한다."""
+    return Path("models/hand_pose_classifier.pt")
 
 
 def _default_profiles_path() -> Path:
