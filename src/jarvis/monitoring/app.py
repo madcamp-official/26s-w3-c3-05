@@ -66,7 +66,7 @@ from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
 from jarvis.monitoring.gesture_source import GestureSource, UntrainedGestureSource
-from jarvis.monitoring.hand_probe import HandProbe, HandSnapshot
+from jarvis.monitoring.hand_probe import HandBackend, HandProbe, HandSnapshot
 from jarvis.monitoring.messages import MessageLevel, MessageLog
 from jarvis.monitoring.overlay import (
     Frame,
@@ -784,6 +784,7 @@ class MainWindow(QMainWindow):
         hand_model_path: Path | None = None,
         samples_path: Path | None = None,
         start_camera: bool = True,
+        hand_backend: HandBackend = "solutions",
     ) -> None:
         super().__init__()
         self.setWindowTitle("JARVIS Pipeline Monitor")
@@ -810,7 +811,9 @@ class MainWindow(QMainWindow):
         self._probe = GazeProbe(
             model_path=self._model_path, profiles_path=self._profiles_path
         )
-        self._hand_probe = HandProbe(model_path=self._hand_model_path)
+        self._hand_probe = HandProbe(
+            model_path=self._hand_model_path, backend=hand_backend
+        )
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")

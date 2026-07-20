@@ -10,12 +10,30 @@ from jarvis.monitoring.gesture_source import UntrainedGestureSource
 from jarvis.monitoring.hand_probe import HandProbe
 
 
-def test_probe_without_model_is_unavailable() -> None:
-    probe = HandProbe(model_path=None)
+def test_tasks_backend_without_model_is_unavailable() -> None:
+    """Tasks API 백엔드는 `.task` 모델 파일이 없으면 정직하게 사용 불가로 남는다."""
+    probe = HandProbe(model_path=None, backend="tasks")
     assert probe.start() is False
     assert probe.available is False
     assert "모델" in probe.status_text
     assert probe.process_bgr(object(), 0, 0) is None  # type: ignore[arg-type]
+
+
+def test_solutions_backend_needs_no_model_file() -> None:
+    """참고 레포 방식(solutions)은 가중치가 mediapipe 휠에 내장돼 모델 파일이 필요 없다.
+
+    그래서 `model_path=None`이어도 엔진이 뜬다 — Tasks 백엔드와 갈리는 지점이다.
+    mediapipe(vision extra)가 없는 환경에서는 정직하게 사용 불가로 남아야 한다.
+    """
+    probe = HandProbe(model_path=None, backend="solutions")
+    started = probe.start()
+    if not started:  # vision extra 미설치 환경
+        assert probe.available is False
+        assert "solutions" in probe.status_text
+        return
+    assert probe.available is True
+    assert "mp.solutions.hands" in probe.status_text
+    probe.close()
 
 
 def test_gesture_recognition_status_is_honest_about_untrained_model() -> None:

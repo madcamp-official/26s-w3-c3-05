@@ -28,6 +28,15 @@ def main(argv: list[str] | None = None) -> int:
         help="hand_landmarker.task 경로 (손 추적 라이브에 필요)",
     )
     parser.add_argument(
+        "--hand-backend",
+        choices=("solutions", "tasks"),
+        default="solutions",
+        help=(
+            "손 랜드마크 엔진 (기본 solutions = 참고 레포 방식 mp.solutions.hands, "
+            "모델 파일 불필요 / tasks = 기존 HandLandmarker, --hand-model 필요)"
+        ),
+    )
+    parser.add_argument(
         "--samples",
         default="data/evaluation/gaze_samples.json",
         help="버튼으로 저장할 gaze 진단 샘플 JSON 경로",
@@ -50,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         profiles_path=Path(args.profiles),
         hand_model_path=Path(args.hand_model),
         samples_path=Path(args.samples),
+        hand_backend=args.hand_backend,
     )
     window.show()
     return int(app.exec())

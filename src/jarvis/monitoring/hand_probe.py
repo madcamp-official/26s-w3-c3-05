@@ -25,7 +25,7 @@ from __future__ import annotations
 import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -36,6 +36,11 @@ from jarvis.gesture_fusion.landmarks import RawHandLandmarks, normalize_hand
 from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 Point2D = tuple[float, float]
+
+#: Which landmark engine draws the skeleton. ``"solutions"`` is the reference repo's
+#: legacy ``mp.solutions.hands`` path (no model file needed — weights ship inside the
+#: mediapipe wheel); ``"tasks"`` is the project's own ``HandLandmarker``.
+HandBackend = Literal["solutions", "tasks"]
 
 
 def _as_vec2(vec: npt.NDArray[np.float64] | None) -> tuple[float, float] | None:
@@ -118,9 +123,11 @@ class HandProbe:
         model_path: Path | None,
         config: GestureConfig = DEFAULT_GESTURE_CONFIG,
         smoothing: bool = True,
+        backend: HandBackend = "solutions",
     ) -> None:
         self._model_path = model_path
         self._config = config
+        self._backend: HandBackend = backend
         self._landmarker: object | None = None
         self._available = False
         self._status_text = "hand 프로브 미시작"
@@ -164,11 +171,33 @@ class HandProbe:
         return self._gesture_status
 
     def start(self) -> bool:
-        """Create the MediaPipe Hand Landmarker. Returns True on success.
+        """Create the landmark engine for the selected backend. True on success.
 
         Missing mediapipe or model file sets an honest ``status_text`` and leaves
         the probe unavailable — it never pretends to track.
         """
+        if self._backend == "solutions":
+            return self._start_solutions()
+        return self._start_tasks()
+
+    def _start_solutions(self) -> bool:
+        """Start the reference repo's legacy engine. Needs no ``.task`` model file —
+        Solutions ships its graph and weights inside the mediapipe wheel."""
+        try:
+            from jarvis.gesture_fusion.solutions_hands import SolutionsHandDetector
+        except ImportError as exc:
+            self._status_text = f"참고 방식(solutions) 사용 불가: {exc}"
+            return False
+        try:
+            self._landmarker = SolutionsHandDetector(self._config)
+        except Exception as exc:  # noqa: BLE001 - surface any init failure honestly
+            self._status_text = f"hand 랜드마커 초기화 실패: {exc}"
+            return False
+        self._available = True
+        self._status_text = "LIVE · mp.solutions.hands (참고 레포 방식, 손 추적)"
+        return True
+
+    def _start_tasks(self) -> bool:
         if self._model_path is None or not self._model_path.is_file():
             self._status_text = "hand_landmarker.task 모델 없음 (models/README.md 참고)"
             return False
@@ -212,27 +241,21 @@ class HandProbe:
         import time
 
         import cv2
-        from mediapipe import Image as MpImage
-        from mediapipe import ImageFormat as MpImageFormat
-        from mediapipe.tasks.python.vision import HandLandmarker
 
-        assert isinstance(self._landmarker, HandLandmarker)
         started = time.monotonic()
         rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB))
-        mp_image = MpImage(image_format=MpImageFormat.SRGB, data=rgb)
-        result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
+        detected = (
+            self._detect_solutions(rgb)
+            if self._backend == "solutions"
+            else self._detect_tasks(rgb, timestamp_ms)
+        )
         inference_ms = (time.monotonic() - started) * 1000.0
 
-        if not result.hand_landmarks:
+        if detected is None:
             return self._lost(timestamp_ms, frame_id, inference_ms)
-
-        landmarks = result.hand_landmarks[0]
-        # z(깊이)는 단안 웹캠 추정값이라 노이즈가 커 버리고 x·y만 쓴다(config.LANDMARK_DIMS).
-        points = np.array([[lm.x, lm.y] for lm in landmarks], dtype=np.float64)
+        points, handedness, score = detected
         if points.shape != (21, LANDMARK_DIMS):
             return self._lost(timestamp_ms, frame_id, inference_ms)
-
-        handedness, score = self._primary_handedness(result)
         raw = RawHandLandmarks(
             timestamp_ms=timestamp_ms,
             frame_id=frame_id,
@@ -273,6 +296,37 @@ class HandProbe:
             wrist_acceleration=wrist_acceleration,
             image_points_smoothed=image_points_smoothed,
         )
+
+    def _detect_solutions(
+        self, rgb: npt.NDArray[np.uint8]
+    ) -> tuple[npt.NDArray[np.float64], str, float] | None:
+        """참고 레포 방식 검출 — `mp.solutions.hands`. 이미지 좌표 (21, 2)를 그대로 쓴다."""
+        from jarvis.gesture_fusion.solutions_hands import SolutionsHandDetector
+
+        assert isinstance(self._landmarker, SolutionsHandDetector)
+        detection = self._landmarker.detect(rgb)
+        if detection is None:
+            return None
+        return detection.points, detection.handedness, detection.handedness_score
+
+    def _detect_tasks(
+        self, rgb: npt.NDArray[np.uint8], timestamp_ms: int
+    ) -> tuple[npt.NDArray[np.float64], str, float] | None:
+        """이 프로젝트 기존 방식 검출 — Tasks API `HandLandmarker`."""
+        from mediapipe import Image as MpImage
+        from mediapipe import ImageFormat as MpImageFormat
+        from mediapipe.tasks.python.vision import HandLandmarker
+
+        assert isinstance(self._landmarker, HandLandmarker)
+        result = self._landmarker.detect_for_video(
+            MpImage(image_format=MpImageFormat.SRGB, data=rgb), timestamp_ms
+        )
+        if not result.hand_landmarks:
+            return None
+        # z(깊이)는 단안 웹캠 추정값이라 노이즈가 커 버리고 x·y만 쓴다(config.LANDMARK_DIMS).
+        points = np.array([[lm.x, lm.y] for lm in result.hand_landmarks[0]], dtype=np.float64)
+        handedness, score = self._primary_handedness(result)
+        return points, handedness, score
 
     def _smooth_image_points(
         self, xy: npt.NDArray[np.float64], timestamp_ms: int
@@ -319,10 +373,11 @@ class HandProbe:
         )
 
     def close(self) -> None:
-        if self._landmarker is not None:
-            from mediapipe.tasks.python.vision import HandLandmarker
-
-            assert isinstance(self._landmarker, HandLandmarker)
-            self._landmarker.close()
+        # 두 백엔드 모두 close()를 제공한다(Solutions의 Hands, Tasks의 HandLandmarker).
+        landmarker = self._landmarker
+        if landmarker is not None:
+            close = getattr(landmarker, "close", None)
+            if callable(close):
+                close()
             self._landmarker = None
             self._available = False
