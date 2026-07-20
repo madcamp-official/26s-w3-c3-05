@@ -96,9 +96,11 @@ _LOCK_COLOR = {
     GazeLockState.COMMITTED: "#2ea043",
 }
 _REGISTRATION_GUIDANCE_PHASES: tuple[tuple[int, str], ...] = (
-    (5_000, "1/3 좌측에서 물체를 계속 바라보세요"),
-    (10_000, "2/3 정면에서 물체를 계속 바라보세요"),
-    (15_000, "3/3 우측에서 물체를 계속 바라보세요"),
+    (3_000, "1/5 move face to LEFT-UP, keep looking at target"),
+    (6_000, "2/5 move face to RIGHT-DOWN, keep looking at target"),
+    (9_000, "3/5 move face to LEFT-DOWN, keep looking at target"),
+    (12_000, "4/5 move face to RIGHT-UP, keep looking at target"),
+    (15_000, "5/5 move slightly NEAR/FAR, keep looking at target"),
 )
 _MONO = "font-family:Consolas,monospace; font-size:12px; color:#c9d1d9;"
 
@@ -950,14 +952,17 @@ class MainWindow(QMainWindow):
         self._registration_phase_index = None
         self._register_target_button.setEnabled(False)
         self._registration_status.setText(
-            f"'{name}' 등록 준비: 물체를 바라보면 15초 안내가 시작됩니다"
+            f"'{name}' registration ready: keep looking at the target; "
+            "move face center diagonally and near/far for 15s"
         )
         self._registration_status.setStyleSheet(
             "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
             " border-radius:6px; padding:8px; font-weight:700;"
         )
         self._log.info(
-            f"'{name}' 등록 시작: 좌측 5초 → 정면 5초 → 우측 5초 동안 물체를 계속 바라보세요"
+            f"'{name}' registration start: do not only rotate your head; "
+            "move face/body LEFT-UP -> RIGHT-DOWN -> LEFT-DOWN -> RIGHT-UP -> NEAR/FAR "
+            "while continuously looking at the target"
         )
 
     def _update_registration_guidance(self, timestamp_ms: int) -> None:

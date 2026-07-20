@@ -18,7 +18,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from jarvis.monitoring.app import MainWindow  # noqa: E402
+from jarvis.monitoring.app import MainWindow, _REGISTRATION_GUIDANCE_PHASES  # noqa: E402
 
 
 def test_main_window_builds_offscreen(tmp_path: Path) -> None:
@@ -57,6 +57,17 @@ def test_target_registration_uses_auto_id(tmp_path: Path) -> None:
     finally:
         window.close()
         app.processEvents()
+
+
+def test_registration_guidance_prompts_diagonal_and_depth_motion() -> None:
+    labels = [label for _end_ms, label in _REGISTRATION_GUIDANCE_PHASES]
+
+    assert len(labels) == 5
+    assert any("LEFT-UP" in label for label in labels)
+    assert any("RIGHT-DOWN" in label for label in labels)
+    assert any("LEFT-DOWN" in label for label in labels)
+    assert any("RIGHT-UP" in label for label in labels)
+    assert any("NEAR/FAR" in label for label in labels)
 
 
 def test_startup_logs_gesture_recognition_off() -> None:
