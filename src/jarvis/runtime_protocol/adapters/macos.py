@@ -41,6 +41,7 @@ _SCROLL_UNIT_LINE = 1
 _KEYCODE_TAB = 0x30
 _KEYCODE_COMMAND = 0x37
 _KEYCODE_SHIFT = 0x38
+_KEYCODE_F11 = 0x67  # 바탕화면 표시
 
 
 class MacOSInputSink:
@@ -82,6 +83,22 @@ class MacOSInputSink:
         self._post(event)
 
     def tap_key(self, key: InputKey) -> None:
+        """키 하나를 누름→뗌으로 전송한다.
+
+        F11(바탕화면) 같은 표준 키는 일반 키보드 이벤트로, 볼륨·재생 같은 미디어 키는
+        시스템 정의 이벤트로 보낸다 — 미디어 키는 표준 keycode 경로로는 OS가 인식하지
+        않기 때문에 경로가 갈린다.
+        """
+        if key is InputKey.SHOW_DESKTOP:
+            import Quartz
+
+            for key_down in (True, False):
+                event = Quartz.CGEventCreateKeyboardEvent(None, _KEYCODE_F11, key_down)
+                self._post(event)
+            return
+        self._tap_media_key(key)
+
+    def _tap_media_key(self, key: InputKey) -> None:
         """미디어 키 하나를 누름→뗌으로 전송한다.
 
         표준 키보드 keycode가 아니라 macOS의 "시스템 정의" 이벤트(`NSEvent.

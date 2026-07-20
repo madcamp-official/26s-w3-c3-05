@@ -79,7 +79,8 @@ class PoseControlBridge:
             "right_click": "우클릭",
             "drag_start": "드래그 시작",
             "drag_end": "드래그 끝",
-            "media_toggle": "재생/일시정지",
+            # 임시: 재생/일시정지 대신 F11(바탕화면 표시). 주먹→보 전이마다 토글된다.
+            "media_toggle": "바탕화면 (F11)",
         }.get(event.kind, "")
 
     def _execute(self, event: PoseEvent) -> None:
@@ -97,6 +98,6 @@ class PoseControlBridge:
             self.sink.press(MouseButton.LEFT, down=False)
             self._dragging = False
         elif event.kind == "media_toggle":
-            self.sink.tap_key(InputKey.PLAY_PAUSE)
+            self.sink.tap_key(InputKey.SHOW_DESKTOP)
         elif event.kind == "scroll":
             self.sink.scroll(SCROLL_TICKS if event.value > 0 else -SCROLL_TICKS)

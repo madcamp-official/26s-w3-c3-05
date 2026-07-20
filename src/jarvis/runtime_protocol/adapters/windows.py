@@ -40,6 +40,7 @@ class InputKey(StrEnum):
     VOLUME_UP = "volume_up"
     VOLUME_DOWN = "volume_down"
     MUTE = "mute"
+    SHOW_DESKTOP = "show_desktop"  # F11 — 바탕화면 표시(누를 때마다 토글)
 
 
 class MouseButton(StrEnum):
@@ -186,6 +187,7 @@ _VK = {
     InputKey.VOLUME_UP: 0xAF,
     InputKey.VOLUME_DOWN: 0xAE,
     InputKey.MUTE: 0xAD,
+    InputKey.SHOW_DESKTOP: 0x7A,  # VK_F11
 }
 _KEYEVENTF_KEYUP = 0x0002
 _MOUSEEVENTF_WHEEL = 0x0800

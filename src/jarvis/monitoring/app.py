@@ -452,6 +452,7 @@ class HandPanel(QScrollArea):
         # 클릭하고 스크롤한다. 분류 정확도 87.1%에 오발동이 1.7% 남아 있어, 툴을
         # 띄우는 것만으로 의도치 않은 클릭이 일어나면 안 된다.
         self._control_toggle = QCheckBox("🖱 손동작으로 컴퓨터 제어 (실제 클릭·스크롤이 실행됩니다)")
+        self._control_toggle.setChecked(True)
         self._control_toggle.setStyleSheet("color:#f0b429; font-weight:600;")
         if on_control_toggled is not None:
             self._control_toggle.toggled.connect(on_control_toggled)
@@ -914,7 +915,7 @@ class MainWindow(QMainWindow):
             model_path=self._hand_model_path, pose_model_path=_default_pose_model_path()
         )
         # 판정과 실행의 분리: 상태기계는 순수 로직이고, 실제 OS 입력은 이 브리지만 한다.
-        self._pose_control = PoseControlBridge(sink=default_input_sink())
+        self._pose_control = PoseControlBridge(sink=default_input_sink(), enabled=True)
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
@@ -951,6 +952,12 @@ class MainWindow(QMainWindow):
     def _build_live_tab(self) -> QWidget:
         self._video = VideoView()
         self._sidebar = GestureSidebar(self._gesture_source)
+        # 손 추적 탭과 상태를 공유하는 제어 토글 — 자세를 취하며 보는 화면이 실시간
+        # 탭이라 여기서도 켜고 끌 수 있어야 한다.
+        self._control_toggle_live = QCheckBox("🖱 손동작으로 컴퓨터 제어 (실제 클릭·스크롤이 실행됩니다)")
+        self._control_toggle_live.setChecked(True)
+        self._control_toggle_live.setStyleSheet("color:#f0b429; font-weight:600;")
+        self._control_toggle_live.toggled.connect(self._on_control_toggled_live)
         top = QSplitter(Qt.Orientation.Horizontal)
         top.addWidget(self._video)
         top.addWidget(self._sidebar)
@@ -965,6 +972,7 @@ class MainWindow(QMainWindow):
 
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.addWidget(self._control_toggle_live)
         layout.addWidget(split)
         self._sample_button = QPushButton()
         self._sample_button.clicked.connect(self._save_gaze_sample)
@@ -1020,7 +1028,21 @@ class MainWindow(QMainWindow):
         )
         return self._hand_panel
 
+    def _on_control_toggled_live(self, enabled: bool) -> None:
+        """실시간 탭 토글 → 손 추적 탭 토글과 상태를 맞춘다(무한 재귀 없이)."""
+        panel = self._hand_panel._control_toggle
+        if panel.isChecked() != enabled:
+            panel.blockSignals(True)
+            panel.setChecked(enabled)
+            panel.blockSignals(False)
+        self._set_control_enabled(enabled)
+
     def _set_control_enabled(self, enabled: bool) -> None:
+        # 손 추적 탭에서 토글되면 실시간 탭 토글도 맞춘다.
+        if hasattr(self, "_control_toggle_live") and self._control_toggle_live.isChecked() != enabled:
+            self._control_toggle_live.blockSignals(True)
+            self._control_toggle_live.setChecked(enabled)
+            self._control_toggle_live.blockSignals(False)
         """실제 OS 제어를 켜고 끈다. 끌 때는 눌린 버튼을 반드시 놓는다."""
         if not enabled:
             self._pose_control.release()  # 드래그 중 껐을 때 버튼이 눌린 채 남지 않게
