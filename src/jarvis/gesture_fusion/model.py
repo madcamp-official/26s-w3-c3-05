@@ -92,6 +92,15 @@ class CausalTCN(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
+        # 입력 표준화 통계(학습셋에서 1회 산출해 `set_input_normalization`으로 주입).
+        # BatchNorm을 쓰지 않는 이유: BatchNorm은 train 모드에서 배치·**시간축 전체**
+        # 통계로 정규화해 t 시점 출력에 t 이후 프레임 정보가 섞인다(causal 위반 —
+        # eval 모드만 보는 회귀 테스트로는 안 잡힌다). 고정 통계 affine은 프레임마다
+        # 독립이라 학습·추론·스트리밍 전부에서 엄격히 causal하다.
+        # 기본값(mean=0, std=1)은 항등변환이라 통계를 주입하지 않으면 기존 동작과 같다.
+        # buffer라 state_dict에 함께 저장돼 체크포인트와 통계가 분리되지 않는다.
+        self.register_buffer("input_mean", torch.zeros(config.feature_dim))
+        self.register_buffer("input_std", torch.ones(config.feature_dim))
         blocks: list[nn.Module] = []
         in_channels = config.feature_dim
         for i, out_channels in enumerate(config.channels):
@@ -105,8 +114,24 @@ class CausalTCN(nn.Module):
         self.gesture_head = nn.Conv1d(in_channels, len(config.gesture_labels), 1)
         self.phase_head = nn.Conv1d(in_channels, len(PHASE_LABELS), 1)
 
+    def set_input_normalization(self, mean: "torch.Tensor", std: "torch.Tensor") -> None:
+        """학습셋에서 구한 차원별 평균·표준편차를 주입한다(feature 그룹 간 스케일 격차 보정).
+
+        std가 0에 가까운(사실상 상수인) 차원은 1.0으로 둔다 — 0으로 나눠 inf/NaN을
+        만들지 않는다(development-principles.md 7.2: 비정상값은 안전값으로).
+        """
+        if mean.shape != (self.config.feature_dim,) or std.shape != (self.config.feature_dim,):
+            raise ValueError(f"mean·std must both have shape ({self.config.feature_dim},)")
+        if not bool(torch.isfinite(mean).all()) or not bool(torch.isfinite(std).all()):
+            raise ValueError("mean·std must contain only finite values")
+        safe_std = torch.where(std > 1e-6, std, torch.ones_like(std))
+        self.input_mean.copy_(mean.to(self.input_mean.dtype))
+        self.input_std.copy_(safe_std.to(self.input_std.dtype))
+
     def forward(self, x: "torch.Tensor") -> tuple["torch.Tensor", "torch.Tensor"]:
         """x: (batch, feature_dim, time) → (gesture_logits, phase_logits), 각 (batch, classes, time)."""
+        # (feature_dim,) → (1, feature_dim, 1)로 broadcast: 시간축과 무관한 프레임별 affine.
+        x = (x - self.input_mean.view(1, -1, 1)) / self.input_std.view(1, -1, 1)
         hidden = self.blocks(x)
         return self.gesture_head(hidden), self.phase_head(hidden)
 
