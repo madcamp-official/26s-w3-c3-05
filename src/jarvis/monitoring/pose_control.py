@@ -67,6 +67,8 @@ class PoseControlBridge:
         self._dragging = False
 
     def _describe(self, event: PoseEvent) -> str:
+        if event.kind == "move":
+            return ""  # 커서 이동은 매 프레임이라 기록/표시하지 않는다(로그가 뒤덮인다)
         if event.kind == "scroll":
             if event.timestamp_ms - self._last_scroll_ms < SCROLL_INTERVAL_MS:
                 return ""  # 30fps 그대로 보내면 스크롤이 감당 안 된다
@@ -82,7 +84,9 @@ class PoseControlBridge:
 
     def _execute(self, event: PoseEvent) -> None:
         assert self.sink is not None
-        if event.kind == "click":
+        if event.kind == "move":
+            self.sink.move_cursor(round(event.delta[0]), round(event.delta[1]))
+        elif event.kind == "click":
             self.sink.click(MouseButton.LEFT)
         elif event.kind == "right_click":
             self.sink.click(MouseButton.RIGHT)

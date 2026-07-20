@@ -67,20 +67,30 @@ def draw_hud(frame: Frame, lines: list[str], *, recording: bool = True) -> Frame
     return frame
 
 
-def _text_block(frame: Frame, lines: list[tuple[str, tuple[int, int, int]]], origin: tuple[int, int]) -> None:
-    """Draw colored text lines with a translucent backing at ``origin`` (top-left)."""
+def _text_block(
+    frame: Frame,
+    lines: list[tuple[str, tuple[int, int, int]]],
+    origin: tuple[int, int],
+    scale: float = 0.48,
+) -> None:
+    """Draw colored text lines with a translucent backing at ``origin`` (top-left).
+
+    ``scale``을 키우면 글자와 배경 상자가 함께 커진다 — 실시간 탭은 멀리서 보며
+    자세를 취하는 화면이라 기본보다 크게 그린다.
+    """
     if not lines:
         return
     x, y = origin
-    line_h = 20
-    width = 8 + max(len(t) for t, _ in lines) * 10
+    line_h = int(20 * scale / 0.48)
+    width = 8 + int(max(len(t) for t, _ in lines) * 10 * scale / 0.48)
     height = 6 + line_h * len(lines)
     overlay = frame.copy()
     cv2.rectangle(overlay, (x, y), (x + width, y + height), (0, 0, 0), thickness=-1)
     cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, dst=frame)
     for i, (text, color) in enumerate(lines):
         ty = y + line_h * (i + 1) - 5
-        cv2.putText(frame, text, (x + 5, ty), _FONT, 0.48, color, 1, cv2.LINE_AA)
+        thickness = 2 if scale >= 0.7 else 1
+        cv2.putText(frame, text, (x + 5, ty), _FONT, scale, color, thickness, cv2.LINE_AA)
 
 
 def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = False) -> Frame:
@@ -143,7 +153,14 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
     return frame
 
 
-def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot, *, mirror: bool = False) -> Frame:
+def draw_hand_overlay(
+    frame: Frame,
+    snapshot: HandSnapshot,
+    *,
+    mirror: bool = False,
+    control_action: str = "",
+    control_enabled: bool = False,
+) -> Frame:
     """Overlay the real hand skeleton (21 landmarks) and tracking info.
 
     Draws only when a hand is actually tracked; a lost frame draws nothing (never
@@ -199,7 +216,20 @@ def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot, *, mirror: bool = Fa
         lines.append((f"tilt {tilt_text}  손을 세우세요 (판정 거부)", (60, 90, 240)))
     else:
         lines.append((f"tilt {tilt_text}", (120, 200, 120)))
-    _text_block(frame, lines, (8, 58))  # below the FPS HUD (top-left) so they do not overlap
+    # 확정 상태(유지 조건을 통과한 자세)와 방금 실행한 동작 — 3번 탭에만 있던 정보를
+    # 여기에도 둔다. 자세를 취하면서 보는 화면은 실시간 탭이라, 판정 결과가 여기 없으면
+    # 손을 보며 고칠 수가 없다.
+    if snapshot.pose_state:
+        lines.append((f"상태  {snapshot.pose_state}", (120, 220, 160)))
+    if snapshot.pose_events:
+        lines.append((f"동작  {', '.join(e.kind for e in snapshot.pose_events)}", (80, 220, 240)))
+    if control_action:
+        lines.append((
+            f"제어  {control_action}",
+            (80, 220, 120) if control_enabled else (170, 170, 170),
+        ))
+    # 실시간 탭은 멀리서 보며 자세를 취하는 화면이라 기본보다 크게 그린다.
+    _text_block(frame, lines, (8, 58), scale=0.72)
     rejected = pose.trusted is False if (pose is not None and pose.label) else snapshot.palm_tilted
     if rejected:
         # 골격 자체를 붉게 감싸 주변시로도 거부 상태를 알아채게 한다.

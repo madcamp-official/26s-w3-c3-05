@@ -61,14 +61,28 @@ TRANSITION_WINDOW_MS = 800
 # 지어내지 않는다 — 0.5는 수평에서 30° 이상 기울어야 방향을 인정한다는 뜻이다.
 MIN_VERTICALITY = 0.5
 
+# 커서 이동: index_point(이동) 또는 pinch_index(드래그) 상태에서 손 이동을 커서로 옮긴다.
+# 좌표를 1:1로 대응시키지 않고, 마우스처럼 손 이동 **델타**에 이득을 곱한다.
+CURSOR_POSES = ("index_point", "pinch_index")
+CURSOR_BASE_GAIN = 900.0      # 손 이동(팜 단위) → 픽셀 기본 배율
+CURSOR_ACCEL_GAIN = 1.4       # 속도가 빠를수록 이득이 커진다(정밀↔빠른 이동 양립)
+CURSOR_MAX_ACCEL = 3.5        # 이득 상한(급격한 튐 방지)
+CURSOR_DEADZONE = 0.006       # 이보다 작은 손 떨림은 무시(팜 단위)
+CURSOR_MAX_STEP_PX = 220      # 한 프레임 최대 이동(검출 튐이 커서를 순간이동시키지 않게)
+CURSOR_INVERT_X = True        # 거울 뷰가 아닌 실제 손 기준 — 왼손 이동 = 커서 왼쪽
+
 
 @dataclass(frozen=True, slots=True)
 class PoseEvent:
-    """상태기계가 내보내는 동작. `value`는 스크롤에서만 의미가 있다(부호=방향)."""
+    """상태기계가 내보내는 동작.
+
+    `value`는 스크롤에서 방향(부호). `delta`는 move에서 커서 이동 픽셀 (dx, dy).
+    """
 
     kind: str
     timestamp_ms: int
     value: float = 0.0
+    delta: tuple[float, float] = (0.0, 0.0)
 
 
 def pointing_direction(landmarks: FloatArray) -> tuple[float, float] | None:
@@ -111,6 +125,9 @@ class PoseStateMachine:
     _last_pose: str = ""
     _last_pose_end: int = 0
     _dragging: bool = False
+    # 커서 이동 참조점(이미지 좌표)과 시각 — 델타 계산용. 상태 진입 때 초기화한다.
+    _cursor_ref: tuple[float, float] | None = None
+    _cursor_ref_ms: int = 0
 
     def reset(self) -> None:
         """추적 손실 등으로 이력을 신뢰할 수 없을 때 — 상태를 지어내지 않는다."""
@@ -125,8 +142,17 @@ class PoseStateMachine:
         prediction: PosePrediction,
         timestamp_ms: int,
         landmarks: FloatArray | None = None,
+        reference_point: tuple[float, float] | None = None,
+        palm_scale: float | None = None,
     ) -> list[PoseEvent]:
-        """한 프레임을 처리해 발생한 이벤트를 돌려준다(없으면 빈 리스트)."""
+        """한 프레임을 처리해 발생한 이벤트를 돌려준다(없으면 빈 리스트).
+
+        `reference_point`는 커서 이동 기준이 되는 이미지 좌표(손 전체 위치, 예: 손목).
+        정규화 좌표는 손목이 원점이라 손 전체 이동이 사라지므로, 이동은 이 값으로 잰다.
+        `palm_scale`로 나눠 카메라 거리에 무관하게 만든다(멀든 가깝든 같은 손 이동 = 같은
+        커서 이동).
+        """
+        self._cursor_ctx = (reference_point, palm_scale)
         # 규칙 2: 믿을 수 없는 판정은 상태를 바꾸지도 끊지도 않는다.
         if not prediction.trusted:
             return self._continuous(timestamp_ms, landmarks)
@@ -135,6 +161,38 @@ class PoseStateMachine:
         if label in ("", NONE_POSE):
             return self._absent(timestamp_ms, landmarks)
         return self._present(label, timestamp_ms, landmarks)
+
+    def _cursor_move(self, timestamp_ms: int) -> PoseEvent | None:
+        """참조점 델타를 커서 이동으로 바꾼다 — 1:1 대응이 아니라 마우스식 상대 이동.
+
+        속도가 빠를수록 이득이 커져(포인터 가속) 큰 이동과 정밀 조작을 양립시킨다.
+        검출 튐이 커서를 순간이동시키지 않도록 프레임당 이동을 제한한다.
+        """
+        reference_point, palm_scale = getattr(self, "_cursor_ctx", (None, None))
+        if reference_point is None or not palm_scale or palm_scale <= 0.0:
+            self._cursor_ref = None
+            return None
+        if self._cursor_ref is None:
+            self._cursor_ref, self._cursor_ref_ms = reference_point, timestamp_ms
+            return None
+        # 팜 단위 이동(카메라 거리 독립)
+        dx = (reference_point[0] - self._cursor_ref[0]) / palm_scale
+        dy = (reference_point[1] - self._cursor_ref[1]) / palm_scale
+        self._cursor_ref, prev_ms = reference_point, self._cursor_ref_ms
+        self._cursor_ref_ms = timestamp_ms
+        distance = math.hypot(dx, dy)
+        if distance < CURSOR_DEADZONE:  # 정지 시 손 떨림 무시
+            return None
+        dt_s = max((timestamp_ms - prev_ms) / 1000.0, 1e-3)
+        speed = distance / dt_s
+        gain = CURSOR_BASE_GAIN * min(CURSOR_MAX_ACCEL, 1.0 + CURSOR_ACCEL_GAIN * speed)
+        px = (-dx if CURSOR_INVERT_X else dx) * gain
+        py = dy * gain
+        step = math.hypot(px, py)
+        if step > CURSOR_MAX_STEP_PX:  # 검출 튐 방지
+            scale = CURSOR_MAX_STEP_PX / step
+            px, py = px * scale, py * scale
+        return PoseEvent("move", timestamp_ms, 0.0, (px, py))
 
     # --- 내부 ---
 
@@ -201,6 +259,14 @@ class PoseStateMachine:
         """상태를 유지하는 동안 계속 나가는 이벤트(스크롤·드래그 승격)."""
         events: list[PoseEvent] = []
         held = timestamp_ms - self._state_since
+        # 커서 이동: index_point(이동)·pinch_index(드래그) 상태에서 손 이동을 옮긴다.
+        # 드래그도 여기서 커서가 따라 움직인다 — pinch_index가 CURSOR_POSES에 있다.
+        if self.state in CURSOR_POSES:
+            move = self._cursor_move(timestamp_ms)
+            if move is not None:
+                events.append(move)
+        else:
+            self._cursor_ref = None  # 이동 자세를 벗어나면 참조점을 버린다
         if self.state == "pinch_index" and not self._dragging and held > self.click_max_ms:
             # 오래 쥐고 있으면 클릭이 아니라 드래그다. 진입 시점으로 소급해 알린다.
             self._dragging = True

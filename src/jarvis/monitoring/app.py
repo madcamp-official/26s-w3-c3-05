@@ -728,6 +728,8 @@ class VideoView(QLabel):
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
         self._hand: HandSnapshot | None = None
+        self._control_action = ""
+        self._control_enabled = False
         self._show_placeholder("카메라 시작 중…")
 
     def set_gaze(self, snapshot: GazeSnapshot) -> None:
@@ -735,6 +737,11 @@ class VideoView(QLabel):
 
     def set_hand(self, snapshot: HandSnapshot) -> None:
         self._hand = snapshot
+
+    def set_control(self, action: str, enabled: bool) -> None:
+        """실시간 탭에도 제어 상태를 띄운다 — 3번 탭에만 있으면 자세를 보며 못 고친다."""
+        self._control_action = action
+        self._control_enabled = enabled
 
     def _show_placeholder(self, text: str) -> None:
         self._render(placeholder_frame(text=text))
@@ -754,7 +761,13 @@ class VideoView(QLabel):
         if self._gaze is not None:
             draw_gaze_overlay(display, self._gaze, mirror=True)
         if self._hand is not None:
-            draw_hand_overlay(display, self._hand, mirror=True)
+            draw_hand_overlay(
+                display,
+                self._hand,
+                mirror=True,
+                control_action=self._control_action,
+                control_enabled=self._control_enabled,
+            )
         self._render(display)
 
     def _current_fps(self) -> float:
@@ -1235,6 +1248,7 @@ class MainWindow(QMainWindow):
         if not snapshot.hand_detected:
             self._pose_control.release()
         self._pose_control.apply(list(snapshot.pose_events))
+        self._video.set_control(self._pose_control.last_action, self._pose_control.enabled)
         self._hand_panel.update_snapshot(snapshot, self._pose_control.last_action)
         self._sidebar.set_hand_status(snapshot)
 

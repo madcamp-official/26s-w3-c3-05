@@ -351,8 +351,18 @@ class HandProbe:
         pose = self._classify_pose(model, observation.palm_tilt_degrees)
         # 상태기계는 **모델 입력과 같은 좌표**를 본다 — 스크롤 방향(손가락이 가리키는
         # 쪽)을 여기서 계산하므로 판정과 같은 값을 써야 어긋나지 않는다.
+        # 커서 이동 기준: 손목의 이미지 좌표(손 전체 위치). 정규화 좌표는 손목이 원점이라
+        # 손 전체 이동이 사라지므로, 상태기계에 이미지 좌표를 따로 넘긴다. **평활된 좌표**를
+        # 쓴다 — 1번 탭에 그려지는 스켈레톤과 커서가 같은 값을 따라야 하고, raw 손목은
+        # 지터가 커서를 떨게 한다. 평활이 꺼져 있으면(스무딩 토글 OFF) raw로 폴백한다.
+        wrist_src = image_points_smoothed if image_points_smoothed is not None else image_points
+        wrist_xy = (float(wrist_src[0][0]), float(wrist_src[0][1]))
         events = self._pose_state.update(
-            pose, timestamp_ms, None if model is None else np.asarray(model)
+            pose,
+            timestamp_ms,
+            None if model is None else np.asarray(model),
+            reference_point=wrist_xy,
+            palm_scale=observation.palm_scale,
         )
         wrist_velocity = _as_vec2(self._extractor.last_wrist_velocity)
         wrist_acceleration = _as_vec2(self._extractor.last_wrist_acceleration)

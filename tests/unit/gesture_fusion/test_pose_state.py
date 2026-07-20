@@ -184,3 +184,52 @@ def test_untrusted_prediction_neither_enters_nor_breaks() -> None:
     for t in range(900, 1200, 33):
         machine.update(_pose("open_palm", trusted=False), t)
     assert machine.state == "index_point"
+
+
+# --- 커서 이동 ---
+
+def _feed_cursor(machine, label, ref, *, ms, start=0, step=33, palm=0.15):
+    """참조점을 고정하거나 이동시키며 자세를 유지한다. ref는 (x0,y0)→(x1,y1) 또는 고정점."""
+    events, t = [], start
+    while t <= start + ms:
+        frac = (t - start) / max(ms, 1)
+        if isinstance(ref[0], tuple):
+            point = (ref[0][0] + (ref[1][0] - ref[0][0]) * frac,
+                     ref[0][1] + (ref[1][1] - ref[0][1]) * frac)
+        else:
+            point = ref
+        events.extend(machine.update(_pose(label), t, reference_point=point, palm_scale=palm))
+        t += step
+    return events
+
+
+def test_index_point_moves_cursor() -> None:
+    """검지 폄 상태에서 손을 옮기면 커서 이동 이벤트가 나온다."""
+    machine = PoseStateMachine()
+    _feed_cursor(machine, "index_point", (0.5, 0.5), ms=200)  # 진입
+    events = _feed_cursor(machine, "index_point", ((0.5, 0.5), (0.7, 0.5)), ms=300, start=233)
+    moves = [e for e in events if e.kind == "move"]
+    assert moves and all(e.delta[0] != 0 for e in moves)
+
+
+def test_pinch_drag_also_moves_cursor() -> None:
+    """드래그(핀치 유지) 중에도 커서가 따라 움직인다."""
+    machine = PoseStateMachine()
+    events = _feed_cursor(machine, "pinch_index", ((0.4, 0.4), (0.6, 0.6)), ms=700)
+    assert any(e.kind == "move" for e in events)
+    assert any(e.kind == "drag_start" for e in events)
+
+
+def test_stationary_hand_does_not_move_cursor() -> None:
+    """손이 가만히 있으면(참조점 고정) 커서가 떨지 않는다 — 데드존."""
+    machine = PoseStateMachine()
+    _feed_cursor(machine, "index_point", (0.5, 0.5), ms=200)
+    events = _feed_cursor(machine, "index_point", (0.5, 0.5), ms=300, start=233)
+    assert [e for e in events if e.kind == "move"] == []
+
+
+def test_open_palm_does_not_move_cursor() -> None:
+    """이동 자세가 아니면 손을 옮겨도 커서는 그대로다."""
+    machine = PoseStateMachine()
+    events = _feed_cursor(machine, "open_palm", ((0.4, 0.4), (0.7, 0.7)), ms=400)
+    assert [e for e in events if e.kind == "move"] == []
