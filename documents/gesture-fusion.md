@@ -26,6 +26,39 @@ README [8장 핵심 기능 2](../README.md), [9장 핵심 기능 3](../README.md
   - **모니터 디버그 표시 (2026-07-19)**: 위 평활화는 모델이 소비하는 **정규화 좌표** 공간에서 일어난다. 모니터 `실시간` 탭의 웹캠 스켈레톤은 **이미지 좌표** 공간이라 이 필터를 거치지 않아 이전엔 raw 지터가 그대로 보였다. 이제 `HandProbe`가 같은 `GestureConfig` 평활 파라미터로 **표시 전용** One-Euro 필터를 이미지 좌표에도 적용해(`HandSnapshot.image_points_smoothed`) 웹캠 스켈레톤도 안정적으로 보인다. 이 표시용 필터와 `실시간`·`손 추적` 탭의 거울상(좌우 반전)은 **모두 화면 표시 전용**이며, 모델 입력·학습 데이터에는 영향을 주지 않는다. 상세 결정은 decisions.md(2026-07-19) 참조.
 - **palm_scale 평활화 — 손목 평행이동 잡음 원인 발견·수정 (2026-07-19)**: 손목 위치가 정지해도 `wrist_velocity`/`wrist_acceleration`이 심하게 떨린다는 사용자 보고로 조사. 원인: `wrist_position = origin / palm_scale`의 분자(화면상 절대 위치, ~0.3~0.7)가 일반 landmark의 분자(손 안 상대적 차이, 손목 자신은 0)보다 훨씬 커서, 매 프레임 다시 계산되는 `palm_scale`의 잡음이 나눗셈에서 훨씬 크게 증폭됐다. 기존 `_wrist_smoother`(One-Euro)는 나눗셈 *이후* 값만 다뤄 이 증폭을 못 잡았다. 정지한 손 시뮬레이션 실측: 수정 전 손목 속도 잡음이 손가락 끝 속도 잡음의 약 2.5배. 시도한 대안 중 "나눗셈 전 origin만 필터링"은 오히려 더 나빠졌고(0.15배, 잡음 원인인 palm_scale 자체가 여전히 raw라 그대로 새어나감), "기존 순서 유지 + palm_scale을 별도로 평활화"가 가장 효과적이었다(3.85배 감소, 0.81→0.21 palm-width/s). 구현: `normalize_hand`는 순수 함수라 여기서 palm_scale을 평활화할 수 없으므로, `HandFeatureExtractor`가 새 `_palm_scale_smoother`로 palm_scale을 평활화하고 `wrist_position × raw_palm_scale / smoothed_palm_scale`로 재조정한다(`origin`에 직접 접근하지 않고도 `origin/smoothed_palm_scale`을 정확히 재현). `GestureConfig.smooth_palm_scale`(기본 True, `smooth_landmarks`와 함께 켜짐)과 `palm_scale_smoothing_min_cutoff`/`_beta`(기본 0 — palm_scale은 랜드마크처럼 "빠른 동작" 개념이 없어 속도 적응 불필요)/`_d_cutoff`로 제어. **주의**: 학습 데이터도 같은 설정으로 전처리해야 한다(모델 재현성).
 
+## 정적 손 자세 파이프라인 (2026-07-20~21, 로컬 · 동적 제스처와 별개 경계)
+
+동적 제스처(위 Task 1~9, swipe/rotate, 서버 이관 대상)와 **다른 관심사**다. 커서 이동·클릭·드래그·우클릭·스크롤·바탕화면 토글은 **단일 프레임의 손 모양**으로 판정한다. `pose_protocol.py`(순수)↔`pose_classifier.py`(torch)는 `model_protocol.py`↔`model.py`와 같은 격리 구조이며, 두 모델은 서로를 import하지 않고 입력 차원·산출물이 다르다.
+
+흐름: `PoseClassifier`(7-class MLP) → 기울기 신뢰 판정 → `PoseStateMachine`(시간축) → `PoseControlBridge`(실제 OS 입력). 앞 두 단계는 프레임별, 뒤 두 단계가 시간 구조와 부수효과를 담당한다.
+
+### 자세 분류기 (`pose_protocol.py`, `pose_classifier.py`, `training/train_pose.py`)
+
+- **7-class**: `index_point`·`pinch_index`·`pinch_middle`·`two_fingers`·`open_palm`·`fist` + `none`. 참고 레포와 같은 규모의 MLP(입력→20→10→클래스), 노트북 CPU로 수 초 학습.
+- **입력 feature = 정규화 좌표 42 + 손끝 쌍거리 10 = 52차원**(`pose_features()`, 학습·추론의 단일 진실). 좌표만 주면 작은 MLP가 손끝 사이 *관계*를 못 뽑는다 — 엄지-중지끝 거리는 단독으로 index_point/pinch_middle을 오류율 10.9%로 가르지만 좌표만 준 모델의 index_point 재현율은 50.2%였고, 쌍거리를 더하자 전체 82.6%→92.3%로 올랐다.
+- **`none` 배경 클래스**: 소프트맥스는 반드시 한 클래스를 고르므로, 이게 없으면 손이 보이기만 해도 명령이 나간다. 전이 구간·휴지·일상 동작을 모아 학습. 효과(실측): 우클릭 직전 엄지-중지 접근이 two_fingers로 오분류돼 스크롤이 튀던 문제 0건, 헐거운 핀치 흡수. 오류가 안전한 쪽으로 이동(오발동 1.7%, 명령 간 오인 2.8%, 놓침 15.4% — 놓침은 재시도로 끝나지만 오발동은 되돌릴 수 없다).
+- **전처리 재현성**: 학습·추론 모두 `normalize_hand` + One-Euro(`GestureConfig.smoothing_*`, 3번 탭 좌표)를 쓴다. 저장 파일에 전처리 설정을 넣고 로드 시 현재 `GestureConfig`와 대조 — 어긋나면 `PreprocessingMismatch`로 거부(어긋나면 예외 없이 정확도만 조용히 떨어지는 고장). 평가는 **에피소드 단위 홀드아웃**(인접 프레임 누수 차단, 실측 무작위 84.6% vs 에피소드 82%).
+
+### 손 기울기 게이트 (`landmarks.palm_tilt_degrees`, `is_palm_tilted`, `pose_protocol.is_pose_trusted`)
+
+- 손바닥 축(손목→중지 MCP)이 이미지 평면과 이루는 각. 카메라 쪽으로 눕히면 이 축이 2D에서 단축돼 자세 정보가 **실제로 소실**된다(구간별 정확도 0~10° 90.8%, 20~30° 47.3%, 30° 초과 37.0%). 정규화 방식 4종 비교에서 회전 민감도 30배 차이에도 정확도 동률이라 **분모 교체로는 해결 불가** — 좌표를 어떻게 정규화해도 없는 정보는 못 만든다.
+- **각도만 z에서 계산**해 소스가 넘긴다(`RawHandLandmarks.palm_tilt_degrees`). 좌표는 2D 유지(`LANDMARK_DIMS=2` 불변) — z를 좌표로 되살리는 게 아니라 화면 밖 회전이라는 z만 아는 정보를 각도 하나로 요약해 굵은 임계 판정에만 쓴다. z를 못 내는 소스(`None`)에서는 게이트를 걸지 않는다(시스템 전체 정지 방지).
+- **자세별 허용 각도**(`DEFAULT_POSE_TILT_LIMITS`): 손가락을 편 자세는 기울어도 실루엣이 남아 관대하다(two_fingers 40°, open_palm 30°), 나머지는 20°. **분류 뒤** 예측 자세의 한계로 판정한다 — 순환이 아니라, 먼저 분류하고 그 결과를 이 각도에서 믿어도 되는지 실측 표로 확인하는 순서다. 근거 없는 구간은 보수적으로 20°.
+
+### 시간축 상태기계 (`pose_state.py`)
+
+프레임별 판정만으로는 동작이 안 정해진다(같은 pinch_index라도 짧게 떼면 클릭, 유지하면 드래그). 순수 로직이라 카메라·OS 없이 테스트한다. 규칙 세 가지:
+
+1. **진입은 느리게(dwell 120~300ms), 이탈은 빠르게 하되 관대하게**: 자세가 유지돼야 상태 진입(전이 프레임은 짧아 걸러짐). `none`이 몇 프레임 들어와도 3프레임까지는 안 끊는다(놓침 15.4%가 조작 중단으로 이어지면 안 됨).
+2. **믿을 수 없는 판정(trusted=False, 기울기 게이트)은 상태를 바꾸지도 끊지도 않는다.**
+3. **`none`은 자세 이력을 지우지 않는다**: 주먹→보 전이 중간이 none으로 분류되므로, "마지막 명령 자세"를 따로 기억해 전이 판정이 빈 구간을 건너뛴다(인접 상태로 보면 절대 성립 안 함).
+
+동작: 커서 이동(index_point·pinch_index, 마우스식 상대 이동+포인터 가속+palm_scale 정규화, 참조점은 손목의 **평활된 이미지 좌표**), 클릭/드래그(핀치 유지 시간으로 분기, 진입 시점 소급), 우클릭(pinch_middle), 스크롤(two_fingers가 **가리키는 방향** — 손 이동이 아니라 MCP→끝 벡터라 손을 멈춰도 유지, 수직성 0.5 미만이면 방향 안 지어냄), 바탕화면 토글(fist→open_palm 전이). 임계는 전부 **시간**이라 투영에 흔들리지 않는다(기하학적 임계는 손 각도에 8.85배까지 흔들렸다).
+
+### 실제 OS 제어 (`monitoring/pose_control.py`)
+
+`PoseStateMachine` 이벤트를 `InputSink`(macOS Quartz / Windows user32)로 옮긴다. 판정(순수)과 실행(부수효과)을 분리해 상태기계를 OS 없이 테스트하고 실행을 끄고도 판정을 관찰한다. 디버깅 툴에서 토글(양 탭 공유), 드래그 중 손 놓침·제어 끄기 시 눌린 버튼을 반드시 놓는다.
+
 ## 통합 규약 (배선 계층 주의)
 
 Task 1·2는 mediapipe·카메라 없이 단위 테스트되는 순수 경계다. 실제 캡처와 붙이는 앱/배선 계층에서 아래를 지켜야 한다. 이 책임은 gesture_fusion 패키지가 아니라 배선 계층에 있다(모듈 경계 규칙: gesture_fusion은 `runtime_protocol` 내부 타입을 import하지 않는다).

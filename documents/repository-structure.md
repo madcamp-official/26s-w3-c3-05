@@ -14,6 +14,9 @@
 │   ├── contracts/                    # 세 모듈이 공유하는 유일한 메시지 계약
 │   ├── gaze/                         # 1인: Gaze Targeting
 │   ├── gesture_fusion/               # 2인: Gesture & Intent Fusion
+│   │   ├── pose_protocol.py          #   정적 자세 판정 경계(torch 무관)+기울기 신뢰·feature
+│   │   └── pose_classifier.py        #   정적 자세 MLP 추론(torch, ml extra)·전처리 대조
+│   │   # pose_state.py: 시간축 상태기계(클릭/드래그/스크롤/전이, 순수)
 │   ├── runtime_protocol/             # 3인: Runtime & Device Protocol
 │   │   ├── capture/                  # 카메라·timestamp·bounded queue
 │   │   ├── protocol/                 # capability·TTL·ACK·dedup
@@ -21,12 +24,13 @@
 │   │   └── telemetry/                # trace·상태 전이·latency
 │   ├── calibration/                  # 기기 등록 및 사용자 calibration
 │   ├── pointer/                      # 커서·pinch click·drag 연속 제어
-│   └── monitoring/                   # 최소 로컬 모니터링 UI
+│   └── monitoring/                   # 최소 로컬 모니터링 UI (pose_control.py: 자세→실제 OS 입력)
 ├── tests/
 │   ├── unit/                         # 모듈 내부 로직
 │   ├── contract/                     # producer-consumer 메시지 호환성
 │   ├── integration/                  # 전체 로컬 pipeline·adapter 경계
 │   └── replay/                       # trace replay·성능 지표
+├── training/                         # 오프라인 학습(src/jarvis 밖). train_pose.py: 정적 자세 분류기
 └── tools/                            # calibration·benchmark·모델 준비 CLI
 ```
 
