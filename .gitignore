@@ -10,6 +10,8 @@ Thumbs.db
 __pycache__/
 *.pyc
 .venv/
+# jarvis.engine_port가 레거시 mediapipe(solutions)를 돌리려 만드는 격리 venv
+.venv-legacy/
 venv/
 *.egg-info/
 .pytest_cache/
