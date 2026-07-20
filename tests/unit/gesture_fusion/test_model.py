@@ -138,3 +138,67 @@ def test_swappable_labels_via_config() -> None:
         _config(gesture_labels=("none", "swipe_up", "swipe_down", "swipe_left"))
     )
     assert model.labels == ("none", "swipe_up", "swipe_down", "swipe_left")
+
+
+def test_input_normalization_defaults_to_identity() -> None:
+    """통계를 주입하지 않으면 mean=0·std=1이라 기존 동작(항등)과 같아야 한다."""
+    torch.manual_seed(0)
+    net = CausalTCN(_config(channels=(4,), kernel_size=2))
+    net.eval()
+    x = torch.randn(1, net.config.feature_dim, 12)
+    with torch.no_grad():
+        before = net(x)[0]
+    net.set_input_normalization(
+        torch.zeros(net.config.feature_dim), torch.ones(net.config.feature_dim)
+    )
+    with torch.no_grad():
+        after = net(x)[0]
+    torch.testing.assert_close(before, after)
+
+
+def test_input_normalization_is_saved_in_state_dict() -> None:
+    """통계는 buffer라 체크포인트(state_dict)에 함께 실려 로드 시 복원돼야 한다."""
+    net = CausalTCN(_config(channels=(4,), kernel_size=2))
+    dim = net.config.feature_dim
+    net.set_input_normalization(torch.full((dim,), 2.0), torch.full((dim,), 4.0))
+
+    restored = CausalTCN(_config(channels=(4,), kernel_size=2))
+    restored.load_state_dict(net.state_dict())
+    torch.testing.assert_close(restored.input_mean, torch.full((dim,), 2.0))
+    torch.testing.assert_close(restored.input_std, torch.full((dim,), 4.0))
+
+
+def test_input_normalization_guards_zero_std() -> None:
+    """std가 0인(상수) 차원은 1.0으로 대체해 inf/NaN을 만들지 않아야 한다."""
+    net = CausalTCN(_config(channels=(4,), kernel_size=2))
+    dim = net.config.feature_dim
+    std = torch.ones(dim)
+    std[0] = 0.0
+    net.set_input_normalization(torch.zeros(dim), std)
+    assert float(net.input_std[0]) == 1.0
+    with torch.no_grad():
+        out = net(torch.randn(1, dim, 8))[0]
+    assert bool(torch.isfinite(out).all())
+
+
+def test_output_stays_causal_with_input_normalization() -> None:
+    """입력 표준화를 켜도 t 이후 입력이 t 시점 출력을 바꾸지 못해야 한다."""
+    torch.manual_seed(0)
+    config = _config(channels=(8, 8), kernel_size=3)
+    net = CausalTCN(config)
+    net.set_input_normalization(
+        torch.full((config.feature_dim,), 0.5), torch.full((config.feature_dim,), 3.0)
+    )
+    net.eval()
+
+    seq_len, t = 20, 10
+    base = torch.randn(1, config.feature_dim, seq_len)
+    perturbed = base.clone()
+    perturbed[:, :, t + 1 :] += 100.0
+
+    with torch.no_grad():
+        gesture_base, phase_base = net(base)
+        gesture_pert, phase_pert = net(perturbed)
+
+    torch.testing.assert_close(gesture_base[:, :, : t + 1], gesture_pert[:, :, : t + 1])
+    torch.testing.assert_close(phase_base[:, :, : t + 1], phase_pert[:, :, : t + 1])

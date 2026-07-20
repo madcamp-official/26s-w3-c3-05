@@ -28,18 +28,27 @@ PHASE_LABELS: tuple[GesturePhase, ...] = (
     GesturePhase.ENDING,
 )
 
-# README 8장 "지원 제스처"의 6개 동적 제스처. Pinch·주먹은 README가 명시한 확장
-# 기능이라 MVP 기본 label에서 뺀다(추가 시 이 튜플만 확장하면 됨 — 열린 문자열 키
-# 원칙과 일관). "none"은 명확한 제스처가 없는 구간(IDLE 등)을 위한 배경 클래스로,
-# 이게 없으면 분류기가 매 프레임 억지로 6개 중 하나를 골라 오탐을 늘린다.
+# 인식 대상 제스처 8종 + 배경 "none"(2026-07-20 결정: 사용자가 지정한 목록만
+# 학습 — swipe 포함 나머지 18개 Jester 클래스는 이번엔 제외한다. README 8장
+# "지원 제스처"의 swipe 4종·주석과 다르다는 점을 인지하고 있음, README는 이후
+# 갱신 예정). "No gesture"만 배경 "none"에 대응하고, 나머지는 각자 고유 label을
+# 갖는다. **"none"은 반드시 index 0을 유지한다**(spotting.py가 배경 label로
+# `DEFAULT_GESTURE_LABELS[0]`을 참조). 열린 문자열 키(interface-contract.md)라 새
+# 제스처는 이 튜플만 확장하면 된다.
 DEFAULT_GESTURE_LABELS: tuple[str, ...] = (
     "none",
-    "swipe_up",
-    "swipe_down",
-    "swipe_left",
-    "swipe_right",
+    # 손목 회전 (2)
     "rotate_clockwise",
     "rotate_counter_clockwise",
+    # 두 손가락 슬라이드 (4)
+    "slide_two_fingers_up",
+    "slide_two_fingers_down",
+    "slide_two_fingers_left",
+    "slide_two_fingers_right",
+    # 정적 손 모양 (1)
+    "drumming_fingers",
+    # 정의된 제스처 어디에도 안 속하는 동작(Jester "Doing other things") (1)
+    "doing_other_things",
 )
 
 
