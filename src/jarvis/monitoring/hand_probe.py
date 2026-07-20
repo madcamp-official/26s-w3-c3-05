@@ -23,6 +23,7 @@ capture↔vision wiring responsibility gesture-fusion.md assigns to this layer.
 from __future__ import annotations
 
 import importlib.util
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -43,6 +44,52 @@ def _as_vec2(vec: npt.NDArray[np.float64] | None) -> tuple[float, float] | None:
     if vec is None:
         return None
     return (float(vec[0]), float(vec[1]))
+
+
+@dataclass(frozen=True, slots=True)
+class ImageSmoothingConfig:
+    """웹캠 오버레이(이미지 좌표) 전용 One-Euro 파라미터 — 표시 전용.
+
+    `GestureConfig.smoothing_*`(모델 입력용)와 **값을 공유하지 않는다.** 두 필터가
+    서로 다른 좌표계를 다루기 때문이다:
+
+    - 모델 입력: 손바닥 크기로 정규화된 좌표(palm-width 단위). 손 이동 속도가 보통 초당 1~5.
+    - 이 필터: 이미지 정규화 좌표([0, 1] 프레임 비율). 같은 손 이동이 초당 0.2~1.0 정도로
+      **수치가 약 5배 작다**(palm_scale이 프레임 폭의 15~25% 수준이므로).
+
+    One-Euro의 적응 컷오프는 `min_cutoff + beta × |속도|`이고 속도가 신호와 같은 단위로
+    들어간다. 그래서 palm 공간용 `beta`(0.5)를 이미지 공간에 그대로 쓰면 컷오프가 거의
+    열리지 않아 사실상 고정 ~1Hz 저역통과가 되고, 30fps에서 시정수 약 170ms의 지연이
+    생긴다 — 스켈레톤이 손을 눈에 띄게 늦게 따라오던 원인이다. 여기서는 이미지 단위에
+    맞춘 `beta`를 따로 둔다.
+
+    `pointer.hand_cursor`가 같은 이유로 `ref_*`를 분리해 둔 것과 같은 판단이며, 표시
+    감도를 모델 재현성 제약(학습 데이터와 동일 전처리)에 묶지 않는 효과도 같다.
+    """
+
+    min_cutoff: float = 1.5
+    """정지한 손의 지터를 잡는 기본 강도(Hz). 낮을수록 정지 시 부드럽지만 지연이 커진다."""
+
+    beta: float = 20.0
+    """속도에 따른 컷오프 개방 계수 — **이미지 좌표 단위** 기준. 지연을 좌우하는 주 레버다.
+
+    20이면 느린 이동(0.2/s)에서 컷오프가 5.5Hz까지 열려 30fps 시정수가 약 60ms로
+    떨어지고, 빠른 이동에서는 사실상 통과된다. 반면 정지 상태(≈0.01/s)에서는 1.7Hz에
+    머물러 지터 억제는 그대로 유지된다."""
+
+    d_cutoff: float = 1.5
+    """내부 속도 추정의 평활 컷오프(Hz). 낮추면 이동 시작 순간 컷오프가 늦게 열린다."""
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.min_cutoff) or self.min_cutoff <= 0.0:
+            raise ValueError("min_cutoff must be finite and positive")
+        if not math.isfinite(self.d_cutoff) or self.d_cutoff <= 0.0:
+            raise ValueError("d_cutoff must be finite and positive")
+        if not math.isfinite(self.beta) or self.beta < 0.0:
+            raise ValueError("beta must be finite and non-negative")
+
+
+DEFAULT_IMAGE_SMOOTHING = ImageSmoothingConfig()
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +165,7 @@ class HandProbe:
         model_path: Path | None,
         config: GestureConfig = DEFAULT_GESTURE_CONFIG,
         smoothing: bool = True,
+        image_smoothing: ImageSmoothingConfig = DEFAULT_IMAGE_SMOOTHING,
     ) -> None:
         self._model_path = model_path
         self._config = config
@@ -133,11 +181,15 @@ class HandProbe:
         # points. Kept separate from the model's normalized-space smoothing
         # (``self._extractor``): it only de-jitters the skeleton drawn on the webcam
         # and never touches the landmarks fed to the model or logged for training.
+        # Its parameters come from ``ImageSmoothingConfig``, NOT from ``config`` —
+        # the two filters work in different coordinate spaces, and reusing the
+        # palm-space beta here made the cutoff barely open (≈170 ms of visible lag).
+        self._image_smoothing = image_smoothing
         self._image_smoother: OneEuroFilter | None = (
             OneEuroFilter(
-                min_cutoff=config.smoothing_min_cutoff,
-                beta=config.smoothing_beta,
-                d_cutoff=config.smoothing_d_cutoff,
+                min_cutoff=image_smoothing.min_cutoff,
+                beta=image_smoothing.beta,
+                d_cutoff=image_smoothing.d_cutoff,
             )
             if config.smooth_landmarks
             else None
