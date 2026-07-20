@@ -99,6 +99,29 @@ class ClipDataset(Dataset):  # type: ignore[type-arg]
         self._training_config = training_config
         self._augment = augment
         self._rng = np.random.default_rng(seed)
+        self._validate_labels()
+
+    def _validate_labels(self) -> None:
+        """캐시에 현재 라벨 집합 밖의 라벨이 있으면 즉시 실패한다.
+
+        캐시는 추출 시점의 **파생 라벨 문자열**을 담으므로, 라벨 매핑이나
+        `DEFAULT_GESTURE_LABELS`를 바꾸면 옛 라벨이 남아 있을 수 있다. 이를 학습
+        도중 `KeyError`로 터뜨리는 대신(원인·해결법을 알 수 없다) 데이터셋 생성
+        시점에 무엇이 어긋났고 어떻게 고치는지 함께 알린다.
+        """
+        unknown = {
+            label
+            for label in (load_clip(path).gesture_label for path in self._paths)
+            if label not in GESTURE_LABEL_TO_INDEX
+        }
+        if unknown:
+            raise ValueError(
+                f"캐시에 현재 라벨 집합 밖의 gesture_label이 있다: {sorted(unknown)}. "
+                f"현재 라벨: {sorted(GESTURE_LABEL_TO_INDEX)}. "
+                "라벨 매핑을 바꾼 뒤 캐시를 갱신하지 않은 상태다 — "
+                "`python -m training.relabel_cache`로 캐시 라벨을 현재 매핑에 맞춰라"
+                "(재추출 불필요: 랜드마크는 매핑과 무관하다)."
+            )
 
     def __len__(self) -> int:
         return len(self._paths)
