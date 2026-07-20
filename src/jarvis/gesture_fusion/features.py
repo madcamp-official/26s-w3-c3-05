@@ -32,8 +32,11 @@ import numpy.typing as npt
 from jarvis.gesture_fusion.config import (
     DEFAULT_GESTURE_CONFIG,
     HAND_LANDMARK_COUNT,
+    INDEX_FINGER_MCP,
     JOINT_ANGLE_TRIPLETS,
     LANDMARK_DIMS,
+    PINKY_MCP,
+    WRIST,
     GestureConfig,
 )
 from jarvis.gesture_fusion.landmarks import HandObservation
@@ -66,6 +69,19 @@ def compute_joint_angles(
         cos = float(np.dot(v1, v2) / (n1 * n2))
         angles[i] = math.acos(max(-1.0, min(1.0, cos)))
     return angles
+
+
+def compute_signed_palm_area(landmarks: FloatArray) -> float:
+    """손목·검지MCP·소지MCP 삼각형의 부호 있는 면적(2D 외적의 절반).
+
+    부호는 손바닥/손등 중 어느 쪽이 카메라를 향하는지에 따라 뒤집힌다 — 팔뚝축
+    회전의 방향을 2D 투영만으로 담는 관측량이다(GestureConfig.include_palm_orientation
+    참조). 랜드마크는 이미 손목 원점화·palm_scale 정규화된 좌표라 이 면적도 손
+    크기·화면 위치에 독립이다.
+    """
+    a = landmarks[INDEX_FINGER_MCP] - landmarks[WRIST]
+    b = landmarks[PINKY_MCP] - landmarks[WRIST]
+    return 0.5 * float(a[0] * b[1] - a[1] * b[0])
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +118,8 @@ def feature_dimension(config: GestureConfig = DEFAULT_GESTURE_CONFIG) -> int:
         dims += _POSITION_DIMS
     if config.include_wrist_translation:
         dims += 2 * _WRIST_DIMS  # 손목 평행이동 속도 + 가속도
+    if config.include_palm_orientation:
+        dims += 2  # 손바닥 부호 면적 + 그 변화율(회전 방향 신호)
     return dims
 
 
@@ -128,6 +146,9 @@ class HandFeatureExtractor:
             if config.velocity_smoothing_window > 1
             else None
         )
+        # 손바닥 부호 면적의 직전 값 — 회전 방향 신호의 causal 차분용
+        # (include_palm_orientation, 다른 차분 신호와 같은 dt·리셋 규칙을 따른다).
+        self._prev_palm_area: float | None = None
         # Wrist translation history — differenced with the SAME dt as the landmark
         # features so wrist velocity/acceleration share their timing and reset rules.
         self._prev_wrist_position: FloatArray | None = None
@@ -220,6 +241,7 @@ class HandFeatureExtractor:
         self._prev_timestamp_ms = None
         if self._velocity_history is not None:
             self._velocity_history.clear()
+        self._prev_palm_area = None
         self._prev_wrist_position = None
         self._prev_wrist_velocity = None
         self._last_landmarks = None
@@ -287,9 +309,22 @@ class HandFeatureExtractor:
             dt_s = dt_ms / 1000.0
             wrist_acceleration = (wrist_velocity - self._prev_wrist_velocity) / dt_s
 
-        vector = self._assemble(landmarks, velocity, wrist_velocity, wrist_acceleration)
+        # 손바닥 부호 면적과 그 causal 변화율(회전 방향 신호). 평활화된 landmarks에서
+        # 재므로 다른 feature와 같은 좌표를 본다. 변화율은 다른 차분과 같은 dt·리셋
+        # 규칙을 따른다 — 리셋 직후 첫 프레임의 변화율은 0.
+        palm_area = compute_signed_palm_area(landmarks)
+        if dt_ms is None or self._prev_palm_area is None:
+            palm_area_rate = 0.0
+        else:
+            palm_area_rate = (palm_area - self._prev_palm_area) / (dt_ms / 1000.0)
+        palm_orientation = np.array([palm_area, palm_area_rate], dtype=np.float64)
+
+        vector = self._assemble(
+            landmarks, velocity, wrist_velocity, wrist_acceleration, palm_orientation
+        )
 
         self._prev_landmarks = flat
+        self._prev_palm_area = palm_area
         self._prev_wrist_position = wrist_position
         self._prev_wrist_velocity = wrist_velocity
         self._prev_timestamp_ms = observation.timestamp_ms
@@ -322,6 +357,7 @@ class HandFeatureExtractor:
         velocity: FloatArray,
         wrist_velocity: FloatArray,
         wrist_acceleration: FloatArray,
+        palm_orientation: FloatArray,
     ) -> FloatArray:
         parts: list[FloatArray] = []
         if self._config.include_positions:
@@ -335,6 +371,10 @@ class HandFeatureExtractor:
         if self._config.include_wrist_translation:
             parts.append(wrist_velocity)
             parts.append(wrist_acceleration)
+        # 손바닥 방향 그룹도 항상 맨 뒤에 추가한다(부호 면적 → 변화율 순) — 같은 이유로
+        # 앞 그룹들의 오프셋을 보존한다.
+        if self._config.include_palm_orientation:
+            parts.append(palm_orientation)
         return np.concatenate(parts).astype(np.float64, copy=False)
 
     def _empty_features(self, observation: HandObservation) -> FrameFeatures:
