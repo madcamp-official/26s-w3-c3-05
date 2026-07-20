@@ -924,7 +924,9 @@ class MainWindow(QMainWindow):
                 names = ", ".join(item.name for item in nearby)
                 self._log.warn(f"등록 방향이 기존 기기와 가깝습니다: {names}")
             self._target_registry.upsert(record)
-            self._probe.register_profile(record.to_profile(), geometry_3d=record.to_geometry_3d())
+            self._probe.register_profile(
+                record.to_profile(), geometry_3d=record.to_geometry_3d(), label=record.name
+            )
             self._log.info(
                 f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames) "
                 f"— {self._describe_triangulation_outcome(record)}"
@@ -969,7 +971,10 @@ class MainWindow(QMainWindow):
             return
         name, ok = QInputDialog.getText(self, "이름 변경", "표시 이름", text=record.name)
         if ok and name.strip():
-            self._target_registry.rename(record.target_id, name.strip())
+            updated = self._target_registry.rename(record.target_id, name.strip())
+            self._probe.register_profile(
+                updated.to_profile(), geometry_3d=updated.to_geometry_3d(), label=updated.name
+            )
             self._refresh_targets()
 
     def _delete_selected_target(self) -> None:

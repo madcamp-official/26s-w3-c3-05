@@ -103,6 +103,31 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
 
     state = str(snapshot.lock_state)
     ray_color = _LOCK_BGR.get(state, grey)
+    looking_unknown = snapshot.target == "UNKNOWN"
+    looking_color = (90, 90, 240) if looking_unknown else ray_color
+    looking_text = f"LOOKING AT: {snapshot.target_label}"
+    (text_w, text_h), _ = cv2.getTextSize(looking_text, _FONT, 0.9, 2)
+    box_x = max(8, (w - text_w) // 2 - 14)
+    box_y = 44
+    overlay = frame.copy()
+    cv2.rectangle(
+        overlay,
+        (box_x, box_y),
+        (min(w - 8, box_x + text_w + 28), box_y + text_h + 22),
+        (0, 0, 0),
+        thickness=-1,
+    )
+    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
+    cv2.putText(
+        frame,
+        looking_text,
+        (box_x + 14, box_y + text_h + 9),
+        _FONT,
+        0.9,
+        looking_color,
+        2,
+        cv2.LINE_AA,
+    )
 
     # Gaze ray: use the same smoothed direction that the classifier consumes.
     left_eye = snapshot.left_eye_center_normalized
@@ -124,7 +149,7 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
     stability = snapshot.smoothed_stability
     lines: list[tuple[str, tuple[int, int, int]]] = [
         (f"LOCK  {state}", ray_color),
-        (f"TARGET  {snapshot.target}  {snapshot.probability:.0%}", white),
+        (f"TARGET  {snapshot.target_label}  {snapshot.probability:.0%}", white),
         (
             f"yaw {snapshot.head_yaw_deg:+5.0f}  pitch {snapshot.head_pitch_deg:+5.0f}"
             f"  roll {snapshot.head_roll_deg:+5.0f}",

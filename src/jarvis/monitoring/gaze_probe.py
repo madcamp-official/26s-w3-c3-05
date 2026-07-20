@@ -93,6 +93,7 @@ class GazeSnapshot:
 
     # 2d — target classification
     target: str
+    target_label: str
     probability: float
     second_best_probability: float
     margin: float
@@ -193,6 +194,7 @@ def evaluate(
     lock: GazeLockStateMachine,
     config: GazeConfig,
     inference_ms: float = 0.0,
+    target_labels: dict[str, str] | None = None,
 ) -> GazeSnapshot:
     """Run one observation through the full pipeline, capturing every stage.
 
@@ -258,6 +260,11 @@ def evaluate(
         )
 
     details = _device_details(classify_direction, classify_origin, classifier, config, result.target)
+    target_label = (
+        config.UNKNOWN_TARGET
+        if result.target == config.UNKNOWN_TARGET
+        else (target_labels or {}).get(result.target, result.target)
+    )
 
     return GazeSnapshot(
         timestamp_ms=observation.timestamp_ms,
@@ -282,6 +289,7 @@ def evaluate(
         buffer_fill=len(smoother._buffer),  # noqa: SLF001 - diagnostic read of buffer depth
         buffer_capacity=config.smoothing_window_frames,
         target=result.target,
+        target_label=target_label,
         probability=result.probability,
         second_best_probability=result.second_best_probability,
         margin=result.probability - result.second_best_probability,
@@ -318,6 +326,7 @@ class GazeProbe:
         self._adapter: object | None = None
         self._available = False
         self._status_text = "gaze 프로브 미시작"
+        self._target_labels: dict[str, str] = {}
         self._profile_count = self._load_profiles(profiles_path)
 
     def _load_profiles(self, profiles_path: Path | None) -> int:
@@ -337,6 +346,7 @@ class GazeProbe:
         count = 0
         for record in registry.records:
             self._classifier.register_profile(record.to_profile(), geometry_3d=record.to_geometry_3d())
+            self._target_labels[record.target_id] = record.name
             count += 1
         return count
 
@@ -353,11 +363,16 @@ class GazeProbe:
         return self._profile_count
 
     def register_profile(
-        self, profile: DeviceGazeProfile, geometry_3d: TargetGeometry3D | None = None
+        self,
+        profile: DeviceGazeProfile,
+        geometry_3d: TargetGeometry3D | None = None,
+        label: str | None = None,
     ) -> None:
         """Add or replace one target profile in the live classifier."""
         existed = profile.device_id in self._classifier.profiles
         self._classifier.register_profile(profile, geometry_3d=geometry_3d)
+        if label is not None:
+            self._target_labels[profile.device_id] = label
         if not existed:
             self._profile_count += 1
 
@@ -365,6 +380,7 @@ class GazeProbe:
         """Remove one target profile from the live classifier."""
         existed = device_id in self._classifier.profiles
         self._classifier.unregister_profile(device_id)
+        self._target_labels.pop(device_id, None)
         if existed:
             self._profile_count = max(0, self._profile_count - 1)
 
@@ -420,6 +436,7 @@ class GazeProbe:
             lock=self._lock,
             config=self._config,
             inference_ms=(time.monotonic() - started) * 1000.0,
+            target_labels=self._target_labels,
         )
         return snapshot
 

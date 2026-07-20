@@ -113,6 +113,29 @@ def test_aligned_device_is_selected_with_small_angle() -> None:
     assert detail.angular_distance_deg < 1.0
 
 
+def test_target_label_uses_registered_display_name() -> None:
+    smoother, classifier, lock, config = _fresh()
+    classifier.register_profile(
+        DeviceGazeProfile(
+            device_id="target_001",
+            mean_direction=np.array([0.0, 0.0, 1.0]),
+            variance=0.05,
+        )
+    )
+
+    snapshot = evaluate(
+        _observation(),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+        target_labels={"target_001": "스피커"},
+    )
+
+    assert snapshot.target == "target_001"
+    assert snapshot.target_label == "스피커"
+
+
 def test_lock_reaches_target_locked_after_dwell() -> None:
     smoother, classifier, lock, config = _fresh()
     classifier.register_profile(
