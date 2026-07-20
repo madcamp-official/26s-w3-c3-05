@@ -104,6 +104,18 @@ def save_clip(path: Path, clip: CachedClip) -> None:
     tmp_path.replace(path)
 
 
+def load_gesture_label(path: Path) -> str:
+    """캐시된 클립의 `gesture_label`만 읽는다(다른 배열은 디코딩하지 않음).
+
+    `np.load`가 반환하는 `NpzFile`은 lazy하다 — 멤버별로 개별 압축돼 있어 접근한
+    키만 그때 압축 해제된다. `load_clip`은 매번 landmarks 등 무거운 배열까지 전부
+    읽으므로, 라벨 문자열만 필요한 호출(예: `ClipDataset`의 라벨 유효성 검사·클래스
+    분포 집계)에 그대로 쓰면 수만 개 클립에서 불필요하게 느려진다.
+    """
+    with np.load(path, allow_pickle=False) as data:
+        return str(data["gesture_label"])
+
+
 def load_clip(path: Path) -> CachedClip:
     """`save_clip`이 저장한 `.npz`를 읽는다."""
     with np.load(path, allow_pickle=False) as data:

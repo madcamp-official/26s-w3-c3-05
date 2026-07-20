@@ -28,7 +28,7 @@ from jarvis.gesture_fusion.landmarks import HandObservation
 from jarvis.gesture_fusion.model_protocol import DEFAULT_GESTURE_LABELS, PHASE_LABELS
 from training.augment import flip_landmarks, time_warp
 from training.config import DEFAULT_TRAINING_CONFIG, TrainingConfig
-from training.data.clip_cache import CachedClip, load_clip
+from training.data.clip_cache import CachedClip, load_clip, load_gesture_label
 
 from training.phase_labels import label_phases
 
@@ -115,7 +115,7 @@ class ClipDataset(Dataset):  # type: ignore[type-arg]
         """
         unknown = {
             label
-            for label in (load_clip(path).gesture_label for path in self._paths)
+            for label in (load_gesture_label(path) for path in self._paths)
             if label not in GESTURE_LABEL_TO_INDEX
         }
         if unknown:
@@ -132,7 +132,7 @@ class ClipDataset(Dataset):  # type: ignore[type-arg]
 
     def gesture_labels(self) -> list[str]:
         """전체 클립의 라벨만 모은다(feature 조립·augmentation 없이) — 클래스 가중치 계산용."""
-        return [load_clip(path).gesture_label for path in self._paths]
+        return [load_gesture_label(path) for path in self._paths]
 
     def __getitem__(self, index: int) -> tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
         clip = load_clip(self._paths[index])
