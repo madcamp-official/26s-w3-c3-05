@@ -195,6 +195,7 @@ class TargetClassifier:
         device_ids = list(self._profiles.keys())
         scores = np.empty(len(device_ids), dtype=np.float64)
         angular_distances = np.empty(len(device_ids), dtype=np.float64)
+        variances = np.empty(len(device_ids), dtype=np.float64)
         for i, device_id in enumerate(device_ids):
             profile = self._profiles[device_id]
             geometry = (
@@ -207,6 +208,7 @@ class TargetClassifier:
             )
             angular_distances[i] = angular_distance
             variance = max(variance, _MINIMUM_VARIANCE)
+            variances[i] = variance
             scores[i] = math.exp(-(angular_distance**2) / (2.0 * variance))
 
         score_sum = float(scores.sum())
@@ -223,11 +225,13 @@ class TargetClassifier:
         second_best_probability = float(probabilities[order[1]]) if len(order) > 1 else 0.0
         best_device_id = device_ids[order[0]]
 
-        best_angle_deg = math.degrees(float(angular_distances[order[0]]))
+        best_angle = float(angular_distances[order[0]])
+        best_angle_deg = math.degrees(best_angle)
+        best_variance = float(variances[order[0]])
+        best_normalized_distance = best_angle / math.sqrt(best_variance)
         if (
-            best_probability < self._config.unknown_probability_threshold
+            best_normalized_distance > 1.0
             or best_angle_deg > self._config.unknown_max_angle_deg
-            or best_probability - second_best_probability < self._config.minimum_margin
         ):
             return ClassificationResult(
                 target=self._config.UNKNOWN_TARGET,

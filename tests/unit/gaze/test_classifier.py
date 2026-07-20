@@ -59,6 +59,38 @@ def test_rejects_as_unknown_below_probability_threshold() -> None:
     assert result.probability < config.unknown_probability_threshold
 
 
+def test_accepts_nearest_profile_when_inside_registered_range_despite_low_probability() -> None:
+    """Overlapping demo targets should still surface the closest in-range target.
+
+    Probability can be below 0.8 simply because another registered target is
+    nearby.  The more useful live rule is: if the nearest target is inside its
+    own registered radius, show that target and let diagnostics expose overlap.
+    """
+    config = GazeConfig(unknown_probability_threshold=0.8, minimum_margin=0.2)
+    classifier = TargetClassifier(config)
+    classifier.register_profile(
+        DeviceGazeProfile(
+            "left_speaker",
+            _unit([math.sin(math.radians(-16.0)), 0.0, math.cos(math.radians(-16.0))]),
+            variance=math.radians(20.0) ** 2,
+        )
+    )
+    classifier.register_profile(
+        DeviceGazeProfile(
+            "monitor",
+            _unit([math.sin(math.radians(2.8)), 0.0, math.cos(math.radians(2.8))]),
+            variance=math.radians(15.0) ** 2,
+        )
+    )
+
+    result = classifier.classify(
+        _unit([math.sin(math.radians(-21.8)), 0.0, math.cos(math.radians(-21.8))])
+    )
+
+    assert result.target == "left_speaker"
+    assert result.probability < config.unknown_probability_threshold
+
+
 def test_single_registered_device_rejects_gaze_far_from_profile() -> None:
     """기기가 하나여도 상대확률 1.0만으로 먼 시선을 선택하면 안 된다."""
     config = GazeConfig(unknown_probability_threshold=0.8, unknown_max_angle_deg=25.0)
@@ -171,10 +203,10 @@ def test_3d_geometry_corrects_for_head_movement_since_registration() -> None:
     runtime_origin = np.array([800.0, 0.0, 0.0])
     true_direction_to_bulb = _unit((bulb_position - runtime_origin).tolist())
 
-    # 각도 전용(=origin 없이 classify)이면 여전히 등록 시 고정 방향과 비교되어
-    # laptop을 잘못 고른다.
+    # 각도 전용(=origin 없이 classify)이면 등록된 어떤 target 반경에도 안정적으로
+    # 들어오지 않으므로 UNKNOWN으로 거부한다.
     stale_result = classifier.classify(true_direction_to_bulb)
-    assert stale_result.target == "laptop"
+    assert stale_result.target == config.UNKNOWN_TARGET
 
     # origin이 주어지면 bulb의 3D geometry로 매 프레임 새로 계산해 올바르게 고른다.
     corrected_result = classifier.classify(true_direction_to_bulb, origin=runtime_origin)
@@ -200,7 +232,7 @@ def test_3d_geometry_is_diagnostic_only_by_default() -> None:
 
     result = classifier.classify(true_direction_to_bulb, origin=runtime_origin)
 
-    assert result.target == "laptop"
+    assert result.target == config.UNKNOWN_TARGET
 
 
 def test_classify_without_origin_ignores_registered_geometry() -> None:
