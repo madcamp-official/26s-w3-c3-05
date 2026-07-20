@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -241,3 +243,32 @@ def test_unknown_tilt_renders_without_crashing() -> None:
         placeholder_frame(), _hand_snapshot(detected=True, tilt=None)
     )
     assert frame is not None
+
+
+def test_per_class_tilt_limit_overrides_global_gate() -> None:
+    """자세별 한계가 전역 한계를 이긴다.
+
+    two_fingers는 40°까지 허용되는데 전역 게이트는 20°다. 전역 게이트를 그대로
+    보여주면 실제로는 허용된 자세에 "손을 세우세요"가 떠 사용자가 혼란스러워진다
+    (실사용에서 발견: 스크롤 자세가 35°에서 거부로 표시됨).
+    """
+    from jarvis.gesture_fusion.pose_protocol import PosePrediction
+
+    trusted = PosePrediction(
+        label="two_fingers", confidence=0.98, trusted=True, palm_tilt_degrees=35.0
+    )
+    snapshot = dataclasses.replace(
+        _hand_snapshot(detected=True, tilt=35.0, tilted=True), pose=trusted
+    )
+    allowed = draw_hand_overlay(placeholder_frame(), snapshot)
+
+    rejected_pose = PosePrediction(
+        label="index_point", confidence=0.71, trusted=False,
+        reason="기울기 35° > index_point 허용 20°", palm_tilt_degrees=35.0,
+    )
+    rejected = draw_hand_overlay(
+        placeholder_frame(),
+        dataclasses.replace(_hand_snapshot(detected=True, tilt=35.0, tilted=True), pose=rejected_pose),
+    )
+    # 같은 기울기·같은 전역 게이트 상태인데 자세에 따라 화면이 달라져야 한다.
+    assert not np.array_equal(allowed, rejected)

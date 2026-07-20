@@ -179,16 +179,29 @@ def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot, *, mirror: bool = Fa
         (f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [{src_tag} 검출]", color),
         (f"palm scale  {snapshot.palm_scale:.3f}", (170, 170, 170)),
     ]
-    # 기울기 게이트 상태를 항상 드러낸다. 거부를 조용히 무시하면 사용자는 왜 반응이
-    # 없는지 알 수 없어 손을 세울 기회조차 얻지 못한다(development-principles.md).
-    if snapshot.palm_tilt_degrees is None:
+    # 게이트 상태를 항상 드러낸다. 거부를 조용히 무시하면 사용자는 왜 반응이 없는지
+    # 알 수 없어 자세를 고칠 기회조차 얻지 못한다(development-principles.md).
+    #
+    # **자세별 한계가 전역 한계보다 우선한다.** 기울기 내성은 자세마다 크게 달라
+    # (two_fingers 40° vs index_point 20°), 분류 결과를 아는 지금은 그쪽이 실제 결정권을
+    # 가진다. 전역 `palm_tilted`는 분류기가 없을 때만 쓰는 대비책이다 — 둘을 함께
+    # 보여주면 40°가 허용된 자세에 "손을 세우세요"가 뜨는 모순이 생긴다.
+    pose = snapshot.pose
+    tilt_text = "?" if snapshot.palm_tilt_degrees is None else f"{snapshot.palm_tilt_degrees:.0f}°"
+    if pose is not None and pose.label:
+        if pose.trusted:
+            lines.append((f"tilt {tilt_text}   {pose.label}  {pose.confidence:.0%}", (120, 200, 120)))
+        else:
+            lines.append((f"tilt {tilt_text}   거부 — {pose.reason}", (60, 90, 240)))
+    elif snapshot.palm_tilt_degrees is None:
         lines.append(("tilt  ?  (기울기 미상 — 게이트 없음)", (170, 170, 170)))
     elif snapshot.palm_tilted:
-        lines.append((f"tilt  {snapshot.palm_tilt_degrees:.0f}°  손을 세우세요 (판정 거부)", (60, 90, 240)))
+        lines.append((f"tilt {tilt_text}  손을 세우세요 (판정 거부)", (60, 90, 240)))
     else:
-        lines.append((f"tilt  {snapshot.palm_tilt_degrees:.0f}°", (120, 200, 120)))
+        lines.append((f"tilt {tilt_text}", (120, 200, 120)))
     _text_block(frame, lines, (8, 58))  # below the FPS HUD (top-left) so they do not overlap
-    if snapshot.palm_tilted:
+    rejected = pose.trusted is False if (pose is not None and pose.label) else snapshot.palm_tilted
+    if rejected:
         # 골격 자체를 붉게 감싸 주변시로도 거부 상태를 알아채게 한다.
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
