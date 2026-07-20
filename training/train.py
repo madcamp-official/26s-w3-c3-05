@@ -50,6 +50,37 @@ def _build_model(gesture_config: GestureConfig) -> tuple[CausalTCN, ModelConfig]
     return CausalTCN(model_config), model_config
 
 
+def _compute_input_stats(
+    dataset: ClipDataset, max_clips: int = 2000
+) -> tuple["torch.Tensor", "torch.Tensor"]:
+    """학습셋 표본에서 차원별 (평균, 표준편차)를 구한다 — `CausalTCN` 입력 표준화용.
+
+    feature 그룹 간 스케일이 수십 배 차이나(위치 RMS ~0.9 vs 손목 평행이동 ~30)
+    정규화 없이는 판별력이 큰 그룹이 큰 값에 묻힌다. 전량이 아니라 표본을 쓰는 이유는
+    통계가 표본 수천 클립이면 충분히 안정적이고, 매 학습마다 전체를 훑는 비용이
+    크기 때문이다(표본은 고정 stride라 실행마다 재현된다 — 난수 미사용).
+    """
+    count = min(len(dataset), max_clips)
+    stride = max(1, len(dataset) // count)
+    total = torch.zeros(0)
+    total_sq = torch.zeros(0)
+    n_frames = 0
+    for i in range(0, len(dataset), stride):
+        features, _, _ = dataset[i]
+        if total.numel() == 0:
+            total = torch.zeros(features.shape[1], dtype=torch.float64)
+            total_sq = torch.zeros(features.shape[1], dtype=torch.float64)
+        f64 = features.to(torch.float64)
+        total += f64.sum(dim=0)
+        total_sq += (f64**2).sum(dim=0)
+        n_frames += features.shape[0]
+    if n_frames == 0:
+        raise ValueError("cannot compute input stats from an empty dataset")
+    mean = total / n_frames
+    var = torch.clamp(total_sq / n_frames - mean**2, min=0.0)
+    return mean.to(torch.float32), torch.sqrt(var).to(torch.float32)
+
+
 def _run_epoch(
     net: CausalTCN,
     loss_fn: GesturePhaseLoss,
@@ -172,6 +203,14 @@ def train(
     train_dataset, val_dataset, dataset_id = _resolve_datasets(
         stage, training_config, gesture_config, train_persons, val_persons
     )
+
+    # 입력 표준화 통계는 **학습셋에서만** 구한다(검증셋 통계가 새면 평가가 낙관적으로
+    # 편향된다). augment=False인 복제본을 쓰지 않고 train_dataset을 그대로 표본하되,
+    # augmentation은 좌우반전·시간축 리샘플이라 차원별 스케일을 바꾸지 않으므로 통계에
+    # 미치는 영향이 작다. init_from(파인튜닝)일 때는 사전학습 통계를 그대로 이어쓴다.
+    if init_from is None:
+        mean, std = _compute_input_stats(train_dataset)
+        net.set_input_normalization(mean.to(device), std.to(device))
 
     class_weights = compute_class_weights(
         [GESTURE_LABEL_TO_INDEX[label] for label in train_dataset.gesture_labels()],
