@@ -18,7 +18,7 @@ from jarvis.runtime_protocol.adapters.windows import InputKey, InputSink, MouseB
 
 # 스크롤 이벤트는 매 프레임 나온다(30fps). 그대로 보내면 초당 30틱이라 너무 빠르므로
 # 이 간격으로 솎아낸다. 값이 커지면 스크롤이 느려지고, 작아지면 걷잡을 수 없어진다.
-SCROLL_INTERVAL_MS = 120
+SCROLL_INTERVAL_MS = 60
 SCROLL_TICKS = 1
 
 
@@ -51,14 +51,20 @@ class PoseControlBridge:
     def apply(self, events: list[PoseEvent]) -> None:
         """이벤트를 실행한다. 꺼져 있으면 기록만 남기고 아무것도 실행하지 않는다."""
         for event in events:
+            # 스크롤은 30fps 그대로면 감당이 안 돼 솎아낸다 — 실행·기록 **양쪽**에
+            # 적용해야 한다(예전엔 스로틀이 _describe에만 있어 실행 판단과 얽혔다).
+            if event.kind == "scroll":
+                if event.timestamp_ms - self._last_scroll_ms < SCROLL_INTERVAL_MS:
+                    continue
+                self._last_scroll_ms = event.timestamp_ms
+            if self.enabled and self.sink is not None:
+                self._execute(event)
             label = self._describe(event)
             if not label:
-                continue
+                continue  # move처럼 실행은 하되 UI 기록만 생략하는 경우
             self.last_action = label if self.enabled else f"{label} (실행 안 함)"
             self.history.append(self.last_action)
             del self.history[:-20]
-            if self.enabled and self.sink is not None:
-                self._execute(event)
 
     def release(self) -> None:
         """드래그 중 손을 놓치거나 제어를 끌 때 버튼이 눌린 채로 남지 않게 한다."""
@@ -70,9 +76,6 @@ class PoseControlBridge:
         if event.kind == "move":
             return ""  # 커서 이동은 매 프레임이라 기록/표시하지 않는다(로그가 뒤덮인다)
         if event.kind == "scroll":
-            if event.timestamp_ms - self._last_scroll_ms < SCROLL_INTERVAL_MS:
-                return ""  # 30fps 그대로 보내면 스크롤이 감당 안 된다
-            self._last_scroll_ms = event.timestamp_ms
             return f"스크롤 {'위' if event.value > 0 else '아래'}"
         return {
             "click": "클릭",

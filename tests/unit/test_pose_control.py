@@ -1,0 +1,94 @@
+"""자세 이벤트 → 실제 입력 브리지.
+
+핵심 회귀: move·scroll은 UI 기록에서 빠지지만 실행은 되어야 한다. 예전에 로그를
+줄이려고 _describe가 빈 문자열을 반환했고, apply가 그걸 보고 continue해 커서가 아예
+움직이지 않았다.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from jarvis.gesture_fusion.pose_state import PoseEvent
+from jarvis.monitoring.pose_control import SCROLL_INTERVAL_MS, PoseControlBridge
+from jarvis.runtime_protocol.adapters.windows import InputKey, MouseButton
+
+
+@dataclass
+class _FakeSink:
+    calls: list[tuple] = field(default_factory=list)
+
+    def move_cursor(self, dx: int, dy: int) -> None:
+        self.calls.append(("move", dx, dy))
+
+    def click(self, button: MouseButton) -> None:
+        self.calls.append(("click", button))
+
+    def press(self, button: MouseButton, *, down: bool) -> None:
+        self.calls.append(("press", button, down))
+
+    def scroll(self, ticks: int) -> None:
+        self.calls.append(("scroll", ticks))
+
+    def tap_key(self, key: InputKey) -> None:
+        self.calls.append(("key", key))
+
+
+def test_move_executes_even_though_it_is_not_logged() -> None:
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=True)
+    bridge.apply([PoseEvent("move", 0, delta=(12.0, -4.0))])
+    assert ("move", 12, -4) in sink.calls
+    assert bridge.history == []  # 로그는 남지 않는다
+
+
+def test_disabled_bridge_executes_nothing() -> None:
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=False)
+    bridge.apply([PoseEvent("click", 0), PoseEvent("move", 0, delta=(5.0, 5.0))])
+    assert sink.calls == []
+    assert "실행 안 함" in bridge.last_action  # 기록은 남아 관찰 가능
+
+
+def test_scroll_is_throttled_for_execution_not_just_logging() -> None:
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=True)
+    bridge.apply([PoseEvent("scroll", 1000, value=1.0)])
+    bridge.apply([PoseEvent("scroll", 1000 + SCROLL_INTERVAL_MS - 10, value=1.0)])  # 너무 이름
+    bridge.apply([PoseEvent("scroll", 1000 + SCROLL_INTERVAL_MS + 10, value=1.0)])
+    scrolls = [c for c in sink.calls if c[0] == "scroll"]
+    assert len(scrolls) == 2  # 가운데 것은 솎아진다
+
+
+def test_click_and_right_click() -> None:
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=True)
+    bridge.apply([PoseEvent("click", 0), PoseEvent("right_click", 0)])
+    assert ("click", MouseButton.LEFT) in sink.calls
+    assert ("click", MouseButton.RIGHT) in sink.calls
+
+
+def test_drag_press_and_release() -> None:
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=True)
+    bridge.apply([PoseEvent("drag_start", 0)])
+    bridge.apply([PoseEvent("drag_end", 0)])
+    assert ("press", MouseButton.LEFT, True) in sink.calls
+    assert ("press", MouseButton.LEFT, False) in sink.calls
+
+
+def test_release_lifts_held_drag_button() -> None:
+    """드래그 중 손을 놓치거나 제어를 끄면 버튼이 눌린 채 남으면 안 된다."""
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=True)
+    bridge.apply([PoseEvent("drag_start", 0)])
+    sink.calls.clear()
+    bridge.release()
+    assert ("press", MouseButton.LEFT, False) in sink.calls
+
+
+def test_media_toggle_sends_f11() -> None:
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=True)
+    bridge.apply([PoseEvent("media_toggle", 0)])
+    assert ("key", InputKey.SHOW_DESKTOP) in sink.calls
