@@ -48,12 +48,12 @@ def test_store_persists_snapshot_as_json(tmp_path: Path) -> None:
     sample = store.add(_snapshot())
 
     assert sample["gaze_direction"] == pytest.approx(
-        [0.1277105, 0.1493484, 0.9805322], abs=1e-3
+        [0.1372622, 0.1506876, 0.9790058], abs=1e-3
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload[0]["head_pose_deg"]["pitch"] == -4.0
     assert payload[0]["left_iris_relative"] == [0.1, -0.2]
-    assert payload[0]["gaze_yaw_pitch_deg"]["yaw"] == pytest.approx(7.4, abs=0.1)
+    assert payload[0]["gaze_yaw_pitch_deg"]["yaw"] == pytest.approx(8.0, abs=0.1)
     assert payload[0]["target_label"] == "UNKNOWN"
     assert payload[0]["nearest_target_range"] is None
 
@@ -75,8 +75,8 @@ def test_format_sample_shows_vector_head_and_target(tmp_path: Path) -> None:
     rendered = format_gaze_sample(store.add(_snapshot()))
 
     assert "#1 [1f]" in rendered
-    assert "gaze=(+0.128, +0.149, +0.981)" in rendered
-    assert "gaze_y/p=(+7.4, -8.6)" in rendered
+    assert "gaze=(+0.137, +0.151, +0.979)" in rendered
+    assert "gaze_y/p=(+8.0, -8.7)" in rendered
     assert "head=(+3.0, -4.0, +1.0)" in rendered
     assert "판단=응시대상 없음 P=0.00" in rendered
 
@@ -90,7 +90,7 @@ def test_window_averages_multiple_smoothed_frames(tmp_path: Path) -> None:
     assert sample["window_frame_count"] == 5
     assert sample["window_duration_ms"] == 132
     assert sample["gaze_direction"] == pytest.approx(
-        [0.1277105, 0.1493484, 0.9805322], abs=1e-3
+        [0.1372622, 0.1506876, 0.9790058], abs=1e-3
     )
 
 

@@ -46,7 +46,13 @@ class GazeConfig:
     """
 
     # Gaze vector composition (README 7장 "시선 방향 벡터 합성")
-    max_eye_offset_deg: float = 30.0
+    max_eye_offset_deg: float = 45.0
+
+    head_yaw_weight: float = 0.45
+    """How strongly head yaw contributes to gaze yaw before iris correction."""
+
+    head_pitch_weight: float = 0.45
+    """How strongly head pitch contributes to gaze pitch before iris correction."""
     """홍채 상대 위치(-1..1)를 각도로 환산할 때 사용하는 눈 최대 회전각."""
 
     # Smoothing (README 7장에 정의되지 않은 구현 세부값 — gaze.md에 기록)
@@ -150,6 +156,12 @@ class GazeConfig:
             raise ValueError("ema_min_alpha must not exceed ema_max_alpha")
         if not math.isfinite(self.max_eye_offset_deg) or self.max_eye_offset_deg <= 0.0:
             raise ValueError("max_eye_offset_deg must be finite and positive")
+        for name, value in {
+            "head_yaw_weight": self.head_yaw_weight,
+            "head_pitch_weight": self.head_pitch_weight,
+        }.items():
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
         if not math.isfinite(self.unknown_max_angle_deg) or not 0.0 < self.unknown_max_angle_deg <= 180.0:
             raise ValueError("unknown_max_angle_deg must be finite and within (0, 180]")
         if (
