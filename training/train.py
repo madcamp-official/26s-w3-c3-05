@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 try:
@@ -302,10 +302,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--train-persons", nargs="+", default=None, help="--stage finetune 전용")
     parser.add_argument("--val-persons", nargs="+", default=None, help="--stage finetune 전용")
     parser.add_argument("--epochs", type=int, default=None, help="드라이런용 epoch 수 상한")
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help=(
+            "DataLoader 워커 프로세스 수(기본 TrainingConfig.num_workers). GPU 학습에서는 "
+            "모델 자체가 가벼워 feature 조립(순수 numpy, CPU)이 병목이 되기 쉽다 — "
+            "GPU 사용률이 낮게 나오면 이 값을 코어 수에 맞춰 올린다."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    training_config = DEFAULT_TRAINING_CONFIG
+    if args.num_workers is not None:
+        training_config = replace(training_config, num_workers=args.num_workers)
 
     checkpoint_path = train(
         stage=args.stage,
+        training_config=training_config,
         init_from=args.init_from,
         train_persons=args.train_persons,
         val_persons=args.val_persons,

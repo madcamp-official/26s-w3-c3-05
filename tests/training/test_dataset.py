@@ -54,7 +54,7 @@ def _write_clip(path: Path, gesture_label: str, length: int = 12) -> None:
 
 def test_assemble_features_matches_feature_dimension() -> None:
     observations = [_observation(i, 1000 + i * 33) for i in range(10)]
-    clip = observations_to_cached_clip(observations, "swipe_down", "clip-a")
+    clip = observations_to_cached_clip(observations, "rotate_clockwise", "clip-a")
     features = assemble_features(clip)
     assert features.shape == (10, feature_dimension())
 
@@ -70,7 +70,7 @@ def test_gesture_and_phase_index_tables_cover_all_labels() -> None:
 
 
 def test_clip_dataset_len_and_getitem_shapes(tmp_path: Path) -> None:
-    _write_clip(tmp_path / "clip-001.npz", "swipe_down", length=15)
+    _write_clip(tmp_path / "clip-001.npz", "rotate_clockwise", length=15)
     _write_clip(tmp_path / "clip-002.npz", "none", length=10)
 
     dataset = ClipDataset(tmp_path, augment=False)
@@ -84,10 +84,10 @@ def test_clip_dataset_len_and_getitem_shapes(tmp_path: Path) -> None:
 
 
 def test_clip_dataset_gesture_labels_matches_files(tmp_path: Path) -> None:
-    _write_clip(tmp_path / "clip-a.npz", "swipe_up", length=8)
-    _write_clip(tmp_path / "clip-b.npz", "swipe_down", length=8)
+    _write_clip(tmp_path / "clip-a.npz", "slide_two_fingers_up", length=8)
+    _write_clip(tmp_path / "clip-b.npz", "rotate_clockwise", length=8)
     dataset = ClipDataset(tmp_path, augment=False)
-    assert sorted(dataset.gesture_labels()) == ["swipe_down", "swipe_up"]
+    assert sorted(dataset.gesture_labels()) == ["rotate_clockwise", "slide_two_fingers_up"]
 
 
 def test_clip_dataset_accepts_multiple_roots(tmp_path: Path) -> None:
@@ -95,8 +95,8 @@ def test_clip_dataset_accepts_multiple_roots(tmp_path: Path) -> None:
     root_b = tmp_path / "person_b"
     root_a.mkdir()
     root_b.mkdir()
-    _write_clip(root_a / "clip-1.npz", "swipe_up")
-    _write_clip(root_b / "clip-2.npz", "swipe_down")
+    _write_clip(root_a / "clip-1.npz", "slide_two_fingers_up")
+    _write_clip(root_b / "clip-2.npz", "rotate_clockwise")
 
     dataset = ClipDataset([root_a, root_b], augment=False)
     assert len(dataset) == 2
@@ -113,7 +113,7 @@ def test_getitem_masks_missing_frames_with_ignore_index(tmp_path: Path) -> None:
     "신호 없음"을 제스처로 학습시키게 되므로 패딩과 같은 방식(IGNORE_INDEX)으로
     제외해야 한다."""
     observations = [_observation(i, 1000 + i * 33) for i in range(10)]
-    clip = observations_to_cached_clip(observations, "swipe_down", "clip-missing")
+    clip = observations_to_cached_clip(observations, "rotate_clockwise", "clip-missing")
     hand_detected = clip.hand_detected.copy()
     hand_detected[3:6] = False
     clip = replace(clip, hand_detected=hand_detected)

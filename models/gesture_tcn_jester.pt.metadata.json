@@ -1,0 +1,6 @@
+{
+  "version": "pretrain-epoch18",
+  "trained": true,
+  "training_data_source": "jester-v1 (공식 train/validation split)",
+  "evaluation_notes": "val macro-F1=0.6365, dataset_id='jester-v1 (공식 train/validation split)', epoch=18, feature_dim=102 (development-principles.md 1.4: dataset·조건·측정 시점 기록)"
+}
