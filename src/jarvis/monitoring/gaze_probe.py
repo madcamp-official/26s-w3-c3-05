@@ -310,6 +310,7 @@ def _feature_details(
 def _area_details(
     sample: TargetFeatureSample | None,
     classifier: TargetClassifier,
+    config: GazeConfig,
     selected_target: str,
 ) -> tuple[AreaProfileDetail, ...]:
     if sample is None:
@@ -317,7 +318,11 @@ def _area_details(
     details = [
         AreaProfileDetail(
             device_id=device_id,
-            normalized_distance=profile.normalized_distance(sample.gaze_yaw, sample.gaze_pitch),
+            normalized_distance=profile.normalized_distance(
+                sample.gaze_yaw,
+                sample.gaze_pitch,
+                config.registration_max_area_radius_deg,
+            ),
             is_selected=device_id == selected_target,
         )
         for device_id, profile in classifier.area_profiles.items()
@@ -504,7 +509,7 @@ def evaluate(
 
     details = _device_details(classify_direction, classify_origin, classifier, config, result.target)
     profile_details = _feature_details(feature_sample, classifier, result.target)
-    area_details = _area_details(feature_sample, classifier, result.target)
+    area_details = _area_details(feature_sample, classifier, config, result.target)
     target_label = (
         config.UNKNOWN_TARGET
         if result.target == config.UNKNOWN_TARGET

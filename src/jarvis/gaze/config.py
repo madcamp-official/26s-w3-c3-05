@@ -161,6 +161,9 @@ class GazeConfig:
     한다.
     """
 
+    registration_max_area_radius_deg: float = 6.0
+    """Runtime/storage cap for edge-loop target area radii."""
+
     def __post_init__(self) -> None:
         if self.dwell_time_ms < 0 or self.target_lock_ttl_ms <= 0:
             raise ValueError("Gaze timing thresholds must be non-negative and TTL must be positive")
@@ -236,6 +239,17 @@ class GazeConfig:
         ):
             raise ValueError(
                 "registration spread bounds must be finite and satisfy 0 < min <= max <= 90"
+            )
+        if (
+            not math.isfinite(self.registration_max_area_radius_deg)
+            or not (
+                self.registration_min_spread_deg
+                <= self.registration_max_area_radius_deg
+                <= self.registration_max_spread_deg
+            )
+        ):
+            raise ValueError(
+                "registration_max_area_radius_deg must satisfy min_spread <= area <= max_spread"
             )
 
 

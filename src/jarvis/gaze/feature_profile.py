@@ -146,20 +146,33 @@ class TargetAreaProfile:
         if self.sample_count <= 0:
             raise ValueError("target area profile sample_count must be positive")
 
-    def normalized_distance(self, gaze_yaw: float, gaze_pitch: float) -> float:
+    def normalized_distance(
+        self, gaze_yaw: float, gaze_pitch: float, max_radius_deg: float | None = None
+    ) -> float:
+        radius_yaw = (
+            min(self.radius_yaw, max_radius_deg)
+            if max_radius_deg is not None
+            else self.radius_yaw
+        )
+        radius_pitch = (
+            min(self.radius_pitch, max_radius_deg) if max_radius_deg is not None else self.radius_pitch
+        )
         return math.hypot(
-            (gaze_yaw - self.center_yaw) / self.radius_yaw,
-            (gaze_pitch - self.center_pitch) / self.radius_pitch,
+            (gaze_yaw - self.center_yaw) / radius_yaw,
+            (gaze_pitch - self.center_pitch) / radius_pitch,
         )
 
-    def contains(self, gaze_yaw: float, gaze_pitch: float) -> bool:
-        return self.normalized_distance(gaze_yaw, gaze_pitch) <= 1.0
+    def contains(
+        self, gaze_yaw: float, gaze_pitch: float, max_radius_deg: float | None = None
+    ) -> bool:
+        return self.normalized_distance(gaze_yaw, gaze_pitch, max_radius_deg) <= 1.0
 
 
 def build_area_profile(
     yaw_pitch_samples: list[tuple[float, float]],
     *,
     minimum_radius_deg: float = 3.0,
+    maximum_radius_deg: float | None = None,
     padding_scale: float = 1.0,
 ) -> TargetAreaProfile:
     if not yaw_pitch_samples:
@@ -171,6 +184,8 @@ def build_area_profile(
     deviations = np.abs(matrix - center)
     radius = np.percentile(deviations, 95, axis=0) * padding_scale
     radius = np.maximum(radius, minimum_radius_deg)
+    if maximum_radius_deg is not None:
+        radius = np.minimum(radius, maximum_radius_deg)
     return TargetAreaProfile(
         center_yaw=float(center[0]),
         center_pitch=float(center[1]),

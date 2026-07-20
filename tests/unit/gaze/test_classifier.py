@@ -101,10 +101,31 @@ def test_area_profile_accepts_gaze_inside_registered_object_boundary() -> None:
 
     result = classifier.classify(
         _unit([0.0, 0.0, 1.0]),
-        feature_sample=TargetFeatureSample(7.0, 5.0, 40.0, 30.0, 0.0, 0.2),
+        feature_sample=TargetFeatureSample(5.0, 5.0, 40.0, 30.0, 0.0, 0.2),
     )
 
     assert result.target == "monitor"
+
+
+def test_area_profile_runtime_cap_rejects_overwide_registered_area() -> None:
+    classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
+    classifier.register_profile(
+        DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        area_profile=TargetAreaProfile(
+            center_yaw=0.0,
+            center_pitch=0.0,
+            radius_yaw=20.0,
+            radius_pitch=20.0,
+            sample_count=80,
+        ),
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(8.0, 0.0, 0.0, 0.0, 0.0, 0.1),
+    )
+
+    assert result.target == GazeConfig().UNKNOWN_TARGET
 
 
 def test_built_feature_profile_tolerates_head_pose_when_gaze_matches() -> None:

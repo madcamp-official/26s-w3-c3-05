@@ -140,6 +140,7 @@ class TargetRegistrationSession:
         area_profile = build_area_profile(
             self._samples,
             minimum_radius_deg=self.config.registration_min_spread_deg,
+            maximum_radius_deg=self.config.registration_max_area_radius_deg,
         )
         return TargetRecord(
             target_id=self.target_id,

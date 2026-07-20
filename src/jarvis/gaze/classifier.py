@@ -404,9 +404,20 @@ class TargetClassifier:
         if not self._area_profiles:
             return None
         candidates = [
-            (profile.normalized_distance(feature_sample.gaze_yaw, feature_sample.gaze_pitch), device_id)
+            (
+                profile.normalized_distance(
+                    feature_sample.gaze_yaw,
+                    feature_sample.gaze_pitch,
+                    self._config.registration_max_area_radius_deg,
+                ),
+                device_id,
+            )
             for device_id, profile in self._area_profiles.items()
-            if profile.contains(feature_sample.gaze_yaw, feature_sample.gaze_pitch)
+            if profile.contains(
+                feature_sample.gaze_yaw,
+                feature_sample.gaze_pitch,
+                self._config.registration_max_area_radius_deg,
+            )
         ]
         if not candidates:
             return None

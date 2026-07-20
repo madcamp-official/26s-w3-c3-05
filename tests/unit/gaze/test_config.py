@@ -17,6 +17,8 @@ from jarvis.gaze.config import GazeConfig
         {"unknown_max_angle_deg": 181.0},
         {"iris_jump_threshold": 0.0},
         {"max_valid_eye_offset": -0.1},
+        {"registration_max_area_radius_deg": 3.0},
+        {"registration_max_area_radius_deg": 20.0},
     ],
 )
 def test_invalid_config_is_rejected(overrides: dict[str, object]) -> None:
