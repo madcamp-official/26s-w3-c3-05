@@ -39,6 +39,7 @@ from jarvis.gaze.classifier import (
 )
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
+from jarvis.gaze.feature_profile import TargetFeatureProfile, TargetFeatureSample
 from jarvis.gaze.features import FaceObservation, Vector3, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
 from jarvis.gaze.smoothing import GazeSmoother
@@ -72,6 +73,19 @@ class DeviceGazeDetail:
 
 
 @dataclass(frozen=True, slots=True)
+class FeatureProfileDetail:
+    device_id: str
+    distance: float
+    threshold: float
+    normalized_distance: float
+    is_selected: bool
+
+    @property
+    def range_status(self) -> str:
+        return "IN" if self.normalized_distance <= 1.0 else "OUT"
+
+
+@dataclass(frozen=True, slots=True)
 class GazeSnapshot:
     """Everything the Gaze pipeline produced for one frame, for display.
 
@@ -91,6 +105,7 @@ class GazeSnapshot:
     right_iris_relative: tuple[float, float]
     left_eye_center_normalized: tuple[float, float] | None
     right_eye_center_normalized: tuple[float, float] | None
+    face_scale: float | None
     tracking_confidence: float
     eyes_open: bool
 
@@ -117,6 +132,8 @@ class GazeSnapshot:
     margin: float
     reject_reason: str | None
     device_details: tuple[DeviceGazeDetail, ...]
+    feature_sample: TargetFeatureSample | None
+    feature_details: tuple[FeatureProfileDetail, ...]
 
     # 2e — gaze lock state machine
     lock_state: GazeLockState
@@ -179,6 +196,59 @@ def _is_confident(result: ClassificationResult, config: GazeConfig) -> bool:
         return False
     margin = result.probability - result.second_best_probability
     return result.probability >= config.minimum_probability and margin >= config.minimum_margin
+
+
+def _face_scale(observation: FaceObservation) -> float | None:
+    left_eye = observation.left_eye_center_normalized
+    right_eye = observation.right_eye_center_normalized
+    if left_eye is None or right_eye is None:
+        return None
+    scale = math.hypot(right_eye[0] - left_eye[0], right_eye[1] - left_eye[1])
+    return scale if math.isfinite(scale) and scale > 0.0 else None
+
+
+def _feature_sample(
+    observation: FaceObservation,
+    direction: tuple[float, float, float] | None,
+    face_scale: float | None,
+) -> TargetFeatureSample | None:
+    if direction is None or face_scale is None:
+        return None
+    gaze_yaw, gaze_pitch = direction_to_yaw_pitch(np.asarray(direction, dtype=np.float64))
+    try:
+        return TargetFeatureSample(
+            gaze_yaw=gaze_yaw,
+            gaze_pitch=gaze_pitch,
+            head_yaw=observation.head_yaw_deg,
+            head_pitch=observation.head_pitch_deg,
+            head_roll=observation.head_roll_deg,
+            face_scale=face_scale,
+        )
+    except ValueError:
+        return None
+
+
+def _feature_details(
+    sample: TargetFeatureSample | None,
+    classifier: TargetClassifier,
+    selected_target: str,
+) -> tuple[FeatureProfileDetail, ...]:
+    if sample is None:
+        return tuple()
+    details = []
+    for device_id, profile in classifier.feature_profiles.items():
+        distance = profile.mahalanobis_distance(sample)
+        normalized = distance / profile.threshold
+        details.append(
+            FeatureProfileDetail(
+                device_id=device_id,
+                distance=distance,
+                threshold=profile.threshold,
+                normalized_distance=normalized,
+                is_selected=device_id == selected_target,
+            )
+        )
+    return tuple(sorted(details, key=lambda item: item.normalized_distance))
 
 
 def _device_details(
@@ -304,6 +374,8 @@ def evaluate(
     smoothed_stability: float | None = None
     classify_direction: tuple[float, float, float] | None = None
     classify_origin: tuple[float, float, float] | None = None
+    current_face_scale = _face_scale(observation)
+    feature_sample: TargetFeatureSample | None = None
     if smoothed is None:
         result = ClassificationResult(
             target=config.UNKNOWN_TARGET, probability=0.0, second_best_probability=0.0
@@ -330,7 +402,13 @@ def evaluate(
                 float(smoothed.origin[1]),
                 float(smoothed.origin[2]),
             )
-        result = classifier.classify(smoothed.direction, origin=smoothed.origin)
+        feature_sample = _feature_sample(observation, classify_direction, current_face_scale)
+        result = classifier.classify(
+            smoothed.direction,
+            origin=smoothed.origin,
+            current_face_scale=current_face_scale,
+            feature_sample=feature_sample,
+        )
         lock.update(smoothed.timestamp_ms, result)
         estimate = TargetEstimate(
             timestamp_ms=smoothed.timestamp_ms,
@@ -342,6 +420,7 @@ def evaluate(
         )
 
     details = _device_details(classify_direction, classify_origin, classifier, config, result.target)
+    profile_details = _feature_details(feature_sample, classifier, result.target)
     target_label = (
         config.UNKNOWN_TARGET
         if result.target == config.UNKNOWN_TARGET
@@ -359,6 +438,7 @@ def evaluate(
         right_iris_relative=observation.right_iris_relative,
         left_eye_center_normalized=observation.left_eye_center_normalized,
         right_eye_center_normalized=observation.right_eye_center_normalized,
+        face_scale=current_face_scale,
         tracking_confidence=min(
             observation.eye_tracking_confidence, observation.face_tracking_confidence
         ),
@@ -381,6 +461,8 @@ def evaluate(
         margin=result.probability - result.second_best_probability,
         reject_reason=_reject_reason(result, details, config),
         device_details=details,
+        feature_sample=feature_sample,
+        feature_details=profile_details,
         lock_state=lock.state,
         locked_device=lock.locked_device,
         is_confident=_is_confident(result, config),
@@ -433,7 +515,11 @@ class GazeProbe:
         registry = TargetRegistry(profiles_path)
         count = 0
         for record in registry.records:
-            self._classifier.register_profile(record.to_profile(), geometry_3d=record.to_geometry_3d())
+            self._classifier.register_profile(
+                record.to_profile(),
+                geometry_3d=record.to_geometry_3d(),
+                feature_profile=record.feature_profile,
+            )
             self._target_labels[record.target_id] = record.name
             count += 1
         return count
@@ -457,11 +543,14 @@ class GazeProbe:
         self,
         profile: DeviceGazeProfile,
         geometry_3d: TargetGeometry3D | None = None,
+        feature_profile: TargetFeatureProfile | None = None,
         label: str | None = None,
     ) -> None:
         """Add or replace one target profile in the live classifier."""
         existed = profile.device_id in self._classifier.profiles
-        self._classifier.register_profile(profile, geometry_3d=geometry_3d)
+        self._classifier.register_profile(
+            profile, geometry_3d=geometry_3d, feature_profile=feature_profile
+        )
         if label is not None:
             self._target_labels[profile.device_id] = label
         if not existed:

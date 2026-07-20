@@ -14,6 +14,7 @@ from jarvis.gaze.classifier import (
     effective_distance_and_variance,
 )
 from jarvis.gaze.config import GazeConfig
+from jarvis.gaze.feature_profile import TargetFeatureProfile, TargetFeatureSample
 
 
 def _unit(vector: list[float]) -> np.ndarray:
@@ -27,6 +28,56 @@ def test_unknown_when_no_devices_registered() -> None:
     assert result.target == GazeConfig().UNKNOWN_TARGET
     assert result.probability == 0.0
     assert result.second_best_probability == 0.0
+
+
+def _feature_profile(gaze_yaw: float, head_yaw: float) -> TargetFeatureProfile:
+    return TargetFeatureProfile(
+        mean=(gaze_yaw, 5.0, head_yaw, 10.0, 0.0, 0.10),
+        covariance=(
+            (4.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            (0.0, 4.0, 0.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0, 9.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 9.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0, 9.0, 0.0),
+            (0.0, 0.0, 0.0, 0.0, 0.0, 0.01),
+        ),
+        sample_count=20,
+        threshold=2.5,
+    )
+
+
+def test_feature_profile_selects_nearest_distribution() -> None:
+    classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
+    classifier.register_profile(
+        DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.05),
+        feature_profile=_feature_profile(0.0, 0.0),
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("speaker", _unit([0.3, 0.0, 0.95]), variance=0.05),
+        feature_profile=_feature_profile(-20.0, -20.0),
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(0.5, 5.0, 1.0, 10.0, 0.0, 0.10),
+    )
+
+    assert result.target == "monitor"
+
+
+def test_feature_profile_rejects_far_distribution() -> None:
+    classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
+    classifier.register_profile(
+        DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.05),
+        feature_profile=_feature_profile(0.0, 0.0),
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(30.0, 40.0, 50.0, 60.0, 20.0, 0.30),
+    )
+
+    assert result.target == GazeConfig().UNKNOWN_TARGET
 
 
 def test_selects_closest_device_by_cosine_similarity() -> None:

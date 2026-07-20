@@ -12,6 +12,7 @@ import numpy as np
 from jarvis.calibration.profiles import profile_from_dict
 from jarvis.gaze.classifier import DeviceGazeProfile, TargetGeometry3D
 from jarvis.gaze.direction import direction_to_yaw_pitch, yaw_pitch_to_direction
+from jarvis.gaze.feature_profile import FEATURE_DIMENSION, TargetFeatureProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +61,8 @@ class TargetRecord:
     spread: TargetSpread
     device_id: str
     position_3d: TargetGeometry3DRecord | None = None
+    reference_face_scale: float | None = None
+    feature_profile: TargetFeatureProfile | None = None
     """10초 등록 동안 모은 시선 광선의 삼각측량 결과(calibration/triangulation.py).
 
     품질 기준(baseline·각도 다양성·잔차)을 만족했을 때만 채워지며, 그렇지 않으면
@@ -75,6 +78,10 @@ class TargetRecord:
             raise ValueError("target direction and spread must be finite")
         if self.spread.yaw <= 0.0 or self.spread.pitch <= 0.0:
             raise ValueError("target spread must be positive")
+        if self.reference_face_scale is not None and (
+            not math.isfinite(self.reference_face_scale) or self.reference_face_scale <= 0.0
+        ):
+            raise ValueError("reference_face_scale must be finite and positive")
 
     def to_profile(self) -> DeviceGazeProfile:
         radius_deg = max(self.spread.yaw, self.spread.pitch)
@@ -82,6 +89,7 @@ class TargetRecord:
             device_id=self.target_id,
             mean_direction=yaw_pitch_to_direction(self.direction.yaw, self.direction.pitch),
             variance=math.radians(radius_deg) ** 2,
+            reference_face_scale=self.reference_face_scale,
         )
 
     def to_geometry_3d(self) -> TargetGeometry3D | None:
@@ -116,6 +124,8 @@ class TargetRegistry:
             spread=current.spread,
             device_id=current.device_id,
             position_3d=current.position_3d,
+            reference_face_scale=current.reference_face_scale,
+            feature_profile=current.feature_profile,
         )
         self.upsert(updated)
         return updated
@@ -160,6 +170,8 @@ class TargetRegistry:
                 spread=TargetSpread(float(spread["yaw"]), float(spread["pitch"])),
                 device_id=str(item["device_id"]),
                 position_3d=self._parse_position_3d(item.get("position_3d")),
+                reference_face_scale=self._parse_positive_float(item.get("reference_face_scale")),
+                feature_profile=self._parse_feature_profile(item.get("feature_profile")),
             )
             self._records[record.target_id] = record
 
@@ -177,6 +189,45 @@ class TargetRegistry:
             return TargetGeometry3DRecord(
                 center_mm=(float(center_mm[0]), float(center_mm[1]), float(center_mm[2])),
                 radius_mm=float(radius_mm),
+            )
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_positive_float(payload: object) -> float | None:
+        if not isinstance(payload, (int, float)):
+            return None
+        value = float(payload)
+        return value if math.isfinite(value) and value > 0.0 else None
+
+    @staticmethod
+    def _parse_feature_profile(payload: object) -> TargetFeatureProfile | None:
+        if not isinstance(payload, dict):
+            return None
+        mean = payload.get("mean")
+        covariance = payload.get("covariance")
+        sample_count = payload.get("sample_count")
+        threshold = payload.get("threshold")
+        if (
+            not isinstance(mean, list)
+            or len(mean) != FEATURE_DIMENSION
+            or not isinstance(covariance, list)
+            or len(covariance) != FEATURE_DIMENSION
+            or not isinstance(sample_count, int)
+            or not isinstance(threshold, (int, float))
+        ):
+            return None
+        try:
+            rows = []
+            for row in covariance:
+                if not isinstance(row, list) or len(row) != FEATURE_DIMENSION:
+                    return None
+                rows.append(tuple(float(value) for value in row))
+            return TargetFeatureProfile(
+                mean=tuple(float(value) for value in mean),
+                covariance=tuple(rows),
+                sample_count=sample_count,
+                threshold=float(threshold),
             )
         except (TypeError, ValueError):
             return None

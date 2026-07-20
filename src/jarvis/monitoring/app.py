@@ -246,21 +246,28 @@ class GazePanel(QScrollArea):
         self._reject.setText(f"UNKNOWN 사유: {s.reject_reason}" if s.reject_reason else "")
 
         self._devices.clear()
-        if not s.device_details:
-            self._devices.addItem("등록된 기기 프로파일 없음 — jarvis-gaze calibrate 필요")
-        for d in s.device_details:
-            if np.isnan(d.angular_distance_deg):
+        if s.feature_details:
+            self._devices.addItem("[feature profile / Mahalanobis]")
+            for feature_detail in s.feature_details:
+                mark = "selected" if feature_detail.is_selected else ""
+                self._devices.addItem(
+                    f"{feature_detail.device_id:<16} dist {feature_detail.distance:5.2f} / thr {feature_detail.threshold:4.2f}  "
+                    f"x{feature_detail.normalized_distance:4.2f} {feature_detail.range_status}  {mark}"
+                )
+            self._devices.addItem("[angle fallback]")
+        if not s.device_details and not s.feature_details:
+            self._devices.addItem("no registered target profile")
+        for device_detail in s.device_details:
+            if np.isnan(device_detail.angular_distance_deg):
                 angle = "err -- / radius --"
                 ratio = "x--"
             else:
-                angle = f"err {d.angular_distance_deg:5.1f}deg / radius {d.allowed_radius_deg:4.1f}deg"
-                ratio = f"x{d.normalized_distance:4.2f}"
-            mark = "selected" if d.is_selected else ""
+                angle = f"err {device_detail.angular_distance_deg:5.1f}deg / radius {device_detail.allowed_radius_deg:4.1f}deg"
+                ratio = f"x{device_detail.normalized_distance:4.2f}"
+            mark = "selected" if device_detail.is_selected else ""
             self._devices.addItem(
-                f"{d.device_id:<16} {angle}  {ratio} {d.range_status}  {mark}"
+                f"{device_detail.device_id:<16} {angle}  {ratio} {device_detail.range_status}  {mark}"
             )
-
-
         self._track_conf.set_value(s.tracking_confidence, color="#58a6ff")
         self._gaze_conf.set_value(s.gaze_confidence, color="#58a6ff")
         self._stability.set_value(s.smoothed_stability, color="#58a6ff")
@@ -270,13 +277,29 @@ class GazePanel(QScrollArea):
             if s.gaze_direction is not None
             else "추적 손실 (None)"
         )
+        feature = (
+            "  ".join(
+                (
+                    f"gy={s.feature_sample.gaze_yaw:+.1f}",
+                    f"gp={s.feature_sample.gaze_pitch:+.1f}",
+                    f"hy={s.feature_sample.head_yaw:+.1f}",
+                    f"hp={s.feature_sample.head_pitch:+.1f}",
+                    f"hr={s.feature_sample.head_roll:+.1f}",
+                    f"scale={s.feature_sample.face_scale:.3f}",
+                )
+            )
+            if s.feature_sample is not None
+            else "None"
+        )
         est = s.target_estimate
         self._numeric.setText(
             f"face_detected : {s.face_detected}\n"
             f"head (deg)    : yaw {s.head_yaw_deg:+7.2f}  pitch {s.head_pitch_deg:+7.2f}  "
             f"roll {s.head_roll_deg:+7.2f}\n"
             f"iris L / R    : {s.left_iris_relative}  /  {s.right_iris_relative}\n"
+            f"face_scale    : {s.face_scale if s.face_scale is not None else 'None'}\n"
             f"gaze vector   : {direction}\n"
+            f"feature       : {feature}\n"
             f"smoothing buf : {s.buffer_fill}/{s.buffer_capacity} frames\n"
             "── TargetEstimate (contract) ──────────────\n"
             f"target={est.target}  p={est.probability:.3f}  "
@@ -894,7 +917,11 @@ class MainWindow(QMainWindow):
             smoothed = self._smoothed_from_snapshot(snapshot)
             if (
                 self._registration.add(
-                    smoothed, snapshot.tracking_confidence, eyes_open=snapshot.eyes_open
+                    smoothed,
+                    snapshot.tracking_confidence,
+                    eyes_open=snapshot.eyes_open,
+                    face_scale=snapshot.face_scale,
+                    feature_sample=snapshot.feature_sample,
                 )
                 and smoothed is not None
             ):
@@ -1010,7 +1037,10 @@ class MainWindow(QMainWindow):
                 self._log.warn(f"등록 방향이 기존 기기와 가깝습니다: {names}")
             self._target_registry.upsert(record)
             self._probe.register_profile(
-                record.to_profile(), geometry_3d=record.to_geometry_3d(), label=record.name
+                record.to_profile(),
+                geometry_3d=record.to_geometry_3d(),
+                feature_profile=record.feature_profile,
+                label=record.name,
             )
             calibration_samples = [
                 GazeCalibrationSample(
@@ -1080,7 +1110,10 @@ class MainWindow(QMainWindow):
         if ok and name.strip():
             updated = self._target_registry.rename(record.target_id, name.strip())
             self._probe.register_profile(
-                updated.to_profile(), geometry_3d=updated.to_geometry_3d(), label=updated.name
+                updated.to_profile(),
+                geometry_3d=updated.to_geometry_3d(),
+                feature_profile=updated.feature_profile,
+                label=updated.name,
             )
             self._refresh_targets()
 
@@ -1100,9 +1133,21 @@ class MainWindow(QMainWindow):
     def _refresh_targets(self) -> None:
         self._target_list.clear()
         for record in self._target_registry.records:
+            scale_label = (
+                f" scale={record.reference_face_scale:.3f}"
+                if record.reference_face_scale is not None
+                else ""
+            )
+            feature_label = (
+                f" feature={record.feature_profile.sample_count}/thr{record.feature_profile.threshold:.2f}"
+                if record.feature_profile is not None
+                else " feature=none"
+            )
             self._target_list.addItem(
                 f"{record.name} [{record.target_id}]  "
                 f"yaw={record.direction.yaw:+.1f} pitch={record.direction.pitch:+.1f}"
+                f" spread={record.spread.yaw:.1f}/{record.spread.pitch:.1f}"
+                f"{scale_label}{feature_label}"
             )
 
     def _save_gaze_sample(self) -> None:

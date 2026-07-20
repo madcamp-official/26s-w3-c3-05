@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from jarvis.gaze.config import GazeConfig
+from jarvis.gaze.feature_profile import TargetFeatureProfile, TargetFeatureSample
 from jarvis.gaze.features import Vector3
 
 _MINIMUM_VARIANCE = 1e-6
@@ -34,6 +35,7 @@ class DeviceGazeProfile:
     device_id: str
     mean_direction: Vector3
     variance: float
+    reference_face_scale: float | None = None
 
     def __post_init__(self) -> None:
         if not self.device_id:
@@ -47,6 +49,10 @@ class DeviceGazeProfile:
             )
         if not math.isfinite(self.variance) or self.variance < 0:
             raise ValueError(f"DeviceGazeProfile.variance must be >= 0, got {self.variance}")
+        if self.reference_face_scale is not None and (
+            not math.isfinite(self.reference_face_scale) or self.reference_face_scale <= 0.0
+        ):
+            raise ValueError("reference_face_scale must be finite and positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +108,7 @@ def effective_distance_and_variance(
     profile: DeviceGazeProfile,
     geometry: TargetGeometry3D | None,
     config: GazeConfig,
+    current_face_scale: float | None = None,
 ) -> tuple[float, float]:
     """등록 물체 하나에 대한 (각도 거리, 분산)을 계산한다.
 
@@ -130,7 +137,17 @@ def effective_distance_and_variance(
 
     similarity = cosine_similarity(direction, profile.mean_direction)
     angular_distance = math.acos(similarity)
-    return angular_distance, profile.variance
+    variance = profile.variance
+    if (
+        profile.reference_face_scale is not None
+        and current_face_scale is not None
+        and math.isfinite(current_face_scale)
+        and current_face_scale > 0.0
+    ):
+        ratio = current_face_scale / profile.reference_face_scale
+        spread_scale = min(2.0, max(1.0, 1.0 + 1.5 * abs(math.log(ratio))))
+        variance *= spread_scale**2
+    return angular_distance, variance
 
 
 class TargetClassifier:
@@ -140,9 +157,13 @@ class TargetClassifier:
         self._config = config
         self._profiles: dict[str, DeviceGazeProfile] = {}
         self._geometries: dict[str, TargetGeometry3D] = {}
+        self._feature_profiles: dict[str, TargetFeatureProfile] = {}
 
     def register_profile(
-        self, profile: DeviceGazeProfile, geometry_3d: TargetGeometry3D | None = None
+        self,
+        profile: DeviceGazeProfile,
+        geometry_3d: TargetGeometry3D | None = None,
+        feature_profile: TargetFeatureProfile | None = None,
     ) -> None:
         """기기 gaze profile을 등록하거나 갱신한다.
 
@@ -155,10 +176,15 @@ class TargetClassifier:
             self._geometries[profile.device_id] = geometry_3d
         else:
             self._geometries.pop(profile.device_id, None)
+        if feature_profile is not None:
+            self._feature_profiles[profile.device_id] = feature_profile
+        else:
+            self._feature_profiles.pop(profile.device_id, None)
 
     def unregister_profile(self, device_id: str) -> None:
         self._profiles.pop(device_id, None)
         self._geometries.pop(device_id, None)
+        self._feature_profiles.pop(device_id, None)
 
     @property
     def profiles(self) -> dict[str, DeviceGazeProfile]:
@@ -174,7 +200,18 @@ class TargetClassifier:
         """
         return dict(self._geometries)
 
-    def classify(self, direction: Vector3, origin: Vector3 | None = None) -> ClassificationResult:
+    @property
+    def feature_profiles(self) -> dict[str, TargetFeatureProfile]:
+        return dict(self._feature_profiles)
+
+    def classify(
+        self,
+        direction: Vector3,
+        origin: Vector3 | None = None,
+        *,
+        current_face_scale: float | None = None,
+        feature_sample: TargetFeatureSample | None = None,
+    ) -> ClassificationResult:
         """합성된 시선 방향 단위 벡터로부터 대상 기기를 추정한다.
 
         `origin`이 주어지고 어떤 기기에 3D geometry가 등록되어 있으면 그 기기는
@@ -192,6 +229,9 @@ class TargetClassifier:
                 second_best_probability=0.0,
             )
 
+        if feature_sample is not None and self._feature_profiles:
+            return self._classify_by_feature_profile(feature_sample, direction, origin)
+
         device_ids = list(self._profiles.keys())
         scores = np.empty(len(device_ids), dtype=np.float64)
         angular_distances = np.empty(len(device_ids), dtype=np.float64)
@@ -205,7 +245,7 @@ class TargetClassifier:
                 else None
             )
             angular_distance, variance = effective_distance_and_variance(
-                direction, origin, profile, geometry, self._config
+                direction, origin, profile, geometry, self._config, current_face_scale
             )
             angular_distances[i] = angular_distance
             variance = max(variance, _MINIMUM_VARIANCE)
@@ -245,3 +285,88 @@ class TargetClassifier:
             probability=best_probability,
             second_best_probability=second_best_probability,
         )
+
+    def _classify_by_feature_profile(
+        self,
+        feature_sample: TargetFeatureSample,
+        direction: Vector3 | None = None,
+        origin: Vector3 | None = None,
+    ) -> ClassificationResult:
+        device_ids = list(self._feature_profiles.keys())
+        distances = np.asarray(
+            [
+                self._feature_profiles[device_id].mahalanobis_distance(feature_sample)
+                for device_id in device_ids
+            ],
+            dtype=np.float64,
+        )
+        thresholds = np.asarray(
+            [self._feature_profiles[device_id].threshold for device_id in device_ids],
+            dtype=np.float64,
+        )
+        normalized = distances / thresholds
+        scores = np.exp(-0.5 * normalized**2)
+        score_sum = float(scores.sum())
+        if score_sum <= 0.0 or not math.isfinite(score_sum):
+            return ClassificationResult(
+                target=self._config.UNKNOWN_TARGET,
+                probability=0.0,
+                second_best_probability=0.0,
+            )
+        probabilities = scores / score_sum
+        order = np.argsort(normalized)
+        best_index = int(order[0])
+        second_index = int(order[1]) if len(order) > 1 else None
+        if (
+            second_index is not None
+            and float(normalized[best_index]) <= 1.0
+            and float(normalized[second_index]) <= 1.0
+            and float(normalized[second_index] - normalized[best_index]) <= 0.15
+        ):
+            best_index = self._prefer_closer_3d_target(
+                device_ids,
+                int(best_index),
+                int(second_index),
+                direction,
+                origin,
+            )
+        best_probability = float(probabilities[best_index])
+        remaining = [i for i in order if int(i) != best_index]
+        second_best_probability = float(probabilities[int(remaining[0])]) if remaining else 0.0
+        if float(normalized[best_index]) > 1.0:
+            return ClassificationResult(
+                target=self._config.UNKNOWN_TARGET,
+                probability=best_probability,
+                second_best_probability=second_best_probability,
+            )
+        return ClassificationResult(
+            target=device_ids[best_index],
+            probability=best_probability,
+            second_best_probability=second_best_probability,
+        )
+
+    def _prefer_closer_3d_target(
+        self,
+        device_ids: list[str],
+        first_index: int,
+        second_index: int,
+        direction: Vector3 | None,
+        origin: Vector3 | None,
+    ) -> int:
+        if direction is None or origin is None:
+            return first_index
+        candidates = []
+        for index in (first_index, second_index):
+            geometry = self._geometries.get(device_ids[index])
+            if geometry is None:
+                continue
+            to_target = geometry.center_mm - origin
+            depth = float(np.linalg.norm(to_target))
+            if depth <= _MINIMUM_DEPTH_MM:
+                continue
+            target_direction = to_target / depth
+            candidates.append((math.acos(cosine_similarity(direction, target_direction)), index))
+        if len(candidates) < 2:
+            return first_index
+        candidates.sort(key=lambda item: item[0])
+        return int(candidates[0][1])

@@ -139,6 +139,12 @@ class GazeConfig:
     """
 
     target_minimum_angular_variance_deg: float = 4.0
+
+    registration_min_spread_deg: float = 6.0
+    """Lower bound for angle-profile spread saved during look-to-register."""
+
+    registration_max_spread_deg: float = 12.0
+    """Upper bound for angle-profile spread saved during look-to-register."""
     """3D 모드에서 계산한 각도 분산(atan(radius/depth)^2)의 하한(도).
 
     각도 기반 등록의 기존 최소 퍼짐(4도, target_registration.py)과 맞춰,
@@ -208,6 +214,14 @@ class GazeConfig:
             or not 0.0 < self.target_minimum_angular_variance_deg <= 90.0
         ):
             raise ValueError("target_minimum_angular_variance_deg must be finite and within (0, 90]")
+        if (
+            not math.isfinite(self.registration_min_spread_deg)
+            or not math.isfinite(self.registration_max_spread_deg)
+            or not 0.0 < self.registration_min_spread_deg <= self.registration_max_spread_deg <= 90.0
+        ):
+            raise ValueError(
+                "registration spread bounds must be finite and satisfy 0 < min <= max <= 90"
+            )
 
 
 DEFAULT_GAZE_CONFIG = GazeConfig()

@@ -15,6 +15,7 @@ from jarvis.calibration.registry import (
 from jarvis.calibration.target_registration import TargetRegistrationSession
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import yaw_pitch_to_direction
+from jarvis.gaze.feature_profile import TargetFeatureProfile, TargetFeatureSample
 from jarvis.gaze.smoothing import SmoothedGaze
 
 
@@ -49,8 +50,32 @@ def test_registration_uses_robust_center_and_minimum_spread() -> None:
         assert session.add(_gaze(frame, yaw), 1.0)
     record = session.finalize()
     assert record.direction.yaw == pytest.approx(10.0)
-    assert record.spread.yaw == 4.0
-    assert record.spread.pitch == 4.0
+    assert record.spread.yaw == 6.0
+    assert record.spread.pitch == 6.0
+
+
+def test_registration_builds_feature_profile() -> None:
+    session = TargetRegistrationSession("lamp", "desk lamp", "LIGHT", "device-1", minimum_valid_frames=3)
+    for frame in range(3):
+        assert session.add(
+            _gaze(frame, 10.0 + frame),
+            1.0,
+            face_scale=0.10 + frame * 0.01,
+            feature_sample=TargetFeatureSample(
+                gaze_yaw=10.0 + frame,
+                gaze_pitch=5.0,
+                head_yaw=frame * 2.0,
+                head_pitch=10.0,
+                head_roll=0.0,
+                face_scale=0.10 + frame * 0.01,
+            ),
+        )
+
+    record = session.finalize()
+
+    assert record.feature_profile is not None
+    assert record.feature_profile.sample_count == 3
+    assert record.reference_face_scale == pytest.approx(0.11)
 
 
 def test_registration_defaults_are_demo_tolerant() -> None:
@@ -77,7 +102,7 @@ def test_registration_diagnostics_count_rejected_frames() -> None:
     assert not session.add(_gaze(4, 30.0), 1.0)
 
     assert session.diagnostic_summary() == (
-        "seen=5, valid=1, rays=0, tracking_lost=1, closed_eyes=1, low_conf=1, jump=1"
+        "seen=5, valid=1, rays=0, face_scale=0, features=0, tracking_lost=1, closed_eyes=1, low_conf=1, jump=1"
     )
 
 
@@ -115,6 +140,20 @@ def test_registry_round_trip_and_nearby_warning_data(tmp_path: Path) -> None:
         TargetDirection(10.0, 4.0),
         TargetSpread(5.0, 4.0),
         "smartthings-1",
+        reference_face_scale=0.12,
+        feature_profile=TargetFeatureProfile(
+            mean=(1.0, 2.0, 3.0, 4.0, 5.0, 0.12),
+            covariance=(
+                (1.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
+                (0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+                (0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+                (0.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+                (0.0, 0.0, 0.0, 0.0, 0.0, 0.01),
+            ),
+            sample_count=12,
+            threshold=2.5,
+        ),
     )
     registry.upsert(record)
     loaded = TargetRegistry(path)

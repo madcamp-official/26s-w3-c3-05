@@ -22,6 +22,7 @@ from jarvis.calibration.registry import (
 from jarvis.calibration.triangulation import TriangulationResult, triangulate_rays
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
+from jarvis.gaze.feature_profile import TargetFeatureSample, build_feature_profile
 from jarvis.gaze.features import Vector3
 from jarvis.gaze.smoothing import SmoothedGaze
 
@@ -50,6 +51,8 @@ class TargetRegistrationSession:
         self.started_at_ms: int | None = None
         self._samples: list[tuple[float, float]] = []
         self._rays: list[tuple[Vector3, Vector3]] = []
+        self._face_scales: list[float] = []
+        self._feature_samples: list[TargetFeatureSample] = []
         self.total_frames_seen = 0
         self.rejected_tracking_lost = 0
         self.rejected_closed_eyes = 0
@@ -64,7 +67,15 @@ class TargetRegistrationSession:
     def valid_frame_count(self) -> int:
         return len(self._samples)
 
-    def add(self, gaze: SmoothedGaze | None, confidence: float, *, eyes_open: bool = True) -> bool:
+    def add(
+        self,
+        gaze: SmoothedGaze | None,
+        confidence: float,
+        *,
+        eyes_open: bool = True,
+        face_scale: float | None = None,
+        feature_sample: TargetFeatureSample | None = None,
+    ) -> bool:
         self.total_frames_seen += 1
         if gaze is None:
             self.rejected_tracking_lost += 1
@@ -86,6 +97,10 @@ class TargetRegistrationSession:
         self._samples.append((yaw, pitch))
         if gaze.origin is not None:
             self._rays.append((gaze.origin, gaze.direction))
+        if face_scale is not None and math.isfinite(face_scale) and face_scale > 0.0:
+            self._face_scales.append(face_scale)
+        if feature_sample is not None:
+            self._feature_samples.append(feature_sample)
         return True
 
     def is_elapsed(self, timestamp_ms: int) -> bool:
@@ -102,17 +117,36 @@ class TargetRegistrationSession:
         center = np.median(samples, axis=0)
         deviations = np.abs(samples - center)
         spread = np.percentile(deviations, 90, axis=0)
+        spread_yaw = min(
+            self.config.registration_max_spread_deg,
+            max(self.config.registration_min_spread_deg, float(spread[0])),
+        )
+        spread_pitch = min(
+            self.config.registration_max_spread_deg,
+            max(self.config.registration_min_spread_deg, float(spread[1])),
+        )
         position_3d = self._try_triangulate()
         if self.config.require_3d_target_registration and position_3d is None:
             raise ValueError(f"3D target registration failed: {self.triangulation_diagnostic()}")
+        feature_profile = (
+            build_feature_profile(self._feature_samples).profile
+            if len(self._feature_samples) >= self.minimum_valid_frames
+            else None
+        )
         return TargetRecord(
             target_id=self.target_id,
             name=self.name,
             device_type=self.device_type,
             direction=TargetDirection(float(center[0]), float(center[1])),
-            spread=TargetSpread(max(4.0, float(spread[0])), max(4.0, float(spread[1]))),
+            spread=TargetSpread(spread_yaw, spread_pitch),
             device_id=self.device_id,
             position_3d=position_3d,
+            reference_face_scale=(
+                float(np.median(np.asarray(self._face_scales, dtype=np.float64)))
+                if self._face_scales
+                else None
+            ),
+            feature_profile=feature_profile,
         )
 
     def _try_triangulate(self) -> TargetGeometry3DRecord | None:
@@ -143,7 +177,8 @@ class TargetRegistrationSession:
         """Human-readable counts explaining why registration frames were rejected."""
         return (
             f"seen={self.total_frames_seen}, valid={self.valid_frame_count}, "
-            f"rays={len(self._rays)}, "
+            f"rays={len(self._rays)}, face_scale={len(self._face_scales)}, "
+            f"features={len(self._feature_samples)}, "
             f"tracking_lost={self.rejected_tracking_lost}, "
             f"closed_eyes={self.rejected_closed_eyes}, "
             f"low_conf={self.rejected_low_confidence}, jump={self.rejected_jump}"
