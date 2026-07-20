@@ -1094,7 +1094,7 @@ class MainWindow(QMainWindow):
             self._log.warn("저장할 Gaze 값이 아직 없습니다")
             return
         try:
-            sample = self._sample_store.add_window(list(self._gaze_history))
+            sample = self._sample_store.add_window(list(self._gaze_history), minimum_frames=3)
         except ValueError as exc:
             self._log.warn(f"Gaze 샘플 저장 실패: {exc}")
             return

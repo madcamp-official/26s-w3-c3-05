@@ -94,6 +94,21 @@ def test_window_averages_multiple_smoothed_frames(tmp_path: Path) -> None:
     )
 
 
+def test_not_enough_frames_error_includes_diagnostic_counts(tmp_path: Path) -> None:
+    store = GazeSampleStore(tmp_path / "samples.json")
+    snapshots = [_snapshot(1), _snapshot(2)]
+
+    with pytest.raises(ValueError) as exc_info:
+        store.add_window(snapshots, minimum_frames=3)
+
+    message = str(exc_info.value)
+    assert "not enough valid gaze frames: 2/3" in message
+    assert "history=2" in message
+    assert "face=2" in message
+    assert "smoothed=2" in message
+    assert "eyes_open=2" in message
+
+
 def test_clear_empties_memory_and_persisted_file(tmp_path: Path) -> None:
     path = tmp_path / "samples.json"
     store = GazeSampleStore(path)

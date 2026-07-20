@@ -56,8 +56,15 @@ class GazeSampleStore:
             if snapshot.face_detected and snapshot.smoothed_gaze_direction is not None
         ]
         if len(valid) < minimum_frames:
+            face_detected = sum(1 for snapshot in snapshots if snapshot.face_detected)
+            smoothed = sum(
+                1 for snapshot in snapshots if snapshot.smoothed_gaze_direction is not None
+            )
+            eyes_open = sum(1 for snapshot in snapshots if snapshot.eyes_open)
             raise ValueError(
-                f"not enough valid gaze frames: {len(valid)}/{minimum_frames}"
+                f"not enough valid gaze frames: {len(valid)}/{minimum_frames} "
+                f"(history={len(snapshots)}, face={face_detected}, "
+                f"smoothed={smoothed}, eyes_open={eyes_open})"
             )
 
         latest = valid[-1]
