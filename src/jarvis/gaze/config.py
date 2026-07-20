@@ -100,7 +100,7 @@ class GazeConfig:
     # 움직여 얻은 여러 시선 광선으로 물체의 실제 위치·크기를 추정할 때의 품질
     # 기준. 기준을 만족하지 못하면 각도 기반(mean_direction + variance) 등록으로
     # 자동 대체한다(documents/decisions.md 참고).
-    minimum_triangulation_baseline_mm: float = 60.0
+    minimum_triangulation_baseline_mm: float = 40.0
     """광선 원점(머리 위치)들의 강건한 퍼짐(중앙값 기준 90퍼센타일*2)의 최소값.
 
     이 값보다 작으면 등록 중 머리가 충분히 움직이지 않은 것으로 보고 3D를
@@ -108,7 +108,7 @@ class GazeConfig:
     바로 앞의 한 점으로 수렴해 버리는 것을 막는다.
     """
 
-    minimum_triangulation_eigenvalue: float = 0.004
+    minimum_triangulation_eigenvalue: float = 0.0025
     """광선 방향들의 각도 다양성 하한(A 행렬의 최소 고유값 / 프레임 수).
 
     baseline_mm만으로는 "원점은 퍼졌지만 물체가 멀어 광선이 여전히 거의
