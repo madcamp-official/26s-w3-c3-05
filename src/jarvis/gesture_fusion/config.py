@@ -158,6 +158,19 @@ class GestureConfig:
     지어내지 않는다). 리셋 후 첫 프레임의 속도·가속도는 0이다.
     """
 
+    velocity_smoothing_window: int = 1
+    """`include_velocity` 속도(초당 좌표 차분)를 인접 몇 프레임 평균으로 낼지(causal,
+    미래 프레임 안 봄). 1=평균 없음(기존과 동일한 두 프레임 차분).
+
+    2026-07-20 실험(오프라인, `training/cache` 랜드마크로 측정): 두 손가락 슬라이드의
+    위/아래 방향 분리도(Cohen's d)가 좌/우(1.83)보다 훨씬 낮았다(0.50) — down 방향
+    속도의 분산이 up의 3배로 유독 크다. Window=9 causal 평균을 적용하면 위/아래
+    분리도가 0.50→1.25로(+150%), 좌/우도 1.83→2.07로 함께 개선됐다. 원인은 아래
+    슬라이드가 중력 보조로 더 빠르고 덜 제어돼(모션 블러·검출 지터 증가) 프레임 간
+    단순 차분의 잡음이 큰 것으로 추정 — augmentation·fps 문제가 아니라 신호 자체의
+    잡음이라 스무딩이 직접적인 대응이다. 이 값을 바꾸면 학습 데이터 재추출은
+    필요 없지만(캐시는 raw landmark) 재학습은 필요하다."""
+
     def __post_init__(self) -> None:
         if self.num_hands < 1:
             raise ValueError("num_hands must be at least 1")
@@ -185,6 +198,8 @@ class GestureConfig:
             raise ValueError("min_palm_scale must be finite and positive")
         if self.max_frame_gap_ms <= 0:
             raise ValueError("max_frame_gap_ms must be positive")
+        if self.velocity_smoothing_window < 1:
+            raise ValueError("velocity_smoothing_window must be at least 1")
         if not math.isfinite(self.smoothing_min_cutoff) or self.smoothing_min_cutoff <= 0.0:
             raise ValueError("smoothing_min_cutoff must be finite and positive")
         if not math.isfinite(self.smoothing_d_cutoff) or self.smoothing_d_cutoff <= 0.0:

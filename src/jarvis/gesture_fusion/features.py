@@ -23,6 +23,7 @@ feature 벡터의 구성(위치·관절각·속도)과 각 그룹의 on/off는 G
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -119,6 +120,14 @@ class HandFeatureExtractor:
         self._dimension = feature_dimension(config)
         self._prev_landmarks: FloatArray | None = None
         self._prev_timestamp_ms: int | None = None
+        # 프레임 간 단순 차분(2프레임)의 잡음을 줄이기 위한 causal 이동평균 버퍼
+        # (2026-07-20 실험, GestureConfig.velocity_smoothing_window 문서 참조).
+        # window=1이면 버퍼를 안 써서 기존 두 프레임 차분과 완전히 동일하다.
+        self._velocity_history: deque[FloatArray] | None = (
+            deque(maxlen=config.velocity_smoothing_window)
+            if config.velocity_smoothing_window > 1
+            else None
+        )
         # Wrist translation history — differenced with the SAME dt as the landmark
         # features so wrist velocity/acceleration share their timing and reset rules.
         self._prev_wrist_position: FloatArray | None = None
@@ -209,6 +218,8 @@ class HandFeatureExtractor:
         """속도 history와 평활화 상태를 비운다(추적 손실·시퀀스 경계에서 호출)."""
         self._prev_landmarks = None
         self._prev_timestamp_ms = None
+        if self._velocity_history is not None:
+            self._velocity_history.clear()
         self._prev_wrist_position = None
         self._prev_wrist_velocity = None
         self._last_landmarks = None
@@ -239,6 +250,12 @@ class HandFeatureExtractor:
         else:
             dt_s = dt_ms / 1000.0
             velocity = (flat - self._prev_landmarks) / dt_s
+        if self._velocity_history is not None:
+            # 두 프레임 차분 자체가 잡음이 커서(특히 수직 이동, GestureConfig
+            # 문서 참조) 그 인스턴트 속도를 그대로 emit하지 않고, causal window
+            # 평균을 낸다 — 미래 프레임은 안 본다.
+            self._velocity_history.append(velocity)
+            velocity = np.mean(self._velocity_history, axis=0)
 
         # 손목 평행이동도 같은 dt로 causal 차분한다. 미분 전에 (설정 시) 평활화해
         # palm_scale·손목 점의 지터가 속도로 증폭되지 않게 한다 — 랜드마크와 동일 규칙.
