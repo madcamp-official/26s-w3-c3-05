@@ -194,6 +194,44 @@ def test_area_profile_flexes_with_face_scale_for_apparent_target_size() -> None:
     assert closer_with_larger_apparent_target.target == "screen"
 
 
+def test_overlapping_area_profiles_prefer_gaze_aligned_center() -> None:
+    classifier = TargetClassifier(
+        GazeConfig(
+            unknown_probability_threshold=0.0,
+            registration_max_spread_deg=20.0,
+            registration_max_area_radius_deg=20.0,
+            target_match_tolerance=1.1,
+        )
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("wide_area", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        area_profile=TargetAreaProfile(
+            center_yaw=0.0,
+            center_pitch=0.0,
+            radius_yaw=20.0,
+            radius_pitch=20.0,
+            sample_count=120,
+        ),
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("aimed_area", _unit([0.1, 0.0, 0.99]), variance=0.01),
+        area_profile=TargetAreaProfile(
+            center_yaw=5.0,
+            center_pitch=0.0,
+            radius_yaw=2.0,
+            radius_pitch=2.0,
+            sample_count=120,
+        ),
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(6.0, 0.0, 0.0, 0.0, 0.0, 0.1),
+    )
+
+    assert result.target == "aimed_area"
+
+
 def test_built_feature_profile_tolerates_head_pose_when_gaze_matches() -> None:
     profile = build_feature_profile(
         [
