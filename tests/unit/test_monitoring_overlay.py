@@ -45,14 +45,19 @@ def _hand_snapshot(*, detected: bool) -> HandSnapshot:
     )
 
 
-def _snapshot(*, detected: bool) -> GazeSnapshot:
+def _snapshot(
+    *,
+    detected: bool,
+    iris_relative: tuple[float, float] = (0.1, -0.1),
+    head_yaw_deg: float = 8.0,
+) -> GazeSnapshot:
     config = GazeConfig()
     observation = FaceObservation(
         timestamp_ms=0,
         frame_id=0,
-        left_iris_relative=(0.1, -0.1),
-        right_iris_relative=(0.1, -0.1),
-        head_yaw_deg=8.0,
+        left_iris_relative=iris_relative,
+        right_iris_relative=iris_relative,
+        head_yaw_deg=head_yaw_deg,
         head_pitch_deg=-4.0,
         head_roll_deg=0.0,
         eye_tracking_confidence=1.0,
@@ -89,6 +94,22 @@ def test_draw_gaze_overlay_draws_when_tracking() -> None:
     draw_gaze_overlay(frame, _snapshot(detected=True))
     assert not np.array_equal(before, frame)  # ray + HUD drawn
     assert frame.shape == (240, 320, 3)
+
+
+def test_mirrored_gaze_overlay_keeps_user_facing_yaw_direction() -> None:
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    snapshot = _snapshot(detected=True, iris_relative=(-0.4, 0.0), head_yaw_deg=0.0)
+    assert snapshot.smoothed_gaze_direction is not None
+    assert snapshot.smoothed_gaze_direction[0] > 0.0
+
+    draw_gaze_overlay(frame, snapshot, mirror=True)
+
+    center_x = frame.shape[1] // 2
+    center_y = frame.shape[0] // 2
+    ray_band = frame[center_y - 8 : center_y + 8]
+    left_pixels = int(np.count_nonzero(ray_band[:, center_x - 80 : center_x - 8]))
+    right_pixels = int(np.count_nonzero(ray_band[:, center_x + 8 : center_x + 80]))
+    assert right_pixels > left_pixels
 
 
 def test_draw_target_heatmap_draws_registered_target_regions() -> None:

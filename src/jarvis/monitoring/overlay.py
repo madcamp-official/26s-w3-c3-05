@@ -122,7 +122,7 @@ def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
     for index, detail in enumerate(details[: len(_TARGET_COLORS)]):
         if np.isnan(detail.target_yaw_deg) or np.isnan(detail.target_pitch_deg):
             continue
-        center_yaw = -detail.target_yaw_deg if mirror else detail.target_yaw_deg
+        center_yaw = detail.target_yaw_deg
         center_pitch = detail.target_pitch_deg
         radius = max(detail.allowed_radius_deg, 1.0)
         distance = np.hypot((yaw_grid - center_yaw) / radius, (pitch_grid - center_pitch) / radius)
@@ -145,8 +145,7 @@ def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
         color_bgr = _TARGET_COLORS[index % len(_TARGET_COLORS)]
         if np.isnan(detail.target_yaw_deg) or np.isnan(detail.target_pitch_deg):
             continue
-        target_yaw = -detail.target_yaw_deg if mirror else detail.target_yaw_deg
-        cx = int((target_yaw / yaw_span + 0.5) * w)
+        cx = int((detail.target_yaw_deg / yaw_span + 0.5) * w)
         cy = int((0.5 - detail.target_pitch_deg / pitch_span) * h)
         cv2.circle(
             frame,
@@ -168,9 +167,9 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
 
     Everything drawn comes from the real snapshot. Tracking loss is shown as a
     red banner instead of a stale ray — the overlay never invents a direction.
-    ``mirror`` flips the ray geometry (eye center + horizontal direction) to match a
-    horizontally-flipped display frame; display-only, the snapshot is untouched and
-    text stays readable. Mutates and returns ``frame``.
+    ``mirror`` flips landmark positions to match a horizontally-flipped display
+    frame. Gaze direction is already expressed in user-facing yaw coordinates, so
+    its horizontal sign is not flipped again. Mutates and returns ``frame``.
     """
     h, w = frame.shape[:2]
     white = (235, 235, 235)
@@ -238,8 +237,6 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
         center = (w // 2, h // 2)
     if snapshot.smoothed_gaze_direction is not None:
         dx, dy, _ = snapshot.smoothed_gaze_direction
-        if mirror:
-            dx = -dx
         scale = min(w, h) * 0.35
         tip = (int(center[0] + dx * scale), int(center[1] + dy * scale))
         cv2.circle(frame, center, 4, ray_color, thickness=-1)
