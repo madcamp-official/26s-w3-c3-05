@@ -84,19 +84,25 @@ class GazeCalibrationModel:
         *,
         coefficients: npt.NDArray[np.float64] | None = None,
         sample_count: int = 0,
+        target_count: int = 0,
         regularization: float = 1.0,
     ) -> None:
         self._coefficients = coefficients
         self._sample_count = sample_count
+        self._target_count = target_count
         self._regularization = regularization
 
     @property
     def fitted(self) -> bool:
-        return self._coefficients is not None
+        return self._coefficients is not None and self._target_count >= 2
 
     @property
     def sample_count(self) -> int:
         return self._sample_count
+
+    @property
+    def target_count(self) -> int:
+        return self._target_count
 
     @classmethod
     def fit(
@@ -107,6 +113,12 @@ class GazeCalibrationModel:
     ) -> "GazeCalibrationModel":
         if not samples:
             return cls(regularization=regularization)
+        target_count = len(
+            {
+                (round(sample.target_yaw, 3), round(sample.target_pitch, 3))
+                for sample in samples
+            }
+        )
         x = np.asarray([sample.features for sample in samples], dtype=np.float64)
         y = np.asarray(
             [[sample.target_yaw, sample.target_pitch] for sample in samples], dtype=np.float64
@@ -117,11 +129,12 @@ class GazeCalibrationModel:
         return cls(
             coefficients=coefficients,
             sample_count=len(samples),
+            target_count=target_count,
             regularization=regularization,
         )
 
     def predict_yaw_pitch(self, features: Sequence[float]) -> tuple[float, float] | None:
-        if self._coefficients is None:
+        if not self.fitted or self._coefficients is None:
             return None
         x = np.asarray(features, dtype=np.float64)
         if x.shape != (_FEATURE_DIM,) or not np.all(np.isfinite(x)):
@@ -148,6 +161,7 @@ class GazeCalibrationModel:
     def to_dict(self) -> dict[str, object]:
         return {
             "sample_count": self._sample_count,
+            "target_count": self._target_count,
             "regularization": self._regularization,
             "coefficients": (
                 self._coefficients.tolist() if self._coefficients is not None else None
@@ -165,14 +179,17 @@ class GazeCalibrationModel:
         if coefficients is not None and coefficients.shape != (_FEATURE_DIM, 2):
             raise ValueError("invalid gaze calibration coefficient shape")
         raw_sample_count = payload.get("sample_count", 0)
+        raw_target_count = payload.get("target_count", 0)
         raw_regularization = payload.get("regularization", 1.0)
         sample_count = int(raw_sample_count) if isinstance(raw_sample_count, (int, float)) else 0
+        target_count = int(raw_target_count) if isinstance(raw_target_count, (int, float)) else 0
         regularization = (
             float(raw_regularization) if isinstance(raw_regularization, (int, float)) else 1.0
         )
         return cls(
             coefficients=coefficients,
             sample_count=sample_count,
+            target_count=target_count,
             regularization=regularization,
         )
 

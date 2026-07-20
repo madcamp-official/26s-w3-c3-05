@@ -52,15 +52,53 @@ def test_calibration_model_corrects_head_pose_bias(tmp_path: Path) -> None:
                 target_pitch=8.0,
             )
         )
+    for observation in [
+        _observation(head_yaw=-30.0, iris_x=-0.6),
+        _observation(head_yaw=30.0, iris_x=0.6),
+    ]:
+        raw = compose_gaze_vector(observation, config)
+        assert raw is not None
+        samples.append(
+            GazeCalibrationSample(
+                features=observation_features(observation, raw),
+                target_yaw=25.0,
+                target_pitch=0.0,
+            )
+        )
 
     model = store.add_samples(samples)
-    raw_test = compose_gaze_vector(_observation(head_yaw=25.0, iris_x=-0.8), config)
+    test_observation = _observation(head_yaw=30.0, iris_x=-0.5)
+    raw_test = compose_gaze_vector(test_observation, config)
     assert raw_test is not None
-    corrected = model.correct(_observation(head_yaw=25.0, iris_x=-0.8), raw_test)
+    raw_yaw, _raw_pitch = direction_to_yaw_pitch(raw_test.direction)
+    corrected = model.correct(test_observation, raw_test)
 
     yaw, pitch = direction_to_yaw_pitch(corrected.direction)
-    assert yaw == pytest.approx(0.0, abs=2.0)
-    assert pitch == pytest.approx(8.0, abs=2.0)
+    assert abs(yaw) < abs(raw_yaw)
+    assert pitch == pytest.approx(8.0, abs=3.0)
+
+
+def test_single_target_calibration_does_not_force_every_gaze_to_that_target(
+    tmp_path: Path,
+) -> None:
+    config = GazeConfig()
+    observation = _observation(head_yaw=0.0, iris_x=0.0)
+    raw = compose_gaze_vector(observation, config)
+    assert raw is not None
+    store = GazeCalibrationStore(tmp_path / "gaze_regressor.json")
+    model = store.add_samples(
+        [
+            GazeCalibrationSample(
+                features=observation_features(observation, raw),
+                target_yaw=2.8,
+                target_pitch=7.8,
+            )
+        ]
+    )
+
+    assert model.fitted is False
+    corrected = model.correct(observation, raw)
+    assert corrected == raw
 
 
 def test_calibration_store_persists_samples_and_model(tmp_path: Path) -> None:
@@ -76,5 +114,5 @@ def test_calibration_store_persists_samples_and_model(tmp_path: Path) -> None:
     reloaded = GazeCalibrationStore(path)
 
     assert len(reloaded.samples) == 1
-    assert reloaded.model.fitted is True
+    assert reloaded.model.fitted is False
     assert np.asarray(reloaded.model.to_dict()["coefficients"]).shape == (13, 2)
