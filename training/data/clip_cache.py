@@ -116,6 +116,19 @@ def load_gesture_label(path: Path) -> str:
         return str(data["gesture_label"])
 
 
+def load_label_and_frame_counts(path: Path) -> tuple[str, int, int]:
+    """`(gesture_label, 손이 검출된 프레임 수, 전체 프레임 수)`만 읽는다.
+
+    `load_gesture_label`과 같은 이유로 무거운 landmarks 배열은 디코딩하지 않는다
+    (`NpzFile`은 lazy — 접근한 키만 압축 해제). 클래스 가중치를 **클립 수**가 아니라
+    **loss에 실제로 기여하는 프레임 수** 기준으로 계산하기 위한 것이다
+    (`training/train.py` 참조).
+    """
+    with np.load(path, allow_pickle=False) as data:
+        hand_detected = data["hand_detected"]
+        return str(data["gesture_label"]), int(hand_detected.sum()), int(hand_detected.shape[0])
+
+
 def load_clip(path: Path) -> CachedClip:
     """`save_clip`이 저장한 `.npz`를 읽는다."""
     with np.load(path, allow_pickle=False) as data:
