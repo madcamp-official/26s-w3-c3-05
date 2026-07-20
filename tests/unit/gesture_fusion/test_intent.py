@@ -10,6 +10,10 @@ import pytest
 from jarvis.contracts.messages import GestureEstimate, GesturePhase, TargetEstimate
 from jarvis.gesture_fusion.alignment import AlignmentConfig
 from jarvis.gesture_fusion.fusion import CommitDecision, FusionConfig, FusionEngine, FusionScore
+from jarvis.gesture_fusion.model_protocol import (
+    DEFAULT_BACKGROUND_LABELS,
+    DEFAULT_GESTURE_LABELS,
+)
 from jarvis.gesture_fusion.intent import (
     CapabilityAction,
     GestureCapabilityMap,
@@ -111,10 +115,45 @@ def test_same_gesture_maps_differently_per_device() -> None:
 def test_from_json_loads_repo_config() -> None:
     """configs/gesture_capability_map.json이 실제로 파싱 가능하고 필수 매핑을 담고 있다."""
     capability_map = GestureCapabilityMap.from_json(_REPO_MAP_PATH)
-    bulb_action = capability_map.lookup("room.bulb", "swipe_down")
+    bulb_action = capability_map.lookup("room.bulb", "slide_two_fingers_down")
     assert bulb_action is not None
     assert bulb_action.capability == "brightness"
     assert bulb_action.operation == "decrement"
+
+
+def test_repo_config_is_consistent_with_the_training_label_set() -> None:
+    """실제 저장소 config가 현재 라벨 집합과 맞는지 검사한다 — 이 커밋의 회귀 가드.
+
+    `validate_capability_map`(8b65e6c)은 있었지만 저장소 config에 대고 돌리는 곳이
+    없어서, 라벨에서 swipe 4종이 빠졌을 때 매핑 6개가 죽은 채로 남아도 아무도
+    실패하지 않았다(scroll·window_switch·brightness 세 capability가 어떤 제스처로도
+    도달 불가). 이 테스트가 그 연결을 만든다 — 라벨을 바꾸고 맵을 안 고치면 CI에서
+    바로 걸린다.
+
+    배경 label은 실제 배경 집합(`DEFAULT_BACKGROUND_LABELS`)을 넘겨 매핑 요구에서
+    제외한다. 기본값 `{"none"}`만 쓰면 drumming_fingers·doing_other_things에도
+    기기 동작을 요구하게 되는데, 이들은 "동작 없음"이 곧 의도다.
+    """
+    validate_capability_map(
+        GestureCapabilityMap.from_json(_REPO_MAP_PATH),
+        gesture_labels=DEFAULT_GESTURE_LABELS,
+        background_labels=DEFAULT_BACKGROUND_LABELS,
+    )
+
+
+def test_every_actionable_gesture_reaches_at_least_one_device() -> None:
+    """액션 가능한 6개 제스처가 전부 어딘가에 매핑돼 있어야 한다(문서화 겸 가드)."""
+    registered = GestureCapabilityMap.from_json(_REPO_MAP_PATH).registered_gestures()
+    actionable = set(DEFAULT_GESTURE_LABELS) - DEFAULT_BACKGROUND_LABELS
+    assert actionable == {
+        "rotate_clockwise",
+        "rotate_counter_clockwise",
+        "slide_two_fingers_up",
+        "slide_two_fingers_down",
+        "slide_two_fingers_left",
+        "slide_two_fingers_right",
+    }
+    assert actionable <= registered
 
 
 def test_registered_gestures_collects_across_devices() -> None:

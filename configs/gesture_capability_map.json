@@ -1,17 +1,18 @@
 {
   "_comment": "(target device_id, gesture) -> capability action. jarvis.gesture_fusion.intent.GestureCapabilityMap이 로드한다. capability·operation 이름과 value의 step 제약은 dev-3의 device capability model(documents/runtime-protocol.md, src/jarvis/runtime_protocol/protocol/capability.py)과 맞춰야 한다. 새 제스처·기기를 추가할 때는 코드가 아니라 이 파일만 바꾸면 된다(documents/decisions.md 참고). 실제 매핑은 'devices' 키 아래에 있다 — 이 파일을 파싱할 때 '_'로 시작하는 최상위 키는 무시한다.",
+  "_comment_2026_07_20": "라벨 집합이 swipe 4종 제거·slide_two_fingers 4종 추가로 바뀌었는데 이 파일이 따라가지 않아, swipe_* 매핑 6개가 전부 죽어 있었다(scroll·window_switch·brightness 세 capability가 어떤 제스처로도 도달 불가). 두 손가락 슬라이드를 기존 swipe 자리에 그대로 대응시켜 복구한다. 배경 label(none·drumming_fingers·doing_other_things)은 '동작 없음'이 곧 의도이므로 매핑하지 않는다 — intent.validate_capability_map()이 이 정합성을 검사한다.",
   "devices": {
     "room.bulb": {
-      "swipe_down": { "capability": "brightness", "operation": "decrement", "value": 10 },
-      "swipe_up": { "capability": "brightness", "operation": "increment", "value": 10 },
+      "slide_two_fingers_down": { "capability": "brightness", "operation": "decrement", "value": 10 },
+      "slide_two_fingers_up": { "capability": "brightness", "operation": "increment", "value": 10 },
       "rotate_clockwise": { "capability": "color_temperature", "operation": "increment", "value": 100 },
       "rotate_counter_clockwise": { "capability": "color_temperature", "operation": "decrement", "value": 100 }
     },
     "laptop": {
-      "swipe_down": { "capability": "scroll", "operation": "decrement", "value": 3 },
-      "swipe_up": { "capability": "scroll", "operation": "increment", "value": 3 },
-      "swipe_left": { "capability": "window_switch", "operation": "decrement", "value": 1 },
-      "swipe_right": { "capability": "window_switch", "operation": "increment", "value": 1 },
+      "slide_two_fingers_down": { "capability": "scroll", "operation": "decrement", "value": 3 },
+      "slide_two_fingers_up": { "capability": "scroll", "operation": "increment", "value": 3 },
+      "slide_two_fingers_left": { "capability": "window_switch", "operation": "decrement", "value": 1 },
+      "slide_two_fingers_right": { "capability": "window_switch", "operation": "increment", "value": 1 },
       "rotate_clockwise": { "capability": "volume", "operation": "increment", "value": 2 },
       "rotate_counter_clockwise": { "capability": "volume", "operation": "decrement", "value": 2 }
     }

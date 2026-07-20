@@ -74,10 +74,10 @@ def _executor(adapters: dict[str, FakeAdapter]) -> IntentExecutor:
     )
 
 
-def test_bulb_swipe_down_reaches_adapter_as_brightness_decrement() -> None:
+def test_bulb_slide_down_reaches_adapter_as_brightness_decrement() -> None:
     fusion = _locked_fusion("room.bulb")
-    fusion.push_gesture(_gesture(100, GesturePhase.ONSET, "swipe_down"))
-    decision = fusion.push_gesture(_gesture(300, GesturePhase.ENDING, "swipe_down"))
+    fusion.push_gesture(_gesture(100, GesturePhase.ONSET, "slide_two_fingers_down"))
+    decision = fusion.push_gesture(_gesture(300, GesturePhase.ENDING, "slide_two_fingers_down"))
     assert decision is not None and decision.committed
 
     bulb_adapter = FakeAdapter("smartthings")
@@ -91,13 +91,13 @@ def test_bulb_swipe_down_reaches_adapter_as_brightness_decrement() -> None:
     assert command.device_id == "room.bulb"
     assert command.capability == "brightness"
     assert command.operation == "decrement"
-    assert command.value == 10  # configs/gesture_capability_map.json 의 room.bulb swipe_down
+    assert command.value == 10  # configs/gesture_capability_map.json 의 room.bulb slide_two_fingers_down
 
 
-def test_laptop_swipe_down_reaches_adapter_as_scroll_decrement() -> None:
+def test_laptop_slide_down_reaches_adapter_as_scroll_decrement() -> None:
     fusion = _locked_fusion("laptop")
-    fusion.push_gesture(_gesture(100, GesturePhase.ONSET, "swipe_down"))
-    decision = fusion.push_gesture(_gesture(300, GesturePhase.ENDING, "swipe_down"))
+    fusion.push_gesture(_gesture(100, GesturePhase.ONSET, "slide_two_fingers_down"))
+    decision = fusion.push_gesture(_gesture(300, GesturePhase.ENDING, "slide_two_fingers_down"))
     assert decision is not None and decision.committed
 
     laptop_adapter = FakeAdapter("windows")
