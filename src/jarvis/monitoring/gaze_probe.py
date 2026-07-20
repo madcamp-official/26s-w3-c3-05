@@ -29,6 +29,7 @@ import numpy as np
 import numpy.typing as npt
 
 from jarvis.contracts.messages import TargetEstimate
+from jarvis.gaze.calibration_model import GazeCalibrationModel, observation_features
 from jarvis.gaze.classifier import (
     ClassificationResult,
     DeviceGazeProfile,
@@ -93,6 +94,7 @@ class GazeSnapshot:
     # 2b — composed gaze vector (None when tracking is lost / rejected)
     gaze_direction: tuple[float, float, float] | None
     gaze_confidence: float | None
+    calibration_features: tuple[float, ...] | None
 
     # 2c — temporal smoothing
     smoothed_stability: float | None
@@ -228,6 +230,7 @@ def evaluate(
     config: GazeConfig,
     inference_ms: float = 0.0,
     target_labels: dict[str, str] | None = None,
+    calibration_model: GazeCalibrationModel | None = None,
 ) -> GazeSnapshot:
     """Run one observation through the full pipeline, capturing every stage.
 
@@ -236,6 +239,11 @@ def evaluate(
     only addition is that the intermediate values are kept for display.
     """
     gaze_vector = compose_gaze_vector(observation, config)
+    calibration_features = (
+        observation_features(observation, gaze_vector) if gaze_vector is not None else None
+    )
+    if gaze_vector is not None and calibration_model is not None:
+        gaze_vector = calibration_model.correct(observation, gaze_vector)
     smoothed = (
         smoother.hold(observation.timestamp_ms, observation.frame_id)
         if observation.face_detected and not observation.eyes_open
@@ -316,6 +324,7 @@ def evaluate(
         eyes_open=observation.eyes_open,
         gaze_direction=gaze_direction,
         gaze_confidence=gaze_confidence,
+        calibration_features=calibration_features,
         smoothed_stability=smoothed_stability,
         smoothed_gaze_direction=classify_direction,
         smoothed_gaze_origin=classify_origin,
@@ -350,6 +359,7 @@ class GazeProbe:
         model_path: Path | None,
         profiles_path: Path | None = None,
         config: GazeConfig | None = None,
+        calibration_model: GazeCalibrationModel | None = None,
     ) -> None:
         self._config = config or GazeConfig()
         self._smoother = GazeSmoother(self._config)
@@ -360,6 +370,7 @@ class GazeProbe:
         self._available = False
         self._status_text = "gaze 프로브 미시작"
         self._target_labels: dict[str, str] = {}
+        self._calibration_model = calibration_model
         self._profile_count = self._load_profiles(profiles_path)
 
     def _load_profiles(self, profiles_path: Path | None) -> int:
@@ -394,6 +405,9 @@ class GazeProbe:
     @property
     def profile_count(self) -> int:
         return self._profile_count
+
+    def set_calibration_model(self, model: GazeCalibrationModel | None) -> None:
+        self._calibration_model = model
 
     def register_profile(
         self,
@@ -470,6 +484,7 @@ class GazeProbe:
             config=self._config,
             inference_ms=(time.monotonic() - started) * 1000.0,
             target_labels=self._target_labels,
+            calibration_model=self._calibration_model,
         )
         return snapshot
 

@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
 from jarvis.calibration.registry import TargetRecord, TargetRegistry
 from jarvis.calibration.target_registration import TargetRegistrationSession
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
+from jarvis.gaze.calibration_model import GazeCalibrationSample, GazeCalibrationStore
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.lock import GazeLockState
@@ -690,9 +691,11 @@ class MainWindow(QMainWindow):
             samples_path or Path("data/evaluation/gaze_samples.json")
         )
         self._gaze_config = GazeConfig()
+        self._calibration_store = GazeCalibrationStore(_default_calibration_model_path())
         self._target_registry = TargetRegistry(self._profiles_path)
         self._registration: TargetRegistrationSession | None = None
         self._registration_points: list[tuple[float, float]] = []
+        self._registration_calibration_features: list[tuple[float, ...]] = []
         self._registration_phase_index: int | None = None
         self._target_list = QListWidget()
         self._register_target_button = QPushButton()
@@ -700,6 +703,7 @@ class MainWindow(QMainWindow):
             model_path=self._model_path,
             profiles_path=self._profiles_path,
             config=self._gaze_config,
+            calibration_model=self._calibration_store.model,
         )
         self._hand_probe = HandProbe(model_path=self._hand_model_path)
 
@@ -875,6 +879,8 @@ class MainWindow(QMainWindow):
                 and smoothed is not None
             ):
                 self._registration_points.append(direction_to_yaw_pitch(smoothed.direction))
+                if snapshot.calibration_features is not None:
+                    self._registration_calibration_features.append(snapshot.calibration_features)
             self._update_registration_guidance(snapshot.timestamp_ms)
             if self._registration.is_elapsed(snapshot.timestamp_ms):
                 self._finish_target_registration()
@@ -927,6 +933,7 @@ class MainWindow(QMainWindow):
             target_id, name, device_type, device_id, config=self._gaze_config
         )
         self._registration_points = []
+        self._registration_calibration_features = []
         self._registration_phase_index = None
         self._register_target_button.setEnabled(False)
         self._registration_status.setText(
@@ -982,16 +989,28 @@ class MainWindow(QMainWindow):
             self._probe.register_profile(
                 record.to_profile(), geometry_3d=record.to_geometry_3d(), label=record.name
             )
+            calibration_samples = [
+                GazeCalibrationSample(
+                    features=features,
+                    target_yaw=record.direction.yaw,
+                    target_pitch=record.direction.pitch,
+                )
+                for features in self._registration_calibration_features
+            ]
+            model = self._calibration_store.add_samples(calibration_samples)
+            self._probe.set_calibration_model(model)
             self._log.info(
                 f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames) "
                 f"— {self._describe_triangulation_outcome(record)} | "
-                f"{self._registration.diagnostic_summary()}"
+                f"{self._registration.diagnostic_summary()} | "
+                f"gaze calibration samples={model.sample_count}"
             )
         except ValueError as exc:
             self._log.warn(f"기기 등록 실패: {exc} | {self._registration.diagnostic_summary()}")
         finally:
             self._registration = None
             self._registration_points = []
+            self._registration_calibration_features = []
             self._registration_phase_index = None
             self._register_target_button.setEnabled(True)
             self._registration_status.setText("등록 대기")
@@ -1121,6 +1140,10 @@ def _default_hand_model_path() -> Path | None:
 
 def _default_profiles_path() -> Path:
     return Path("data/calibration/profiles.json")
+
+
+def _default_calibration_model_path() -> Path:
+    return Path("data/calibration/gaze_regressor.json")
 
 
 def _load_env() -> dict[str, str]:
