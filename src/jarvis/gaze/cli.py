@@ -47,10 +47,17 @@ def _open_camera(camera_index: int) -> Any:
         import cv2
     except ImportError as exc:  # pragma: no cover - depends on optional vision install
         raise RuntimeError("Install the vision extra: pip install -e '.[vision]'") from exc
-    camera = cv2.VideoCapture(camera_index)
+    # Windows의 기본 백엔드(MSMF)는 내부적으로 프레임을 버퍼링해 지연이 주기적으로
+    # 쌓였다 풀리는 끊김을 유발한다 — DSHOW로 이를 피하고, 버퍼를 1프레임으로 제한해
+    # 항상 최신 프레임을 읽게 한다(source.py의 OpenCVCameraSource와 동일한 조치).
+    if sys.platform == "win32":
+        camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    else:
+        camera = cv2.VideoCapture(camera_index)
     if not camera.isOpened():
         camera.release()
         raise RuntimeError(f"Could not open camera index {camera_index}")
+    camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     return camera
 
 

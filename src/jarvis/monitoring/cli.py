@@ -32,6 +32,11 @@ def main(argv: list[str] | None = None) -> int:
         default="data/evaluation/gaze_samples.json",
         help="버튼으로 저장할 gaze 진단 샘플 JSON 경로",
     )
+    parser.add_argument(
+        "--no-gaze",
+        action="store_true",
+        help="gaze(FaceLandmarker) 추론을 끄고 hand 추론만 실행 (손 추적 지연 진단용)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -50,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         profiles_path=Path(args.profiles),
         hand_model_path=Path(args.hand_model),
         samples_path=Path(args.samples),
+        gaze_enabled=not args.no_gaze,
     )
     window.show()
     return int(app.exec())

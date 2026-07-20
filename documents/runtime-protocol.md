@@ -81,7 +81,7 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 - `clock.py` `RuntimeClock`: 단일 monotonic 클럭. `stamp()`이 `FrameStamp(timestamp_ms, frame_id)`를 발급. `frame_id`는 프로세스 내 gapless 증가. `time_source` 주입으로 테스트에서 시간 결정적 제어. 계약 공통 규칙(모든 프레임 메시지가 이 클럭의 stamp를 계승)을 여기서 실현.
 - `frame.py` `Frame[ImageT]`: stamp + 불투명 이미지 payload. 코어가 이미지 라이브러리에 의존하지 않도록 제네릭. 계약 밖(runtime_protocol 내부 타입).
 - `queue.py` `BoundedLatestQueue`: bounded + drop-oldest(latest-frame) 정책, drop 카운트 노출. 실시간 소비자가 stale 프레임 backlog를 재생하지 않게(원칙 5.2). thread-safe(1 producer/1 consumer).
-- `source.py` `FrameSource`(Protocol) + `OpenCVCameraSource`: 카메라는 하드웨어 IO 경계로 분리, `cv2` lazy import(vision extra 없이도 코어·테스트 동작). 성공 위조 없음(원칙 1.1).
+- `source.py` `FrameSource`(Protocol) + `OpenCVCameraSource`: 카메라는 하드웨어 IO 경계로 분리, `cv2` lazy import(vision extra 없이도 코어·테스트 동작). 성공 위조 없음(원칙 1.1). Windows에서는 `CAP_DSHOW` 백엔드 + `CAP_PROP_BUFFERSIZE=1`로 연다 — 기본 MSMF 백엔드의 내부 버퍼링이 지연을 주기적으로 쌓았다 푸는 끊김을 유발하기 때문(2026-07-20 결정).
 - `pipeline.py` `CapturePipeline`: 1회 캡처 → 1회 stamp → 모든 소비자에 **동일 Frame** 배포(원칙 5.1). `run_once()`가 결정적 단위(스레드 없이 테스트), `start()/stop()`은 배경 스레드 wrapper.
 - **transient miss vs end-of-stream 구분(리뷰 후)**: `read()→None`은 "일시적 미스(이번 tick에 프레임 없음, 재시도)"만 의미하고, 유한 소스의 스트림 종료는 `EndOfStream` 예외로 신호한다. `_loop`은 None이면 계속, `EndOfStream`이면 종료. 웹캠 프레임 하나 놓쳐도 파이프라인이 죽지 않는다. 실제 카메라는 자연 종료가 없으므로 `EndOfStream`을 던지지 않고 `close()`로만 멈춘다.
 - **소스 lifecycle(리뷰 후)**: `CapturePipeline`이 컨텍스트 매니저(`with`) + `close()`로 소스 디바이스를 결정적으로 해제한다. `stop()`은 루프만 멈추고 디바이스는 유지(재시작 가능). `close()` 없이는 `cv2.VideoCapture` 핸들이 프로세스 종료까지 열린 채 누수됐던 문제 해소.

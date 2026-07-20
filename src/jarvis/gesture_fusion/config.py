@@ -77,11 +77,16 @@ class GestureConfig:
     smooth_landmarks: bool = True
     """정규화된 랜드마크를 속도·가속도 계산 전에 One-Euro로 평활화할지 여부."""
 
-    smoothing_min_cutoff: float = 1.0
-    """기본 평활 강도(Hz). 낮을수록 정지 시 더 부드럽지만 지연이 커진다."""
+    smoothing_min_cutoff: float = 2.0
+    """기본 평활 강도(Hz). 낮을수록 정지 시 더 부드럽지만 지연이 커진다.
 
-    smoothing_beta: float = 0.5
-    """속도에 따른 컷오프 개방 계수. 높을수록 빠른 동작에서 지연이 줄어든다."""
+    2026-07-20: 손 추적이 "느리게 따라온다"는 사용자 보고로 1.0→2.0 상향(위상 지연
+    축소, 정지 시 잔떨림은 약간 증가하는 트레이드오프). 실사용 확인 대기 중."""
+
+    smoothing_beta: float = 1.2
+    """속도에 따른 컷오프 개방 계수. 높을수록 빠른 동작에서 지연이 줄어든다.
+
+    2026-07-20: 위 min_cutoff와 같은 이유로 0.5→1.2 상향. 실사용 확인 대기 중."""
 
     smoothing_d_cutoff: float = 1.5
     """내부 속도 추정의 평활 컷오프(Hz)."""
