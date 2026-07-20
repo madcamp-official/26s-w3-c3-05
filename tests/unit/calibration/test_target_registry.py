@@ -55,9 +55,30 @@ def test_registration_uses_robust_center_and_minimum_spread() -> None:
 
 def test_registration_defaults_are_demo_tolerant() -> None:
     session = TargetRegistrationSession("lamp", "조명", "LIGHT", "device-1")
+    assert session.duration_ms == 15_000
     assert session.minimum_valid_frames == 15
     assert session.minimum_confidence == pytest.approx(0.35)
     assert session.maximum_jump_deg == pytest.approx(18.0)
+
+
+def test_registration_diagnostics_count_rejected_frames() -> None:
+    session = TargetRegistrationSession(
+        "lamp",
+        "조명",
+        "LIGHT",
+        "device-1",
+        minimum_valid_frames=2,
+        maximum_jump_deg=12.0,
+    )
+    assert not session.add(None, 1.0)
+    assert not session.add(_gaze(1, 0.0), 1.0, eyes_open=False)
+    assert not session.add(_gaze(2, 0.0), 0.1)
+    assert session.add(_gaze(3, 0.0), 1.0)
+    assert not session.add(_gaze(4, 30.0), 1.0)
+
+    assert session.diagnostic_summary() == (
+        "seen=5, valid=1, tracking_lost=1, closed_eyes=1, low_conf=1, jump=1"
+    )
 
 
 def test_registration_rejects_jump_and_insufficient_frames() -> None:

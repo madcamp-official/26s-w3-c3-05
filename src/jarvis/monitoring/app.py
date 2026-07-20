@@ -93,6 +93,11 @@ _LOCK_COLOR = {
     GazeLockState.EXPIRED: "#f85149",
     GazeLockState.COMMITTED: "#2ea043",
 }
+_REGISTRATION_GUIDANCE_PHASES: tuple[tuple[int, str], ...] = (
+    (5_000, "1/3 좌측에서 물체를 계속 바라보세요"),
+    (10_000, "2/3 정면에서 물체를 계속 바라보세요"),
+    (15_000, "3/3 우측에서 물체를 계속 바라보세요"),
+)
 _MONO = "font-family:Consolas,monospace; font-size:12px; color:#c9d1d9;"
 
 
@@ -680,6 +685,7 @@ class MainWindow(QMainWindow):
         self._target_registry = TargetRegistry(self._profiles_path)
         self._registration: TargetRegistrationSession | None = None
         self._registration_points: list[tuple[float, float]] = []
+        self._registration_phase_index: int | None = None
         self._target_list = QListWidget()
         self._register_target_button = QPushButton()
         self._probe = GazeProbe(
@@ -750,6 +756,12 @@ class MainWindow(QMainWindow):
             self._sample_list.addItem(format_gaze_sample(sample))
         layout.addWidget(self._sample_list)
         self._refresh_sample_button()
+        self._registration_status = QLabel("등록 대기")
+        self._registration_status.setStyleSheet(
+            "background:#161b22; color:#8b949e; border:1px solid #30363d;"
+            " border-radius:6px; padding:8px; font-weight:600;"
+        )
+        layout.addWidget(self._registration_status)
 
         target_controls = QHBoxLayout()
         self._register_target_button = QPushButton("물체 등록")
@@ -855,6 +867,7 @@ class MainWindow(QMainWindow):
                 and smoothed is not None
             ):
                 self._registration_points.append(direction_to_yaw_pitch(smoothed.direction))
+            self._update_registration_guidance(snapshot.timestamp_ms)
             if self._registration.is_elapsed(snapshot.timestamp_ms):
                 self._finish_target_registration()
 
@@ -906,8 +919,42 @@ class MainWindow(QMainWindow):
             target_id, name, device_type, device_id, config=self._gaze_config
         )
         self._registration_points = []
+        self._registration_phase_index = None
         self._register_target_button.setEnabled(False)
-        self._log.info(f"'{name}'을 10초 동안 바라보며 고개를 좌우·상하로 크게 움직여 주세요")
+        self._registration_status.setText(
+            f"'{name}' 등록 준비: 물체를 바라보면 15초 안내가 시작됩니다"
+        )
+        self._registration_status.setStyleSheet(
+            "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
+            " border-radius:6px; padding:8px; font-weight:700;"
+        )
+        self._log.info(
+            f"'{name}' 등록 시작: 좌측 5초 → 정면 5초 → 우측 5초 동안 물체를 계속 바라보세요"
+        )
+
+    def _update_registration_guidance(self, timestamp_ms: int) -> None:
+        assert self._registration is not None
+        if self._registration.started_at_ms is None:
+            self._registration_status.setText("등록 대기: 얼굴과 시선이 안정적으로 잡히길 기다리는 중")
+            return
+        elapsed_ms = max(0, timestamp_ms - self._registration.started_at_ms)
+        phase_index = 0
+        for index, (end_ms, _label) in enumerate(_REGISTRATION_GUIDANCE_PHASES):
+            if elapsed_ms < end_ms:
+                phase_index = index
+                break
+        else:
+            phase_index = len(_REGISTRATION_GUIDANCE_PHASES) - 1
+        phase_end_ms, label = _REGISTRATION_GUIDANCE_PHASES[phase_index]
+        remaining_s = max(0.0, (phase_end_ms - elapsed_ms) / 1000.0)
+        status = (
+            f"등록 중: {label}  |  남은 {remaining_s:0.1f}s  |  "
+            f"valid {self._registration.valid_frame_count}/{self._registration.minimum_valid_frames}"
+        )
+        self._registration_status.setText(status)
+        if phase_index != self._registration_phase_index:
+            self._registration_phase_index = phase_index
+            self._log.info(status)
 
     def _finish_target_registration(self) -> None:
         assert self._registration is not None
@@ -929,14 +976,21 @@ class MainWindow(QMainWindow):
             )
             self._log.info(
                 f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames) "
-                f"— {self._describe_triangulation_outcome(record)}"
+                f"— {self._describe_triangulation_outcome(record)} | "
+                f"{self._registration.diagnostic_summary()}"
             )
         except ValueError as exc:
-            self._log.warn(f"기기 등록 실패: {exc}")
+            self._log.warn(f"기기 등록 실패: {exc} | {self._registration.diagnostic_summary()}")
         finally:
             self._registration = None
             self._registration_points = []
+            self._registration_phase_index = None
             self._register_target_button.setEnabled(True)
+            self._registration_status.setText("등록 대기")
+            self._registration_status.setStyleSheet(
+                "background:#161b22; color:#8b949e; border:1px solid #30363d;"
+                " border-radius:6px; padding:8px; font-weight:600;"
+            )
             self._refresh_targets()
 
     def _describe_triangulation_outcome(self, record: TargetRecord) -> str:

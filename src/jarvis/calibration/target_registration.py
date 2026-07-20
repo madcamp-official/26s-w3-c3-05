@@ -34,7 +34,7 @@ class TargetRegistrationSession:
         device_type: str,
         device_id: str,
         *,
-        duration_ms: int = 10_000,
+        duration_ms: int = 15_000,
         minimum_valid_frames: int = 15,
         minimum_confidence: float = 0.35,
         maximum_jump_deg: float = 18.0,
@@ -50,6 +50,11 @@ class TargetRegistrationSession:
         self.started_at_ms: int | None = None
         self._samples: list[tuple[float, float]] = []
         self._rays: list[tuple[Vector3, Vector3]] = []
+        self.total_frames_seen = 0
+        self.rejected_tracking_lost = 0
+        self.rejected_closed_eyes = 0
+        self.rejected_low_confidence = 0
+        self.rejected_jump = 0
         self.triangulation_result: TriangulationResult | None = None
         """가장 최근 `finalize()` 호출이 시도한 삼각측량 결과 — 품질 기준을
         만족하지 못해 각도 모드로 대체된 경우에도 진단을 위해 남는다(값을
@@ -60,7 +65,15 @@ class TargetRegistrationSession:
         return len(self._samples)
 
     def add(self, gaze: SmoothedGaze | None, confidence: float, *, eyes_open: bool = True) -> bool:
-        if gaze is None or not eyes_open or confidence < self.minimum_confidence:
+        self.total_frames_seen += 1
+        if gaze is None:
+            self.rejected_tracking_lost += 1
+            return False
+        if not eyes_open:
+            self.rejected_closed_eyes += 1
+            return False
+        if confidence < self.minimum_confidence:
+            self.rejected_low_confidence += 1
             return False
         if self.started_at_ms is None:
             self.started_at_ms = gaze.timestamp_ms
@@ -68,6 +81,7 @@ class TargetRegistrationSession:
         if self._samples:
             previous_yaw, previous_pitch = self._samples[-1]
             if math.hypot(yaw - previous_yaw, pitch - previous_pitch) > self.maximum_jump_deg:
+                self.rejected_jump += 1
                 return False
         self._samples.append((yaw, pitch))
         if gaze.origin is not None:
@@ -120,4 +134,13 @@ class TargetRegistrationSession:
         return TargetGeometry3DRecord(
             center_mm=(float(center[0]), float(center[1]), float(center[2])),
             radius_mm=radius_mm,
+        )
+
+    def diagnostic_summary(self) -> str:
+        """Human-readable counts explaining why registration frames were rejected."""
+        return (
+            f"seen={self.total_frames_seen}, valid={self.valid_frame_count}, "
+            f"tracking_lost={self.rejected_tracking_lost}, "
+            f"closed_eyes={self.rejected_closed_eyes}, "
+            f"low_conf={self.rejected_low_confidence}, jump={self.rejected_jump}"
         )
