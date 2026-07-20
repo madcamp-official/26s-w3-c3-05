@@ -40,6 +40,7 @@ from jarvis.gesture_fusion.landmarks import (
     palm_tilt_degrees,
 )
 from jarvis.gesture_fusion.pose_protocol import NullPoseClassifier, PoseClassifier, PosePrediction
+from jarvis.gesture_fusion.pose_state import PoseEvent, PoseStateMachine
 from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 Point2D = tuple[float, float]
@@ -147,6 +148,10 @@ class HandSnapshot:
     # 정적 자세 판정. 모델이 없으면 `trusted=False`에 사유가 담긴다 — 자세를 지어내지
     # 않으며, 학습 안 한 상태가 "인식이 안 된다"로 오해되지 않게 UI에 그대로 드러낸다.
     pose: PosePrediction | None = None
+    # 시간축 상태기계의 현재 상태와 이번 프레임에 발생한 동작. 상태는 유지 조건을
+    # 통과한 자세이고(순간적인 전이는 여기 오지 않는다), 이벤트는 실행 대상이다.
+    pose_state: str = ""
+    pose_events: tuple[PoseEvent, ...] = ()
 
 
 def _gesture_recognition_status() -> str:
@@ -200,6 +205,7 @@ class HandProbe:
     ) -> None:
         self._model_path = model_path
         self._pose_classifier: PoseClassifier = _load_pose_classifier(pose_model_path, config)
+        self._pose_state = PoseStateMachine()
         self._config = config
         self._landmarker: object | None = None
         self._available = False
@@ -342,6 +348,12 @@ class HandProbe:
         image_points_smoothed = self._smooth_image_points(points[:, :2], timestamp_ms)
         model_points = None if model is None else tuple((float(p[0]), float(p[1])) for p in model)
         model_points_raw = tuple((float(p[0]), float(p[1])) for p in observation.landmarks)
+        pose = self._classify_pose(model, observation.palm_tilt_degrees)
+        # 상태기계는 **모델 입력과 같은 좌표**를 본다 — 스크롤 방향(손가락이 가리키는
+        # 쪽)을 여기서 계산하므로 판정과 같은 값을 써야 어긋나지 않는다.
+        events = self._pose_state.update(
+            pose, timestamp_ms, None if model is None else np.asarray(model)
+        )
         wrist_velocity = _as_vec2(self._extractor.last_wrist_velocity)
         wrist_acceleration = _as_vec2(self._extractor.last_wrist_acceleration)
         return HandSnapshot(
@@ -363,7 +375,9 @@ class HandProbe:
             image_points_smoothed=image_points_smoothed,
             palm_tilt_degrees=observation.palm_tilt_degrees,
             palm_tilted=is_palm_tilted(observation, self._config),
-            pose=self._classify_pose(model, observation.palm_tilt_degrees),
+            pose=pose,
+            pose_state=self._pose_state.state,
+            pose_events=tuple(events),
         )
 
     def _smooth_image_points(
@@ -390,6 +404,7 @@ class HandProbe:
     def _lost(self, timestamp_ms: int, frame_id: int, inference_ms: float) -> HandSnapshot:
         # Reset the extractor on tracking loss so smoothing never bridges the gap.
         self._extractor.reset()
+        self._pose_state.reset()
         if self._image_smoother is not None:
             self._image_smoother.reset()
         return HandSnapshot(

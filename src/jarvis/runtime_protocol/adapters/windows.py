@@ -42,8 +42,23 @@ class InputKey(StrEnum):
     MUTE = "mute"
 
 
+class MouseButton(StrEnum):
+    """클릭에 쓰는 마우스 버튼."""
+
+    LEFT = "left"
+    RIGHT = "right"
+
+
 class InputSink(Protocol):
     """Low-level OS input operations. The real implementation touches hardware."""
+
+    def click(self, button: MouseButton) -> None:
+        """버튼 하나를 누름→뗌으로 전송한다(현재 커서 위치)."""
+        ...
+
+    def press(self, button: MouseButton, *, down: bool) -> None:
+        """버튼을 누르거나 뗀다 — 드래그는 누른 채 커서를 옮겨야 하므로 분리한다."""
+        ...
 
     def scroll(self, ticks: int) -> None:
         """Scroll the wheel by ``ticks`` (positive up, negative down)."""
@@ -174,6 +189,10 @@ _VK = {
 }
 _KEYEVENTF_KEYUP = 0x0002
 _MOUSEEVENTF_WHEEL = 0x0800
+_MOUSEEVENTF_LEFTDOWN = 0x0002
+_MOUSEEVENTF_LEFTUP = 0x0004
+_MOUSEEVENTF_RIGHTDOWN = 0x0008
+_MOUSEEVENTF_RIGHTUP = 0x0010
 _WHEEL_DELTA = 120
 _VK_TAB = 0x09
 _VK_MENU = 0x12  # ALT
@@ -197,6 +216,20 @@ class Win32InputSink:
         # ``ctypes.windll`` trips [attr-defined] when mypy runs on a non-Windows
         # host (a per-line ignore would flip to unused when checked on Windows).
         return getattr(ctypes, "windll").user32
+
+    def press(self, button: MouseButton, *, down: bool) -> None:
+        """버튼 상태를 바꾼다. 드래그는 누른 채 이동해야 해서 click과 분리돼 있다."""
+        flags = {
+            (MouseButton.LEFT, True): _MOUSEEVENTF_LEFTDOWN,
+            (MouseButton.LEFT, False): _MOUSEEVENTF_LEFTUP,
+            (MouseButton.RIGHT, True): _MOUSEEVENTF_RIGHTDOWN,
+            (MouseButton.RIGHT, False): _MOUSEEVENTF_RIGHTUP,
+        }[(button, down)]
+        self._user32().mouse_event(flags, 0, 0, 0, 0)
+
+    def click(self, button: MouseButton) -> None:
+        self.press(button, down=True)
+        self.press(button, down=False)
 
     def scroll(self, ticks: int) -> None:
         self._user32().mouse_event(_MOUSEEVENTF_WHEEL, 0, 0, ticks * _WHEEL_DELTA, 0)

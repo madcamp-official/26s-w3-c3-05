@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from jarvis.runtime_protocol.adapters.windows import InputKey
+from jarvis.runtime_protocol.adapters.windows import InputKey, MouseButton
 
 # NX_KEYTYPE_* — macOS 시스템 정의 미디어 키 코드(IOKit/hidsystem/ev_keymap.h).
 _NX_KEYTYPE = {
@@ -55,6 +55,23 @@ class MacOSInputSink:
         import Quartz
 
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+    def press(self, button: MouseButton, *, down: bool) -> None:
+        """버튼 상태를 바꾼다. 드래그는 누른 채 이동해야 해서 click과 분리돼 있다."""
+        import Quartz
+
+        if button is MouseButton.RIGHT:
+            event_type = Quartz.kCGEventRightMouseDown if down else Quartz.kCGEventRightMouseUp
+            mouse_button = Quartz.kCGMouseButtonRight
+        else:
+            event_type = Quartz.kCGEventLeftMouseDown if down else Quartz.kCGEventLeftMouseUp
+            mouse_button = Quartz.kCGMouseButtonLeft
+        location = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+        self._post(Quartz.CGEventCreateMouseEvent(None, event_type, location, mouse_button))
+
+    def click(self, button: MouseButton) -> None:
+        self.press(button, down=True)
+        self.press(button, down=False)
 
     def scroll(self, ticks: int) -> None:
         import Quartz

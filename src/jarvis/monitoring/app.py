@@ -79,6 +79,7 @@ from jarvis.monitoring.overlay import (
     render_vector,
 )
 from jarvis.monitoring.pipeline_status import StageState, StageStatus, detect_pipeline_status
+from jarvis.monitoring.pose_control import PoseControlBridge, default_input_sink
 from jarvis.runtime_protocol.config import read_env_file
 from jarvis.runtime_protocol.telemetry.latency import LatencyAggregator, LatencyStage
 
@@ -402,6 +403,7 @@ class HandPanel(QScrollArea):
         *,
         smoothing: bool = True,
         on_smoothing_toggled: Callable[[bool], None] | None = None,
+        on_control_toggled: Callable[[bool], None] | None = None,
     ) -> None:
         super().__init__()
         self.setWidgetResizable(True)
@@ -445,6 +447,18 @@ class HandPanel(QScrollArea):
         if on_smoothing_toggled is not None:
             self._smooth_toggle.toggled.connect(on_smoothing_toggled)
         layout.addWidget(self._smooth_toggle)
+
+        # 실제 OS 제어 스위치. **기본 꺼짐** — 이 경로는 사용자의 진짜 데스크톱을
+        # 클릭하고 스크롤한다. 분류 정확도 87.1%에 오발동이 1.7% 남아 있어, 툴을
+        # 띄우는 것만으로 의도치 않은 클릭이 일어나면 안 된다.
+        self._control_toggle = QCheckBox("🖱 손동작으로 컴퓨터 제어 (실제 클릭·스크롤이 실행됩니다)")
+        self._control_toggle.setStyleSheet("color:#f0b429; font-weight:600;")
+        if on_control_toggled is not None:
+            self._control_toggle.toggled.connect(on_control_toggled)
+        layout.addWidget(self._control_toggle)
+        self._control_status = QLabel("제어 꺼짐")
+        self._control_status.setStyleSheet(_MONO)
+        layout.addWidget(self._control_status)
 
         # The one thing that must not be misread: recognition is OFF (untrained).
         banner = QLabel("⚠ 제스처 인식 비활성\n" + gesture_status)
@@ -491,7 +505,7 @@ class HandPanel(QScrollArea):
         outer.addStretch(1)
         self.setWidget(body)
 
-    def update_snapshot(self, s: HandSnapshot) -> None:
+    def update_snapshot(self, s: HandSnapshot, control_action: str = "") -> None:
         self._status.setText(f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame")
         self._status.setStyleSheet("color:#3fb950;" if s.hand_detected else "color:#8b949e;")
         self._detected.setText(
@@ -511,6 +525,11 @@ class HandPanel(QScrollArea):
         image = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
         self._model_canvas.setPixmap(QPixmap.fromImage(image))
 
+        enabled = self._control_toggle.isChecked()
+        self._control_status.setText(
+            ("제어 켜짐 · " if enabled else "제어 꺼짐 · ") + (control_action or "대기")
+        )
+        self._control_status.setStyleSheet(_MONO + ("color:#3fb950;" if enabled else ""))
         if s.hand_detected:
             mode = "스무딩됨 (모델 실제 입력)" if s.smoothed else "raw (스무딩 꺼짐)"
             # 기울기 판정도 자세별 한계를 따른다 — 전역 한계(20°)를 보여주면 40°까지
@@ -537,6 +556,9 @@ class HandPanel(QScrollArea):
             self._numeric.setText(
                 f"모델 입력   : {mode}\n"
                 f"자세 판정   : {pose_line}\n"
+                f"확정 상태   : {s.pose_state or '—'}"
+                + (f"   → {', '.join(e.kind for e in s.pose_events)}" if s.pose_events else "")
+                + "\n"
                 f"손 기울기   : {tilt}\n"
                 f"palm scale  : {s.palm_scale:.4f}\n"
                 f"landmarks   : {s.landmark_count} points (정규화·손목 원점)\n"
@@ -878,6 +900,8 @@ class MainWindow(QMainWindow):
         self._hand_probe = HandProbe(
             model_path=self._hand_model_path, pose_model_path=_default_pose_model_path()
         )
+        # 판정과 실행의 분리: 상태기계는 순수 로직이고, 실제 OS 입력은 이 브리지만 한다.
+        self._pose_control = PoseControlBridge(sink=default_input_sink())
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
@@ -979,8 +1003,19 @@ class MainWindow(QMainWindow):
             self._hand_probe.gesture_recognition_status,
             smoothing=self._hand_probe.smoothing,
             on_smoothing_toggled=self._hand_probe.set_smoothing,
+            on_control_toggled=self._set_control_enabled,
         )
         return self._hand_panel
+
+    def _set_control_enabled(self, enabled: bool) -> None:
+        """실제 OS 제어를 켜고 끈다. 끌 때는 눌린 버튼을 반드시 놓는다."""
+        if not enabled:
+            self._pose_control.release()  # 드래그 중 껐을 때 버튼이 눌린 채 남지 않게
+        self._pose_control.enabled = enabled
+        if enabled and self._pose_control.sink is None:
+            self._log.warn("이 플랫폼에는 입력 어댑터가 없어 제어를 실행할 수 없습니다")
+        else:
+            self._log.info(f"손동작 제어 {'켜짐' if enabled else '꺼짐'}")
 
     def _build_pipeline_tab(self) -> QWidget:
         body = QWidget()
@@ -1196,7 +1231,11 @@ class MainWindow(QMainWindow):
     def _on_hand(self, snapshot: object) -> None:
         assert isinstance(snapshot, HandSnapshot)
         self._video.set_hand(snapshot)
-        self._hand_panel.update_snapshot(snapshot)
+        # 손을 놓치면 드래그가 눌린 채 남지 않게 먼저 정리한다.
+        if not snapshot.hand_detected:
+            self._pose_control.release()
+        self._pose_control.apply(list(snapshot.pose_events))
+        self._hand_panel.update_snapshot(snapshot, self._pose_control.last_action)
         self._sidebar.set_hand_status(snapshot)
 
     def _on_camera_failed(self, message: str) -> None:
