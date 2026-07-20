@@ -19,6 +19,8 @@ from jarvis.gaze.config import GazeConfig
         {"max_valid_eye_offset": -0.1},
         {"registration_max_area_radius_deg": 3.0},
         {"registration_max_area_radius_deg": 20.0},
+        {"target_match_tolerance": 0.99},
+        {"target_match_tolerance": 2.01},
     ],
 )
 def test_invalid_config_is_rejected(overrides: dict[str, object]) -> None:

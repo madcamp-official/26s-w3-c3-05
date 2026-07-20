@@ -82,22 +82,24 @@ class FeatureProfileDetail:
     distance: float
     threshold: float
     normalized_distance: float
+    tolerance: float
     is_selected: bool
 
     @property
     def range_status(self) -> str:
-        return "IN" if self.normalized_distance <= 1.0 else "OUT"
+        return "IN" if self.normalized_distance <= self.tolerance else "OUT"
 
 
 @dataclass(frozen=True, slots=True)
 class AreaProfileDetail:
     device_id: str
     normalized_distance: float
+    tolerance: float
     is_selected: bool
 
     @property
     def range_status(self) -> str:
-        return "IN" if self.normalized_distance <= 1.0 else "OUT"
+        return "IN" if self.normalized_distance <= self.tolerance else "OUT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +184,7 @@ def _reject_reason(
         return None
     if feature_details:
         nearest_feature = feature_details[0]
-        if nearest_feature.normalized_distance > 1.0:
+        if nearest_feature.normalized_distance > config.target_match_tolerance:
             return (
                 f"nearest feature profile OUT: "
                 f"{nearest_feature.distance:.2f}/{nearest_feature.threshold:.2f} "
@@ -198,7 +200,7 @@ def _reject_reason(
             f"nearest target angle {best_angle:.1f}deg > "
             f"{config.unknown_max_angle_deg:.0f}deg"
         )
-    if nearest.normalized_distance > 1.0:
+    if nearest.normalized_distance > config.target_match_tolerance:
         return (
             f"nearest target range OUT: "
             f"{nearest.angular_distance_deg:.1f}deg / {nearest.allowed_radius_deg:.1f}deg "
@@ -287,6 +289,7 @@ def _feature_sample(
 def _feature_details(
     sample: TargetFeatureSample | None,
     classifier: TargetClassifier,
+    config: GazeConfig,
     selected_target: str,
 ) -> tuple[FeatureProfileDetail, ...]:
     if sample is None:
@@ -301,6 +304,7 @@ def _feature_details(
                 distance=distance,
                 threshold=profile.threshold,
                 normalized_distance=normalized,
+                tolerance=config.target_match_tolerance,
                 is_selected=device_id == selected_target,
             )
         )
@@ -323,6 +327,7 @@ def _area_details(
                 sample.gaze_pitch,
                 config.registration_max_area_radius_deg,
             ),
+            tolerance=config.target_match_tolerance,
             is_selected=device_id == selected_target,
         )
         for device_id, profile in classifier.area_profiles.items()
@@ -383,7 +388,7 @@ def _device_details(
                 normalized_distance=normalized_distance,
                 target_yaw_deg=target_yaw_deg,
                 target_pitch_deg=target_pitch_deg,
-                within_profile_radius=normalized_distance <= 1.0,
+                within_profile_radius=normalized_distance <= config.target_match_tolerance,
                 is_selected=(device_id == selected_target),
             )
         )
@@ -517,7 +522,7 @@ def evaluate(
         )
 
     details = _device_details(classify_direction, classify_origin, classifier, config, result.target)
-    profile_details = _feature_details(feature_sample, classifier, result.target)
+    profile_details = _feature_details(feature_sample, classifier, config, result.target)
     area_details = _area_details(feature_sample, classifier, config, result.target)
     target_label = (
         config.UNKNOWN_TARGET

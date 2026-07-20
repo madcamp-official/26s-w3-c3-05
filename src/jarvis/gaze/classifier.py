@@ -286,7 +286,7 @@ class TargetClassifier:
         best_angle_deg = math.degrees(best_angle)
         best_normalized_distance = float(normalized_distances[order[0]])
         if (
-            best_normalized_distance > 1.0
+            best_normalized_distance > self._config.target_match_tolerance
             or best_angle_deg > self._config.unknown_max_angle_deg
         ):
             return ClassificationResult(
@@ -357,7 +357,7 @@ class TargetClassifier:
         best_probability = float(probabilities[best_index])
         remaining = [i for i in order if int(i) != best_index]
         second_best_probability = float(probabilities[int(remaining[0])]) if remaining else 0.0
-        if float(normalized[best_index]) > 1.0:
+        if float(normalized[best_index]) > self._config.target_match_tolerance:
             return ClassificationResult(
                 target=self._config.UNKNOWN_TARGET,
                 probability=best_probability,
@@ -413,11 +413,12 @@ class TargetClassifier:
                 device_id,
             )
             for device_id, profile in self._area_profiles.items()
-            if profile.contains(
+            if profile.normalized_distance(
                 feature_sample.gaze_yaw,
                 feature_sample.gaze_pitch,
                 self._config.registration_max_area_radius_deg,
             )
+            <= self._config.target_match_tolerance
         ]
         if not candidates:
             return None

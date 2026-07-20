@@ -164,6 +164,9 @@ class GazeConfig:
     registration_max_area_radius_deg: float = 6.0
     """Runtime/storage cap for edge-loop target area radii."""
 
+    target_match_tolerance: float = 1.10
+    """Accept near-boundary target matches up to this normalized distance."""
+
     def __post_init__(self) -> None:
         if self.dwell_time_ms < 0 or self.target_lock_ttl_ms <= 0:
             raise ValueError("Gaze timing thresholds must be non-negative and TTL must be positive")
@@ -251,6 +254,8 @@ class GazeConfig:
             raise ValueError(
                 "registration_max_area_radius_deg must satisfy min_spread <= area <= max_spread"
             )
+        if not math.isfinite(self.target_match_tolerance) or not 1.0 <= self.target_match_tolerance <= 2.0:
+            raise ValueError("target_match_tolerance must be finite and within [1, 2]")
 
 
 DEFAULT_GAZE_CONFIG = GazeConfig()
