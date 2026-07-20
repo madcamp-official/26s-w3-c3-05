@@ -12,7 +12,11 @@ import numpy as np
 from jarvis.calibration.profiles import profile_from_dict
 from jarvis.gaze.classifier import DeviceGazeProfile, TargetGeometry3D
 from jarvis.gaze.direction import direction_to_yaw_pitch, yaw_pitch_to_direction
-from jarvis.gaze.feature_profile import FEATURE_DIMENSION, TargetFeatureProfile
+from jarvis.gaze.feature_profile import (
+    FEATURE_DIMENSION,
+    TargetAreaProfile,
+    TargetFeatureProfile,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +67,7 @@ class TargetRecord:
     position_3d: TargetGeometry3DRecord | None = None
     reference_face_scale: float | None = None
     feature_profile: TargetFeatureProfile | None = None
+    area_profile: TargetAreaProfile | None = None
     """10초 등록 동안 모은 시선 광선의 삼각측량 결과(calibration/triangulation.py).
 
     품질 기준(baseline·각도 다양성·잔차)을 만족했을 때만 채워지며, 그렇지 않으면
@@ -126,6 +131,7 @@ class TargetRegistry:
             position_3d=current.position_3d,
             reference_face_scale=current.reference_face_scale,
             feature_profile=current.feature_profile,
+            area_profile=current.area_profile,
         )
         self.upsert(updated)
         return updated
@@ -172,6 +178,7 @@ class TargetRegistry:
                 position_3d=self._parse_position_3d(item.get("position_3d")),
                 reference_face_scale=self._parse_positive_float(item.get("reference_face_scale")),
                 feature_profile=self._parse_feature_profile(item.get("feature_profile")),
+                area_profile=self._parse_area_profile(item.get("area_profile")),
             )
             self._records[record.target_id] = record
 
@@ -230,6 +237,21 @@ class TargetRegistry:
                 threshold=float(threshold),
             )
         except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_area_profile(payload: object) -> TargetAreaProfile | None:
+        if not isinstance(payload, dict):
+            return None
+        try:
+            return TargetAreaProfile(
+                center_yaw=float(payload["center_yaw"]),
+                center_pitch=float(payload["center_pitch"]),
+                radius_yaw=float(payload["radius_yaw"]),
+                radius_pitch=float(payload["radius_pitch"]),
+                sample_count=int(payload["sample_count"]),
+            )
+        except (KeyError, TypeError, ValueError):
             return None
 
     def _migrate_legacy_profile(self, item: dict[str, object]) -> TargetRecord | None:

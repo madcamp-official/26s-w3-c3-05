@@ -22,7 +22,11 @@ from jarvis.calibration.registry import (
 from jarvis.calibration.triangulation import TriangulationResult, triangulate_rays
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
-from jarvis.gaze.feature_profile import TargetFeatureSample, build_feature_profile
+from jarvis.gaze.feature_profile import (
+    TargetFeatureSample,
+    build_area_profile,
+    build_feature_profile,
+)
 from jarvis.gaze.features import Vector3
 from jarvis.gaze.smoothing import SmoothedGaze
 
@@ -133,6 +137,10 @@ class TargetRegistrationSession:
             if len(self._feature_samples) >= self.minimum_valid_frames
             else None
         )
+        area_profile = build_area_profile(
+            self._samples,
+            minimum_radius_deg=self.config.registration_min_spread_deg,
+        )
         return TargetRecord(
             target_id=self.target_id,
             name=self.name,
@@ -147,6 +155,7 @@ class TargetRegistrationSession:
                 else None
             ),
             feature_profile=feature_profile,
+            area_profile=area_profile,
         )
 
     def _try_triangulate(self) -> TargetGeometry3DRecord | None:

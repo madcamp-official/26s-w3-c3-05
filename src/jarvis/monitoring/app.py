@@ -246,6 +246,14 @@ class GazePanel(QScrollArea):
         self._reject.setText(f"UNKNOWN 사유: {s.reject_reason}" if s.reject_reason else "")
 
         self._devices.clear()
+        if s.area_details:
+            self._devices.addItem("[target area / edge loop]")
+            for area_detail in s.area_details:
+                mark = "selected" if area_detail.is_selected else ""
+                self._devices.addItem(
+                    f"{area_detail.device_id:<16} x{area_detail.normalized_distance:4.2f} "
+                    f"{area_detail.range_status}  {mark}"
+                )
         if s.feature_details:
             self._devices.addItem("[feature profile / Mahalanobis]")
             for feature_detail in s.feature_details:
@@ -255,7 +263,7 @@ class GazePanel(QScrollArea):
                     f"x{feature_detail.normalized_distance:4.2f} {feature_detail.range_status}  {mark}"
                 )
             self._devices.addItem("[angle fallback]")
-        if not s.device_details and not s.feature_details:
+        if not s.device_details and not s.feature_details and not s.area_details:
             self._devices.addItem("no registered target profile")
         for device_detail in s.device_details:
             if np.isnan(device_detail.angular_distance_deg):
@@ -1040,6 +1048,7 @@ class MainWindow(QMainWindow):
                 record.to_profile(),
                 geometry_3d=record.to_geometry_3d(),
                 feature_profile=record.feature_profile,
+                area_profile=record.area_profile,
                 label=record.name,
             )
             calibration_samples = [
@@ -1113,6 +1122,7 @@ class MainWindow(QMainWindow):
                 updated.to_profile(),
                 geometry_3d=updated.to_geometry_3d(),
                 feature_profile=updated.feature_profile,
+                area_profile=updated.area_profile,
                 label=updated.name,
             )
             self._refresh_targets()
@@ -1143,11 +1153,16 @@ class MainWindow(QMainWindow):
                 if record.feature_profile is not None
                 else " feature=none"
             )
+            area_label = (
+                f" area={record.area_profile.radius_yaw:.1f}/{record.area_profile.radius_pitch:.1f}"
+                if record.area_profile is not None
+                else " area=none"
+            )
             self._target_list.addItem(
                 f"{record.name} [{record.target_id}]  "
                 f"yaw={record.direction.yaw:+.1f} pitch={record.direction.pitch:+.1f}"
                 f" spread={record.spread.yaw:.1f}/{record.spread.pitch:.1f}"
-                f"{scale_label}{feature_label}"
+                f"{scale_label}{feature_label}{area_label}"
             )
 
     def _save_gaze_sample(self) -> None:

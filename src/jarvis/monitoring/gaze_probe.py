@@ -39,7 +39,11 @@ from jarvis.gaze.classifier import (
 )
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
-from jarvis.gaze.feature_profile import TargetFeatureProfile, TargetFeatureSample
+from jarvis.gaze.feature_profile import (
+    TargetAreaProfile,
+    TargetFeatureProfile,
+    TargetFeatureSample,
+)
 from jarvis.gaze.features import FaceObservation, Vector3, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
 from jarvis.gaze.smoothing import GazeSmoother
@@ -77,6 +81,17 @@ class FeatureProfileDetail:
     device_id: str
     distance: float
     threshold: float
+    normalized_distance: float
+    is_selected: bool
+
+    @property
+    def range_status(self) -> str:
+        return "IN" if self.normalized_distance <= 1.0 else "OUT"
+
+
+@dataclass(frozen=True, slots=True)
+class AreaProfileDetail:
+    device_id: str
     normalized_distance: float
     is_selected: bool
 
@@ -134,6 +149,7 @@ class GazeSnapshot:
     device_details: tuple[DeviceGazeDetail, ...]
     feature_sample: TargetFeatureSample | None
     feature_details: tuple[FeatureProfileDetail, ...]
+    area_details: tuple[AreaProfileDetail, ...]
 
     # 2e — gaze lock state machine
     lock_state: GazeLockState
@@ -288,6 +304,24 @@ def _feature_details(
                 is_selected=device_id == selected_target,
             )
         )
+    return tuple(sorted(details, key=lambda item: item.normalized_distance))
+
+
+def _area_details(
+    sample: TargetFeatureSample | None,
+    classifier: TargetClassifier,
+    selected_target: str,
+) -> tuple[AreaProfileDetail, ...]:
+    if sample is None:
+        return tuple()
+    details = [
+        AreaProfileDetail(
+            device_id=device_id,
+            normalized_distance=profile.normalized_distance(sample.gaze_yaw, sample.gaze_pitch),
+            is_selected=device_id == selected_target,
+        )
+        for device_id, profile in classifier.area_profiles.items()
+    ]
     return tuple(sorted(details, key=lambda item: item.normalized_distance))
 
 
@@ -470,6 +504,7 @@ def evaluate(
 
     details = _device_details(classify_direction, classify_origin, classifier, config, result.target)
     profile_details = _feature_details(feature_sample, classifier, result.target)
+    area_details = _area_details(feature_sample, classifier, result.target)
     target_label = (
         config.UNKNOWN_TARGET
         if result.target == config.UNKNOWN_TARGET
@@ -512,6 +547,7 @@ def evaluate(
         device_details=details,
         feature_sample=feature_sample,
         feature_details=profile_details,
+        area_details=area_details,
         lock_state=lock.state,
         locked_device=lock.locked_device,
         is_confident=_is_confident(result, config),
@@ -570,6 +606,7 @@ class GazeProbe:
                 record.to_profile(),
                 geometry_3d=record.to_geometry_3d(),
                 feature_profile=record.feature_profile,
+                area_profile=record.area_profile,
             )
             self._target_labels[record.target_id] = record.name
             count += 1
@@ -595,12 +632,16 @@ class GazeProbe:
         profile: DeviceGazeProfile,
         geometry_3d: TargetGeometry3D | None = None,
         feature_profile: TargetFeatureProfile | None = None,
+        area_profile: TargetAreaProfile | None = None,
         label: str | None = None,
     ) -> None:
         """Add or replace one target profile in the live classifier."""
         existed = profile.device_id in self._classifier.profiles
         self._classifier.register_profile(
-            profile, geometry_3d=geometry_3d, feature_profile=feature_profile
+            profile,
+            geometry_3d=geometry_3d,
+            feature_profile=feature_profile,
+            area_profile=area_profile,
         )
         if label is not None:
             self._target_labels[profile.device_id] = label

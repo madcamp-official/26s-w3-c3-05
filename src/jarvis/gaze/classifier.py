@@ -17,7 +17,11 @@ from dataclasses import dataclass
 import numpy as np
 
 from jarvis.gaze.config import GazeConfig
-from jarvis.gaze.feature_profile import TargetFeatureProfile, TargetFeatureSample
+from jarvis.gaze.feature_profile import (
+    TargetAreaProfile,
+    TargetFeatureProfile,
+    TargetFeatureSample,
+)
 from jarvis.gaze.features import Vector3
 
 _MINIMUM_VARIANCE = 1e-6
@@ -158,12 +162,14 @@ class TargetClassifier:
         self._profiles: dict[str, DeviceGazeProfile] = {}
         self._geometries: dict[str, TargetGeometry3D] = {}
         self._feature_profiles: dict[str, TargetFeatureProfile] = {}
+        self._area_profiles: dict[str, TargetAreaProfile] = {}
 
     def register_profile(
         self,
         profile: DeviceGazeProfile,
         geometry_3d: TargetGeometry3D | None = None,
         feature_profile: TargetFeatureProfile | None = None,
+        area_profile: TargetAreaProfile | None = None,
     ) -> None:
         """기기 gaze profile을 등록하거나 갱신한다.
 
@@ -180,11 +186,16 @@ class TargetClassifier:
             self._feature_profiles[profile.device_id] = feature_profile
         else:
             self._feature_profiles.pop(profile.device_id, None)
+        if area_profile is not None:
+            self._area_profiles[profile.device_id] = area_profile
+        else:
+            self._area_profiles.pop(profile.device_id, None)
 
     def unregister_profile(self, device_id: str) -> None:
         self._profiles.pop(device_id, None)
         self._geometries.pop(device_id, None)
         self._feature_profiles.pop(device_id, None)
+        self._area_profiles.pop(device_id, None)
 
     @property
     def profiles(self) -> dict[str, DeviceGazeProfile]:
@@ -203,6 +214,10 @@ class TargetClassifier:
     @property
     def feature_profiles(self) -> dict[str, TargetFeatureProfile]:
         return dict(self._feature_profiles)
+
+    @property
+    def area_profiles(self) -> dict[str, TargetAreaProfile]:
+        return dict(self._area_profiles)
 
     def classify(
         self,
@@ -229,7 +244,7 @@ class TargetClassifier:
                 second_best_probability=0.0,
             )
 
-        if feature_sample is not None and self._feature_profiles:
+        if feature_sample is not None and (self._feature_profiles or self._area_profiles):
             return self._classify_by_feature_profile(feature_sample, direction, origin)
 
         device_ids = list(self._profiles.keys())
@@ -292,6 +307,15 @@ class TargetClassifier:
         direction: Vector3 | None = None,
         origin: Vector3 | None = None,
     ) -> ClassificationResult:
+        area_result = self._classify_by_area_profile(feature_sample, direction, origin)
+        if area_result is not None:
+            return area_result
+        if not self._feature_profiles:
+            return ClassificationResult(
+                target=self._config.UNKNOWN_TARGET,
+                probability=0.0,
+                second_best_probability=0.0,
+            )
         device_ids = list(self._feature_profiles.keys())
         distances = np.asarray(
             [
@@ -370,3 +394,33 @@ class TargetClassifier:
             return first_index
         candidates.sort(key=lambda item: item[0])
         return int(candidates[0][1])
+
+    def _classify_by_area_profile(
+        self,
+        feature_sample: TargetFeatureSample,
+        direction: Vector3 | None,
+        origin: Vector3 | None,
+    ) -> ClassificationResult | None:
+        if not self._area_profiles:
+            return None
+        candidates = [
+            (profile.normalized_distance(feature_sample.gaze_yaw, feature_sample.gaze_pitch), device_id)
+            for device_id, profile in self._area_profiles.items()
+            if profile.contains(feature_sample.gaze_yaw, feature_sample.gaze_pitch)
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0])
+        best_device_id = candidates[0][1]
+        if len(candidates) > 1 and candidates[1][0] - candidates[0][0] <= 0.15:
+            device_ids = [candidates[0][1], candidates[1][1]]
+            preferred = self._prefer_closer_3d_target(device_ids, 0, 1, direction, origin)
+            best_device_id = device_ids[preferred]
+        second = math.exp(-0.5 * candidates[1][0] ** 2) if len(candidates) > 1 else 0.0
+        best = math.exp(-0.5 * candidates[0][0] ** 2)
+        total = best + second
+        return ClassificationResult(
+            target=best_device_id,
+            probability=best / total if total > 0.0 else 1.0,
+            second_best_probability=second / total if total > 0.0 else 0.0,
+        )

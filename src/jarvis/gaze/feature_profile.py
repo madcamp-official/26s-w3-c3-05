@@ -129,6 +129,57 @@ class FeatureProfileBuildResult:
     rejected_outliers: int
 
 
+@dataclass(frozen=True, slots=True)
+class TargetAreaProfile:
+    center_yaw: float
+    center_pitch: float
+    radius_yaw: float
+    radius_pitch: float
+    sample_count: int
+
+    def __post_init__(self) -> None:
+        values = (self.center_yaw, self.center_pitch, self.radius_yaw, self.radius_pitch)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("target area profile values must be finite")
+        if self.radius_yaw <= 0.0 or self.radius_pitch <= 0.0:
+            raise ValueError("target area profile radii must be positive")
+        if self.sample_count <= 0:
+            raise ValueError("target area profile sample_count must be positive")
+
+    def normalized_distance(self, gaze_yaw: float, gaze_pitch: float) -> float:
+        return math.hypot(
+            (gaze_yaw - self.center_yaw) / self.radius_yaw,
+            (gaze_pitch - self.center_pitch) / self.radius_pitch,
+        )
+
+    def contains(self, gaze_yaw: float, gaze_pitch: float) -> bool:
+        return self.normalized_distance(gaze_yaw, gaze_pitch) <= 1.0
+
+
+def build_area_profile(
+    yaw_pitch_samples: list[tuple[float, float]],
+    *,
+    minimum_radius_deg: float = 4.0,
+    padding_scale: float = 1.15,
+) -> TargetAreaProfile:
+    if not yaw_pitch_samples:
+        raise ValueError("at least one yaw/pitch sample is required")
+    matrix = np.asarray(yaw_pitch_samples, dtype=np.float64)
+    if matrix.ndim != 2 or matrix.shape[1] != 2 or not np.all(np.isfinite(matrix)):
+        raise ValueError("yaw/pitch samples must be finite pairs")
+    center = np.median(matrix, axis=0)
+    deviations = np.abs(matrix - center)
+    radius = np.max(deviations, axis=0) * padding_scale
+    radius = np.maximum(radius, minimum_radius_deg)
+    return TargetAreaProfile(
+        center_yaw=float(center[0]),
+        center_pitch=float(center[1]),
+        radius_yaw=float(radius[0]),
+        radius_pitch=float(radius[1]),
+        sample_count=int(len(matrix)),
+    )
+
+
 def build_feature_profile(
     samples: list[TargetFeatureSample],
     *,

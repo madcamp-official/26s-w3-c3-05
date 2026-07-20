@@ -15,7 +15,7 @@ from jarvis.calibration.registry import (
 from jarvis.calibration.target_registration import TargetRegistrationSession
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import yaw_pitch_to_direction
-from jarvis.gaze.feature_profile import TargetFeatureProfile, TargetFeatureSample
+from jarvis.gaze.feature_profile import TargetAreaProfile, TargetFeatureProfile, TargetFeatureSample
 from jarvis.gaze.smoothing import SmoothedGaze
 
 
@@ -75,6 +75,8 @@ def test_registration_builds_feature_profile() -> None:
 
     assert record.feature_profile is not None
     assert record.feature_profile.sample_count == 3
+    assert record.area_profile is not None
+    assert record.area_profile.contains(10.0, 5.0)
     assert record.reference_face_scale == pytest.approx(0.11)
 
 
@@ -153,6 +155,13 @@ def test_registry_round_trip_and_nearby_warning_data(tmp_path: Path) -> None:
             ),
             sample_count=12,
             threshold=2.5,
+        ),
+        area_profile=TargetAreaProfile(
+            center_yaw=10.0,
+            center_pitch=4.0,
+            radius_yaw=6.0,
+            radius_pitch=5.0,
+            sample_count=24,
         ),
     )
     registry.upsert(record)
