@@ -17,7 +17,13 @@ jarvis-monitor = "jarvis.monitoring.cli:main"
 
 [project.optional-dependencies]
 vision = [
-  "mediapipe>=0.10,<0.11",
+  # 0.10.15부터 mediapipe가 slim 패키징으로 바뀌며 레거시 `mediapipe.solutions`가
+  # 빠졌다. gesture_fusion.solutions_hands(참고 레포 방식 랜드마크 추출)가 그 API를
+  # 쓰므로 solutions가 살아있는 마지막 계열인 0.10.14로 고정한다. Tasks API는 이
+  # 버전에도 그대로 있어 gaze(FaceLandmarker)와 mediapipe_hands는 영향받지 않는다.
+  # 주의: 0.10.14는 cp312가 마지막이라 이 extra를 쓰려면 Python 3.12여야 한다
+  # (3.13에는 휠이 없어 설치가 실패한다).
+  "mediapipe>=0.10.14,<0.10.15",
   "opencv-python>=4.9,<5",
 ]
 ml = [
