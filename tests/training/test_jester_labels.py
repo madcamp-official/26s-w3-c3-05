@@ -49,6 +49,8 @@ def test_swap_label_for_flip_leaves_unmapped_label_unchanged() -> None:
 
 
 def test_validate_mapping_rejects_unreachable_label(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(JESTER_TO_OUR_LABEL, "No gesture", None)
+    # 출처가 하나뿐인 라벨을 골라 끊는다 — 배경 "none"은 여러 Jester 클래스가
+    # 매핑되므로(대상 외 동작을 전부 모음) 하나를 끊어도 도달 가능해 검증이 안 된다.
+    monkeypatch.setitem(JESTER_TO_OUR_LABEL, "Swiping Up", None)
     with pytest.raises(ValueError, match="no Jester source"):
         validate_mapping()

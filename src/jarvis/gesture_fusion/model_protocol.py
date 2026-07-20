@@ -28,18 +28,38 @@ PHASE_LABELS: tuple[GesturePhase, ...] = (
     GesturePhase.ENDING,
 )
 
-# README 8장 "지원 제스처"의 6개 동적 제스처. Pinch·주먹은 README가 명시한 확장
-# 기능이라 MVP 기본 label에서 뺀다(추가 시 이 튜플만 확장하면 됨 — 열린 문자열 키
-# 원칙과 일관). "none"은 명확한 제스처가 없는 구간(IDLE 등)을 위한 배경 클래스로,
-# 이게 없으면 분류기가 매 프레임 억지로 6개 중 하나를 골라 오탐을 늘린다.
+# 인식 대상 제스처 12종 + 배경 "none"(2026-07-19 결정). Jester(20BN-Jester-v1) 27개
+# 클래스 중 2D(x·y) 랜드마크로 판별 가능한 것만 고른다 — 밀기/당기기·굴리기·줌은
+# 깊이(z)가 있어야 구분되는데 이 파이프라인은 z를 쓰지 않아(landmarks.py) 상하
+# 제스처로 새고, 엄지·손 흔들기는 대상 동작이 아니다.
+#
+# 대상 외 클래스("Doing other things" 포함)는 버리지 않고 전부 "none"으로 모은다.
+# 별도 "기타" 클래스를 두지 않는 이유: 기기 동작 매핑
+# (configs/gesture_capability_map.json)에 없어 런타임 결과가 "동작 없음"으로 배경과
+# 동일한데, spotting.py는 `DEFAULT_GESTURE_LABELS[0]`(="none") 하나만 배경으로 보고
+# ONSET을 차단한다 — 별도 라벨로 두면 배경인데도 제스처 시작으로 인정돼 상태 머신이
+# 헛돈다. 하나로 합쳐야 "동작 없음"의 런타임 의미와 학습 라벨이 일치한다.
+#
+# **"none"은 반드시 index 0을 유지한다**(위 spotting.py 참조). 열린 문자열 키
+# (interface-contract.md)라 새 제스처는 이 튜플만 확장하면 된다.
 DEFAULT_GESTURE_LABELS: tuple[str, ...] = (
     "none",
+    # 한 손 swipe (4)
     "swipe_up",
     "swipe_down",
     "swipe_left",
     "swipe_right",
+    # 손목 회전 (2)
     "rotate_clockwise",
     "rotate_counter_clockwise",
+    # 두 손가락 슬라이드 (4)
+    "slide_two_fingers_up",
+    "slide_two_fingers_down",
+    "slide_two_fingers_left",
+    "slide_two_fingers_right",
+    # 정적 손 모양 (2)
+    "stop_sign",
+    "drumming_fingers",
 )
 
 
