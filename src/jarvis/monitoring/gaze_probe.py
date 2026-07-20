@@ -216,6 +216,37 @@ def _face_scale(observation: FaceObservation) -> float | None:
     return scale if math.isfinite(scale) and scale > 0.0 else None
 
 
+def _iris_offset(observation: FaceObservation) -> tuple[float, float] | None:
+    if not observation.eyes_open:
+        return None
+    left_x, left_y = observation.left_iris_relative
+    right_x, right_y = observation.right_iris_relative
+    return ((left_x + right_x) * 0.5, (left_y + right_y) * 0.5)
+
+
+def _unstable_iris_reason(
+    observation: FaceObservation,
+    config: GazeConfig,
+    *,
+    previous_iris_offset: tuple[float, float] | None = None,
+    last_closed_eye_ms: int | None = None,
+) -> str | None:
+    offset = _iris_offset(observation)
+    if offset is None:
+        return None
+    if last_closed_eye_ms is not None:
+        elapsed = observation.timestamp_ms - last_closed_eye_ms
+        if 0 <= elapsed <= config.blink_recovery_hold_ms:
+            return "blink recovery hold"
+    if max(abs(offset[0]), abs(offset[1])) > config.max_valid_eye_offset:
+        return "iris offset out of range"
+    if previous_iris_offset is not None:
+        jump = math.hypot(offset[0] - previous_iris_offset[0], offset[1] - previous_iris_offset[1])
+        if jump > config.iris_jump_threshold:
+            return f"iris jump {jump:.2f}"
+    return None
+
+
 def _feature_sample(
     observation: FaceObservation,
     direction: tuple[float, float, float] | None,
@@ -331,6 +362,8 @@ def evaluate(
     inference_ms: float = 0.0,
     target_labels: dict[str, str] | None = None,
     calibration_model: GazeCalibrationModel | None = None,
+    previous_iris_offset: tuple[float, float] | None = None,
+    last_closed_eye_ms: int | None = None,
 ) -> GazeSnapshot:
     """Run one observation through the full pipeline, capturing every stage.
 
@@ -339,7 +372,14 @@ def evaluate(
     only addition is that the intermediate values are kept for display.
     """
     blink_hold = observation.face_detected and not observation.eyes_open
-    raw_gaze_vector = None if blink_hold else compose_gaze_vector(observation, config)
+    unstable_iris = _unstable_iris_reason(
+        observation,
+        config,
+        previous_iris_offset=previous_iris_offset,
+        last_closed_eye_ms=last_closed_eye_ms,
+    )
+    hold_gaze = blink_hold or unstable_iris is not None
+    raw_gaze_vector = None if hold_gaze else compose_gaze_vector(observation, config)
     calibration_features = (
         observation_features(observation, raw_gaze_vector)
         if raw_gaze_vector is not None
@@ -357,7 +397,7 @@ def evaluate(
             smoother.update(gaze_vector)
             if gaze_vector is not None
             else smoother.hold(observation.timestamp_ms, observation.frame_id)
-            if blink_hold
+            if hold_gaze
             else smoother.hold_tracking_loss(observation.timestamp_ms, observation.frame_id)
         )
 
@@ -506,6 +546,8 @@ class GazeProbe:
         self._status_text = "gaze 프로브 미시작"
         self._target_labels: dict[str, str] = {}
         self._calibration_model = calibration_model
+        self._previous_iris_offset: tuple[float, float] | None = None
+        self._last_closed_eye_ms: int | None = None
         self._profile_count = self._load_profiles(profiles_path)
 
     def _load_profiles(self, profiles_path: Path | None) -> int:
@@ -627,7 +669,13 @@ class GazeProbe:
             inference_ms=(time.monotonic() - started) * 1000.0,
             target_labels=self._target_labels,
             calibration_model=self._calibration_model,
+            previous_iris_offset=self._previous_iris_offset,
+            last_closed_eye_ms=self._last_closed_eye_ms,
         )
+        if observation.face_detected and not observation.eyes_open:
+            self._last_closed_eye_ms = observation.timestamp_ms
+        if snapshot.raw_gaze_direction is not None:
+            self._previous_iris_offset = _iris_offset(observation)
         return snapshot
 
     def close(self) -> None:

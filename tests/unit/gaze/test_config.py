@@ -15,6 +15,8 @@ from jarvis.gaze.config import GazeConfig
         {"minimum_probability": float("nan")},
         {"minimum_tracking_confidence": 1.1},
         {"unknown_max_angle_deg": 181.0},
+        {"iris_jump_threshold": 0.0},
+        {"max_valid_eye_offset": -0.1},
     ],
 )
 def test_invalid_config_is_rejected(overrides: dict[str, object]) -> None:

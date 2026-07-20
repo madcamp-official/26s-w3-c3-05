@@ -30,12 +30,13 @@ def _observation(
     detected: bool = True,
     confidence: float = 1.0,
     eyes_open: bool = True,
+    iris_relative: tuple[float, float] = (0.0, 0.0),
 ) -> FaceObservation:
     return FaceObservation(
         timestamp_ms=timestamp_ms,
         frame_id=frame_id,
-        left_iris_relative=(0.0, 0.0),
-        right_iris_relative=(0.0, 0.0),
+        left_iris_relative=iris_relative,
+        right_iris_relative=iris_relative,
         head_yaw_deg=yaw,
         head_pitch_deg=pitch,
         head_roll_deg=0.0,
@@ -114,6 +115,52 @@ def test_short_blink_holds_last_gaze_without_composing_jumpy_raw_vector() -> Non
     assert blink.gaze_direction is None
     assert blink.gaze_confidence is None
     assert blink.smoothed_gaze_direction == first.smoothed_gaze_direction
+
+
+def test_iris_jump_holds_last_gaze_before_smoothing() -> None:
+    smoother, classifier, lock, config = _fresh()
+    first = evaluate(
+        _observation(timestamp_ms=1_000, iris_relative=(0.0, 0.0)),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+    jumped = evaluate(
+        _observation(timestamp_ms=1_050, iris_relative=(0.5, 0.0)),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+        previous_iris_offset=(0.0, 0.0),
+    )
+
+    assert first.smoothed_gaze_direction is not None
+    assert jumped.gaze_direction is None
+    assert jumped.smoothed_gaze_direction == first.smoothed_gaze_direction
+
+
+def test_blink_recovery_holds_until_iris_settles() -> None:
+    smoother, classifier, lock, config = _fresh()
+    first = evaluate(
+        _observation(timestamp_ms=1_000),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+    recovered = evaluate(
+        _observation(timestamp_ms=1_080, eyes_open=True, iris_relative=(0.2, 0.0)),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+        last_closed_eye_ms=1_000,
+    )
+
+    assert first.smoothed_gaze_direction is not None
+    assert recovered.gaze_direction is None
+    assert recovered.smoothed_gaze_direction == first.smoothed_gaze_direction
 
 
 # --- no calibration profiles --------------------------------------------------

@@ -48,10 +48,10 @@ class GazeConfig:
     # Gaze vector composition (README 7장 "시선 방향 벡터 합성")
     max_eye_offset_deg: float = 45.0
 
-    head_yaw_weight: float = 0.45
+    head_yaw_weight: float = 0.25
     """How strongly head yaw contributes to gaze yaw before iris correction."""
 
-    head_pitch_weight: float = 0.45
+    head_pitch_weight: float = 0.25
     """How strongly head pitch contributes to gaze pitch before iris correction."""
 
     head_only_confidence_scale: float = 0.45
@@ -76,6 +76,15 @@ class GazeConfig:
 
     blink_hold_ms: int = 300
     """Short eye-closed intervals keep the last stable gaze instead of jumping."""
+
+    blink_recovery_hold_ms: int = 150
+    """Keep holding briefly after reopening eyes so unstable iris landmarks settle."""
+
+    max_valid_eye_offset: float = 0.55
+    """Reject iris offsets that jump to implausible eye-edge positions."""
+
+    iris_jump_threshold: float = 0.18
+    """Reject sudden frame-to-frame iris offset jumps before smoothing."""
 
     tracking_loss_hold_ms: int = 800
     """Briefly keep the last gaze during full face-landmarker dropouts."""
@@ -155,8 +164,8 @@ class GazeConfig:
     def __post_init__(self) -> None:
         if self.dwell_time_ms < 0 or self.target_lock_ttl_ms <= 0:
             raise ValueError("Gaze timing thresholds must be non-negative and TTL must be positive")
-        if self.blink_hold_ms < 0:
-            raise ValueError("blink_hold_ms must be non-negative")
+        if self.blink_hold_ms < 0 or self.blink_recovery_hold_ms < 0:
+            raise ValueError("blink hold thresholds must be non-negative")
         if self.tracking_loss_hold_ms < 0:
             raise ValueError("tracking_loss_hold_ms must be non-negative")
         if self.smoothing_window_frames <= 0:
@@ -177,6 +186,12 @@ class GazeConfig:
             raise ValueError("ema_min_alpha must not exceed ema_max_alpha")
         if not math.isfinite(self.max_eye_offset_deg) or self.max_eye_offset_deg <= 0.0:
             raise ValueError("max_eye_offset_deg must be finite and positive")
+        for name, value in {
+            "max_valid_eye_offset": self.max_valid_eye_offset,
+            "iris_jump_threshold": self.iris_jump_threshold,
+        }.items():
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
         for name, value in {
             "head_yaw_weight": self.head_yaw_weight,
             "head_pitch_weight": self.head_pitch_weight,
