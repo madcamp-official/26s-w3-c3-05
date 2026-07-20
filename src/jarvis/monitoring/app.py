@@ -512,8 +512,15 @@ class HandPanel(QScrollArea):
 
         if s.hand_detected:
             mode = "스무딩됨 (모델 실제 입력)" if s.smoothed else "raw (스무딩 꺼짐)"
+            if s.palm_tilt_degrees is None:
+                tilt = "?  (소스가 z를 내지 않아 게이트 없음)"
+            else:
+                tilt = f"{s.palm_tilt_degrees:5.1f}°  " + (
+                    "판정 거부 — 손을 세우세요" if s.palm_tilted else "정상"
+                )
             self._numeric.setText(
                 f"모델 입력   : {mode}\n"
+                f"손 기울기   : {tilt}\n"
                 f"palm scale  : {s.palm_scale:.4f}\n"
                 f"landmarks   : {s.landmark_count} points (정규화·손목 원점)\n"
                 f"handedness  : {s.handedness}  score {s.handedness_score:.3f}"

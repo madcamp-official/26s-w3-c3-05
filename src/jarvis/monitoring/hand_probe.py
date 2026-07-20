@@ -35,6 +35,7 @@ from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG, LANDMARK_DIMS, 
 from jarvis.gesture_fusion.features import HandFeatureExtractor
 from jarvis.gesture_fusion.landmarks import (
     RawHandLandmarks,
+    is_palm_tilted,
     normalize_hand,
     palm_tilt_degrees,
 )
@@ -137,6 +138,11 @@ class HandSnapshot:
     # None when smoothing is off or the hand is lost. Display-only — this is *never*
     # fed to the model or logged for training (that path uses the raw ``points``).
     image_points_smoothed: tuple[Point2D, ...] | None = None
+    # 손바닥 축이 이미지 평면과 이루는 각(도). z에서만 구할 수 있어 소스가 계산한다.
+    # None = 알 수 없음(게이트를 걸지 않는다). ``palm_tilted``는 이 값이 설정된 임계를
+    # 넘어 자세 판정이 거부되는 상태 — 조용히 무시하지 않고 화면에 드러내기 위한 필드다.
+    palm_tilt_degrees: float | None = None
+    palm_tilted: bool = False
 
 
 def _gesture_recognition_status() -> str:
@@ -333,6 +339,8 @@ class HandProbe:
             wrist_velocity=wrist_velocity,
             wrist_acceleration=wrist_acceleration,
             image_points_smoothed=image_points_smoothed,
+            palm_tilt_degrees=observation.palm_tilt_degrees,
+            palm_tilted=is_palm_tilted(observation, self._config),
         )
 
     def _smooth_image_points(

@@ -22,7 +22,9 @@ from jarvis.monitoring.overlay import (  # noqa: E402
 )
 
 
-def _hand_snapshot(*, detected: bool) -> HandSnapshot:
+def _hand_snapshot(
+    *, detected: bool, tilt: float | None = 5.0, tilted: bool = False
+) -> HandSnapshot:
     points = tuple((0.4 + 0.01 * i, 0.4 + 0.01 * i) for i in range(21)) if detected else None
     model = tuple((0.1 * i - 1.0, 0.1 * i - 1.0) for i in range(21)) if detected else None
     return HandSnapshot(
@@ -41,6 +43,8 @@ def _hand_snapshot(*, detected: bool) -> HandSnapshot:
         smoothed=True,
         wrist_velocity=(1.5, -0.5) if detected else None,
         wrist_acceleration=(0.2, 0.1) if detected else None,
+        palm_tilt_degrees=tilt if detected else None,
+        palm_tilted=tilted if detected else False,
     )
 
 
@@ -216,3 +220,24 @@ def test_placeholder_frame_shape_and_content() -> None:
     assert frame.shape == (240, 320, 3)
     assert frame.dtype == np.uint8
     assert frame.any()  # not all black — has text and background
+
+
+def test_tilt_gate_state_is_visible_on_overlay() -> None:
+    """게이트에 걸린 프레임은 화면이 눈에 띄게 달라져야 한다.
+
+    거부를 조용히 무시하면 사용자는 왜 반응이 없는지 알 수 없어 손을 세울 기회조차
+    얻지 못한다. 거부 표시(붉은 테두리 + 안내 문구)가 실제로 픽셀을 바꾸는지 본다.
+    """
+    ok = draw_hand_overlay(placeholder_frame(), _hand_snapshot(detected=True, tilt=5.0))
+    rejected = draw_hand_overlay(
+        placeholder_frame(), _hand_snapshot(detected=True, tilt=42.0, tilted=True)
+    )
+    assert not np.array_equal(ok, rejected)
+
+
+def test_unknown_tilt_renders_without_crashing() -> None:
+    """z를 못 내는 소스(각도 None)에서도 오버레이가 그려진다 — 게이트만 없을 뿐."""
+    frame = draw_hand_overlay(
+        placeholder_frame(), _hand_snapshot(detected=True, tilt=None)
+    )
+    assert frame is not None

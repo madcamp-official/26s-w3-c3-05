@@ -174,15 +174,26 @@ def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot, *, mirror: bool = Fa
 
     label = snapshot.handedness or "?"
     src_tag = "스무딩" if use_smoothed else "raw"
-    _text_block(
-        frame,
-        [
-            # image-space detection (smoothed for display) — where the hand is
-            (f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [{src_tag} 검출]", color),
-            (f"palm scale  {snapshot.palm_scale:.3f}", (170, 170, 170)),
-        ],
-        (8, 58),  # below the FPS HUD (top-left) so they do not overlap
-    )
+    lines = [
+        # image-space detection (smoothed for display) — where the hand is
+        (f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [{src_tag} 검출]", color),
+        (f"palm scale  {snapshot.palm_scale:.3f}", (170, 170, 170)),
+    ]
+    # 기울기 게이트 상태를 항상 드러낸다. 거부를 조용히 무시하면 사용자는 왜 반응이
+    # 없는지 알 수 없어 손을 세울 기회조차 얻지 못한다(development-principles.md).
+    if snapshot.palm_tilt_degrees is None:
+        lines.append(("tilt  ?  (기울기 미상 — 게이트 없음)", (170, 170, 170)))
+    elif snapshot.palm_tilted:
+        lines.append((f"tilt  {snapshot.palm_tilt_degrees:.0f}°  손을 세우세요 (판정 거부)", (60, 90, 240)))
+    else:
+        lines.append((f"tilt  {snapshot.palm_tilt_degrees:.0f}°", (120, 200, 120)))
+    _text_block(frame, lines, (8, 58))  # below the FPS HUD (top-left) so they do not overlap
+    if snapshot.palm_tilted:
+        # 골격 자체를 붉게 감싸 주변시로도 거부 상태를 알아채게 한다.
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        cv2.rectangle(frame, (min(xs) - 12, min(ys) - 12), (max(xs) + 12, max(ys) + 12),
+                      (60, 90, 240), 2, cv2.LINE_AA)
     return frame
 
 
