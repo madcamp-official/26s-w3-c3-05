@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from itertools import islice
 import math
 
 import numpy as np
@@ -94,7 +95,7 @@ class GazeSmoother:
         # every old frame has left the window.
         mean_direction = directions[0]
         alpha_range = self._config.ema_max_alpha - self._config.ema_min_alpha
-        for item in list(self._buffer)[1:]:
+        for item in islice(self._buffer, 1, None):
             alpha = self._config.ema_min_alpha + alpha_range * item.confidence
             blended = alpha * item.direction + (1.0 - alpha) * mean_direction
             blended_norm = float(np.linalg.norm(blended))

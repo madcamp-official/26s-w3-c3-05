@@ -75,7 +75,7 @@ class ClassificationResult:
 
 def cosine_similarity(a: Vector3, b: Vector3) -> float:
     """두 단위 벡터의 코사인 유사도(내적)를 [-1, 1]로 clip해 반환한다."""
-    return float(np.clip(np.dot(a, b), -1.0, 1.0))
+    return min(1.0, max(-1.0, float(np.dot(a, b))))
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,7 +403,7 @@ class TargetClassifier:
     ) -> ClassificationResult | None:
         if not self._area_profiles:
             return None
-        candidates = [
+        distances = (
             (
                 profile.normalized_distance(
                     feature_sample.gaze_yaw,
@@ -413,12 +413,11 @@ class TargetClassifier:
                 device_id,
             )
             for device_id, profile in self._area_profiles.items()
-            if profile.normalized_distance(
-                feature_sample.gaze_yaw,
-                feature_sample.gaze_pitch,
-                self._config.registration_max_area_radius_deg,
-            )
-            <= self._config.target_match_tolerance
+        )
+        candidates = [
+            (distance, device_id)
+            for distance, device_id in distances
+            if distance <= self._config.target_match_tolerance
         ]
         if not candidates:
             return None

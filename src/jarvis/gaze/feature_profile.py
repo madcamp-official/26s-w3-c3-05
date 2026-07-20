@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import numpy.typing as npt
@@ -113,13 +114,32 @@ class TargetFeatureProfile:
 
     @property
     def inverse_covariance(self) -> npt.NDArray[np.float64]:
-        covariance = self.covariance_array
-        return np.linalg.pinv(covariance)
+        return _mahalanobis_operands(self)[1]
 
     def mahalanobis_distance(self, sample: TargetFeatureSample) -> float:
-        delta = sample.as_array() - self.mean_array
-        distance_sq = float(delta.T @ self.inverse_covariance @ delta)
+        mean, inverse_covariance = _mahalanobis_operands(self)
+        delta = sample.as_array() - mean
+        distance_sq = float(delta.T @ inverse_covariance @ delta)
         return math.sqrt(max(0.0, distance_sq))
+
+
+@lru_cache(maxsize=256)
+def _mahalanobis_operands(
+    profile: TargetFeatureProfile,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Cache the mean vector and pseudo-inverse covariance per (immutable) profile.
+
+    `pinv` runs an SVD; recomputing it for every frame × every registered target
+    dominated the whole pure pipeline (>50% of `evaluate()` time). The profile is
+    a frozen, hashable dataclass, so the pair is computed once per registration.
+    Returned arrays are shared — marked read-only so a caller cannot corrupt the
+    cache in place.
+    """
+    mean = np.asarray(profile.mean, dtype=np.float64)
+    inverse = np.linalg.pinv(np.asarray(profile.covariance, dtype=np.float64))
+    mean.setflags(write=False)
+    inverse.setflags(write=False)
+    return mean, inverse
 
 
 @dataclass(frozen=True, slots=True)

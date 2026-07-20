@@ -710,16 +710,28 @@ class GazeProbe:
         """
         if self._adapter is None:
             return None
-        import time
-
         import cv2
+
+        rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB))
+        return self.process_rgb(rgb, timestamp_ms, frame_id)
+
+    def process_rgb(
+        self, rgb_frame: npt.NDArray[np.uint8], timestamp_ms: int, frame_id: int
+    ) -> GazeSnapshot | None:
+        """Same as :meth:`process_bgr` for an already-converted RGB frame.
+
+        Lets a caller that feeds several probes (camera worker) convert the
+        frame once instead of once per probe.
+        """
+        if self._adapter is None:
+            return None
+        import time
 
         from jarvis.gaze.landmarks import FaceLandmarkerAdapter
 
         assert isinstance(self._adapter, FaceLandmarkerAdapter)
         started = time.monotonic()
-        rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB))
-        observation = self._adapter.process(rgb, timestamp_ms, frame_id)
+        observation = self._adapter.process(rgb_frame, timestamp_ms, frame_id)
         snapshot = evaluate(
             observation,
             smoother=self._smoother,

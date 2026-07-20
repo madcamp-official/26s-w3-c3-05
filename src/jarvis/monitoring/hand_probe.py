@@ -261,17 +261,30 @@ class HandProbe:
         """
         if self._landmarker is None:
             return None
+        import cv2
+
+        rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB))
+        return self.process_rgb(rgb, timestamp_ms, frame_id)
+
+    def process_rgb(
+        self, rgb_frame: npt.NDArray[np.uint8], timestamp_ms: int, frame_id: int
+    ) -> HandSnapshot | None:
+        """Same as :meth:`process_bgr` for an already-converted RGB frame.
+
+        Lets a caller that feeds several probes (camera worker) convert the
+        frame once instead of once per probe.
+        """
+        if self._landmarker is None:
+            return None
         import time
 
-        import cv2
         from mediapipe import Image as MpImage
         from mediapipe import ImageFormat as MpImageFormat
         from mediapipe.tasks.python.vision import HandLandmarker
 
         assert isinstance(self._landmarker, HandLandmarker)
         started = time.monotonic()
-        rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB))
-        mp_image = MpImage(image_format=MpImageFormat.SRGB, data=rgb)
+        mp_image = MpImage(image_format=MpImageFormat.SRGB, data=rgb_frame)
         result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
         inference_ms = (time.monotonic() - started) * 1000.0
 
