@@ -169,7 +169,9 @@ def compose_gaze_vector(
     eye_yaw_offset_deg = eye_offset_x * config.max_eye_offset_deg
     eye_pitch_offset_deg = eye_offset_y * config.max_eye_offset_deg
 
-    total_yaw_deg = observation.head_yaw_deg * config.head_yaw_weight + eye_yaw_offset_deg
+    total_yaw_deg = (
+        observation.head_yaw_deg * config.head_yaw_weight + eye_yaw_offset_deg
+    ) * config.horizontal_axis_sign
     total_pitch_deg = observation.head_pitch_deg * config.head_pitch_weight + eye_pitch_offset_deg
 
     direction = _direction_from_yaw_pitch(total_yaw_deg, total_pitch_deg)

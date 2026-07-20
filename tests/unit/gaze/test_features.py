@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from jarvis.gaze.config import GazeConfig
+from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.features import FaceObservation, compose_gaze_vector
 
 
@@ -70,15 +71,15 @@ def test_head_and_eye_contributions_add() -> None:
     combined = compose_gaze_vector(
         _observation(
             head_yaw_deg=10.0,
-            left_iris_relative=(0.5, 0.0),
-            right_iris_relative=(0.5, 0.0),
+            left_iris_relative=(-0.5, 0.0),
+            right_iris_relative=(-0.5, 0.0),
         )
     )
     config = GazeConfig()
     equivalent_head_only = compose_gaze_vector(
         _observation(
             head_yaw_deg=(
-                10.0 * config.head_yaw_weight + 0.5 * config.max_eye_offset_deg
+                10.0 * config.head_yaw_weight - 0.5 * config.max_eye_offset_deg
             )
             / config.head_yaw_weight
         )
@@ -111,7 +112,10 @@ def test_head_pose_weight_reduces_head_contribution() -> None:
         GazeConfig(head_yaw_weight=0.4, max_eye_offset_deg=45.0),
     )
     equivalent_eye_only = compose_gaze_vector(
-        _observation(left_iris_relative=(8.0 / 45.0, 0.0), right_iris_relative=(8.0 / 45.0, 0.0)),
+        _observation(
+            left_iris_relative=(8.0 / 45.0, 0.0),
+            right_iris_relative=(8.0 / 45.0, 0.0),
+        ),
         GazeConfig(head_yaw_weight=0.4, max_eye_offset_deg=45.0),
     )
     assert weighted is not None and equivalent_eye_only is not None
@@ -139,6 +143,15 @@ def test_closed_eyes_fall_back_to_head_only_gaze() -> None:
     assert gaze is not None and equivalent is not None
     np.testing.assert_allclose(gaze.direction, equivalent.direction, atol=1e-9)
     assert gaze.confidence == pytest.approx(config.head_only_confidence_scale)
+
+
+def test_horizontal_axis_sign_maps_camera_left_to_positive_yaw() -> None:
+    gaze = compose_gaze_vector(
+        _observation(left_iris_relative=(-0.4, 0.0), right_iris_relative=(-0.4, 0.0))
+    )
+    assert gaze is not None
+    yaw, _pitch = direction_to_yaw_pitch(gaze.direction)
+    assert yaw > 0.0
 
 
 def test_face_not_detected_returns_none() -> None:

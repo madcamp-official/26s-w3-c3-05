@@ -56,6 +56,9 @@ class GazeConfig:
 
     head_only_confidence_scale: float = 0.45
     """Confidence multiplier when iris/eyes are unavailable and only head pose is used."""
+
+    horizontal_axis_sign: float = -1.0
+    """Sign correction from camera/MediaPipe horizontal motion to yaw(+right)."""
     """홍채 상대 위치(-1..1)를 각도로 환산할 때 사용하는 눈 최대 회전각."""
 
     # Smoothing (README 7장에 정의되지 않은 구현 세부값 — gaze.md에 기록)
@@ -166,6 +169,8 @@ class GazeConfig:
         }.items():
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
+        if self.horizontal_axis_sign not in (-1.0, 1.0):
+            raise ValueError("horizontal_axis_sign must be either -1.0 or 1.0")
         if not math.isfinite(self.unknown_max_angle_deg) or not 0.0 < self.unknown_max_angle_deg <= 180.0:
             raise ValueError("unknown_max_angle_deg must be finite and within (0, 180]")
         if (
