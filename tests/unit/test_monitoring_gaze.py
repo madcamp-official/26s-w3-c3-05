@@ -68,6 +68,29 @@ def test_tracking_loss_is_surfaced_not_faked() -> None:
     assert snapshot.target_estimate.stability == 0.0
 
 
+def test_short_face_dropout_uses_recovering_hold() -> None:
+    smoother, classifier, lock, config = _fresh()
+    first = evaluate(
+        _observation(timestamp_ms=1_000),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+    held = evaluate(
+        _observation(timestamp_ms=1_100, detected=False),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+
+    assert first.smoothed_gaze_direction is not None
+    assert held.tracking_lost is False
+    assert held.tracking_recovering is True
+    assert held.smoothed_gaze_direction == first.smoothed_gaze_direction
+
+
 # --- no calibration profiles --------------------------------------------------
 
 def test_no_profiles_yields_unknown_with_reason() -> None:

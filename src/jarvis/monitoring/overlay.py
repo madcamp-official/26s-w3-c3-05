@@ -100,6 +100,18 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
             _FONT, 0.6, (90, 90, 240), 2, cv2.LINE_AA,
         )
         return frame
+    if snapshot.tracking_recovering:
+        cv2.rectangle(frame, (0, h - 30), (w, h), (0, 0, 0), thickness=-1)
+        cv2.putText(
+            frame,
+            "FACE RECOVERING / last gaze hold",
+            (10, h - 9),
+            _FONT,
+            0.6,
+            (80, 190, 230),
+            2,
+            cv2.LINE_AA,
+        )
 
     state = str(snapshot.lock_state)
     ray_color = _LOCK_BGR.get(state, grey)

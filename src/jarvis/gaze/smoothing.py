@@ -50,9 +50,16 @@ class GazeSmoother:
 
     def hold(self, timestamp_ms: int, frame_id: int) -> SmoothedGaze | None:
         """Return the last result during a short blink without updating the buffer."""
+        return self._hold_for(timestamp_ms, frame_id, self._config.blink_hold_ms)
+
+    def hold_tracking_loss(self, timestamp_ms: int, frame_id: int) -> SmoothedGaze | None:
+        """Return the last result during a short full face-tracking dropout."""
+        return self._hold_for(timestamp_ms, frame_id, self._config.tracking_loss_hold_ms)
+
+    def _hold_for(self, timestamp_ms: int, frame_id: int, hold_ms: int) -> SmoothedGaze | None:
         if self._last_result is None:
             return None
-        if timestamp_ms - self._last_result.timestamp_ms > self._config.blink_hold_ms:
+        if timestamp_ms - self._last_result.timestamp_ms > hold_ms:
             self.reset()
             return None
         self._last_result = SmoothedGaze(

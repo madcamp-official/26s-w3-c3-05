@@ -77,6 +77,9 @@ class GazeConfig:
     blink_hold_ms: int = 300
     """Short eye-closed intervals keep the last stable gaze instead of jumping."""
 
+    tracking_loss_hold_ms: int = 800
+    """Briefly keep the last gaze during full face-landmarker dropouts."""
+
     small_motion_deadzone_deg: float = 5.0
     """Ignore tiny smoothed-gaze changes below this angle to reduce jitter."""
 
@@ -145,6 +148,8 @@ class GazeConfig:
             raise ValueError("Gaze timing thresholds must be non-negative and TTL must be positive")
         if self.blink_hold_ms < 0:
             raise ValueError("blink_hold_ms must be non-negative")
+        if self.tracking_loss_hold_ms < 0:
+            raise ValueError("tracking_loss_hold_ms must be non-negative")
         if self.smoothing_window_frames <= 0:
             raise ValueError("smoothing_window_frames must be positive")
         probability_fields = {

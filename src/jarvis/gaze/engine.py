@@ -78,7 +78,7 @@ class GazeTargetingEngine:
             if gaze_vector is not None
             else self._smoother.hold(observation.timestamp_ms, observation.frame_id)
             if observation.face_detected and not observation.eyes_open
-            else self._smoother.update(None)
+            else self._smoother.hold_tracking_loss(observation.timestamp_ms, observation.frame_id)
         )
         self._last_smoothed_gaze = smoothed
 

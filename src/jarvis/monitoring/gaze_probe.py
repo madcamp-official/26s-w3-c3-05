@@ -125,7 +125,11 @@ class GazeSnapshot:
 
     @property
     def tracking_lost(self) -> bool:
-        return not self.face_detected or self.gaze_direction is None
+        return self.gaze_direction is None and self.smoothed_gaze_direction is None
+
+    @property
+    def tracking_recovering(self) -> bool:
+        return not self.face_detected and self.smoothed_gaze_direction is not None
 
 
 def _reject_reason(
@@ -245,12 +249,12 @@ def evaluate(
     if gaze_vector is not None and calibration_model is not None:
         gaze_vector = calibration_model.correct(observation, gaze_vector)
     smoothed = (
-        smoother.update(gaze_vector)
-        if gaze_vector is not None
-        else smoother.hold(observation.timestamp_ms, observation.frame_id)
-        if observation.face_detected and not observation.eyes_open
-        else smoother.update(None)
-    )
+            smoother.update(gaze_vector)
+            if gaze_vector is not None
+            else smoother.hold(observation.timestamp_ms, observation.frame_id)
+            if observation.face_detected and not observation.eyes_open
+            else smoother.hold_tracking_loss(observation.timestamp_ms, observation.frame_id)
+        )
 
     gaze_direction: tuple[float, float, float] | None = None
     gaze_confidence: float | None = None
