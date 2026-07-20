@@ -51,6 +51,25 @@ DEFAULT_GESTURE_LABELS: tuple[str, ...] = (
     "doing_other_things",
 )
 
+# 액션을 유발하지 않는 "배경" 클래스들 (2026-07-20 결정).
+#
+# **학습은 이 셋을 각각 다른 클래스로 한다.** 가만히 있는 손·손가락 두드리기·아무
+# 동작은 물리적으로 전혀 다른 신호라, 하나로 묶어 "배경이란 무엇인가"를 뭉뚱그린
+# 분포로 배우게 하는 것보다 각각을 명시적으로 배우게 하는 편이 특징을 더 깨끗하게
+# 만든다(보조 과제 효과). 합치는 것은 **결정 단계에서만** 한다 —
+# `collapse_background_probabilities` 참고.
+#
+# 이 구조의 실질적 이점: 나중에 어떤 배경 동작을 진짜 제스처로 승격하려면 이
+# 집합에서 빼기만 하면 된다. 라벨 집합·가중치 shape이 그대로라 **재학습이 필요
+# 없다**. 라벨 자체를 합쳐버리면 되살릴 때 처음부터 다시 학습해야 한다.
+DEFAULT_BACKGROUND_LABELS: frozenset[str] = frozenset(
+    {
+        "none",
+        "drumming_fingers",
+        "doing_other_things",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
@@ -70,6 +89,14 @@ class ModelConfig:
     gesture_labels: tuple[str, ...] = DEFAULT_GESTURE_LABELS
     """gesture 분류 head의 출력 클래스 순서. 열린 문자열 키(interface-contract.md)."""
 
+    background_labels: frozenset[str] = DEFAULT_BACKGROUND_LABELS
+    """액션을 유발하지 않는 배경 클래스들. `gesture_labels`에 없는 이름은 무시한다.
+
+    가중치 shape에는 영향이 없지만 **같은 가중치로도 다른 예측을 내게 하므로**
+    (배경 확률 합산 여부가 argmax 결과를 바꾼다) 체크포인트와 함께 버전 관리해야
+    하는 값이다 — `gesture_labels`와 같은 이유로 여기 둔다.
+    """
+
     channels: tuple[int, ...] = (32, 32, 32)
     """각 temporal block의 채널 수. 층이 늘수록(dilation이 커질수록) 더 긴 과거를 본다."""
 
@@ -86,12 +113,45 @@ class ModelConfig:
             raise ValueError("gesture_labels must contain at least two classes")
         if len(set(self.gesture_labels)) != len(self.gesture_labels):
             raise ValueError("gesture_labels must not contain duplicates")
+        # 배경 이름 검사는 `gesture_labels` 하나가 아니라 **표준 라벨 집합과의 합집합**을
+        # 기준으로 한다. 축소된 label 튜플로 만드는 설정(테스트·실험)에서 기본 배경
+        # 집합을 그대로 쓸 수 있어야 하고(없는 이름은 무시), 동시에 표준 라벨을 개명하고
+        # 이 집합을 안 고치면 그 동작이 조용히 전경 제스처로 바뀌는 것은 잡아야 한다 —
+        # 우리가 지금 고치고 있는 버그가 정확히 그 종류다.
+        known_labels = set(DEFAULT_GESTURE_LABELS) | set(self.gesture_labels)
+        unknown_background = self.background_labels - known_labels
+        if unknown_background:
+            raise ValueError(
+                f"background_labels contains unknown label(s): {sorted(unknown_background)} — "
+                f"라벨을 개명했다면 DEFAULT_BACKGROUND_LABELS도 함께 고쳐야 한다"
+            )
+        if self.gesture_labels[0] not in self.background_labels:
+            raise ValueError(
+                f"gesture_labels[0]={self.gesture_labels[0]!r} must be a background label — "
+                "배경 확률을 합산한 뒤 대표 label로 index 0을 쓴다(spotting.py도 같은 규약)"
+            )
+        if not set(self.gesture_labels) - self.background_labels:
+            raise ValueError("at least one non-background (actionable) gesture label is required")
         if not self.channels or any(c <= 0 for c in self.channels):
             raise ValueError("channels must be a non-empty tuple of positive ints")
         if self.kernel_size < 2:
             raise ValueError("kernel_size must be at least 2 for causal padding to be meaningful")
         if not math.isfinite(self.dropout) or not 0.0 <= self.dropout < 1.0:
             raise ValueError("dropout must be within [0, 1)")
+
+    @property
+    def background_indices(self) -> tuple[int, ...]:
+        """배경 클래스의 출력 index들(오름차순). 첫 원소가 대표 배경(라벨 index 0)이다."""
+        return tuple(
+            i for i, label in enumerate(self.gesture_labels) if label in self.background_labels
+        )
+
+    @property
+    def foreground_indices(self) -> tuple[int, ...]:
+        """액션을 유발할 수 있는(배경이 아닌) 클래스의 출력 index들(오름차순)."""
+        return tuple(
+            i for i, label in enumerate(self.gesture_labels) if label not in self.background_labels
+        )
 
     @property
     def receptive_field(self) -> int:
@@ -183,6 +243,41 @@ def normalized_entropy(probs: FloatArray) -> float:
     entropy = float(-np.sum(safe_probs * np.log(safe_probs)))
     max_entropy = math.log(num_classes)
     return float(np.clip(entropy / max_entropy, 0.0, 1.0))
+
+
+def collapse_background_probabilities(
+    probs: FloatArray,
+    background_indices: tuple[int, ...],
+    foreground_indices: tuple[int, ...],
+) -> tuple[int, float, FloatArray]:
+    """배경 클래스 확률을 하나로 합산한 뒤 "배경 vs 최선의 제스처"를 결정한다.
+
+    반환값은 `(선택된 원본 클래스 index, 그 확신도, 합산 후 분포)`. 배경이 이기면
+    index는 대표 배경(`background_indices[0]`)이다.
+
+    **argmax를 전체 클래스에 그대로 쓰지 않는 이유.** 배경을 여러 클래스로 나눠
+    학습하면(`DEFAULT_BACKGROUND_LABELS` 주석 참고) 진짜 배경 구간에서 확률이 그
+    클래스들로 쪼개진다. 그러면 질량 합계로는 배경이 압도적인데도 제스처 하나가 더
+    낮은 절대 확률로 argmax를 이기는 구간이 생긴다(예: 배경 0.25/0.25/0.20 = 0.70 대
+    제스처 0.30). 비교 전에 합산하면 이 표 분산이 사라진다.
+
+    합산 후 분포는 `[배경, 제스처1, …]` 순서이며, 불확실성은 **이 분포에서** 재야
+    한다 — 원본 분포에서 재면 "어느 배경인지 모호함"이 불확실성으로 새어 들어간다.
+
+    동점이면 배경이 이긴다 — 액션은 확신이 있을 때만 일으킨다(2.2 알 수 없으면 거부).
+    """
+    if not background_indices or not foreground_indices:
+        raise ValueError("both background_indices and foreground_indices must be non-empty")
+
+    background_prob = float(np.sum(probs[list(background_indices)]))
+    foreground_probs = probs[list(foreground_indices)]
+    collapsed = np.concatenate(([background_prob], foreground_probs)).astype(np.float64)
+
+    best = int(np.argmax(foreground_probs))
+    best_prob = float(foreground_probs[best])
+    if background_prob >= best_prob:
+        return background_indices[0], background_prob, collapsed
+    return foreground_indices[best], best_prob, collapsed
 
 
 @dataclass(slots=True)

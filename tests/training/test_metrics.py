@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from training.metrics import compute_classification_report
+from training.metrics import collapse_class_indices, compute_classification_report
 
 
 def test_perfect_predictions_give_macro_f1_of_one() -> None:
@@ -54,3 +54,46 @@ def test_accepts_multidimensional_arrays() -> None:
     predictions = np.array([[0, 1], [1, 0]], dtype=np.int64)
     report = compute_classification_report(predictions, targets, num_classes=2)
     assert report.macro_f1 == pytest.approx(1.0)
+
+
+# --- 배경 클래스 접기 (모델 선택 지표) ---
+
+
+def test_collapse_maps_background_to_zero_and_renumbers_gestures() -> None:
+    # 배경 = {0, 4}, 제스처 = {1, 2, 3} → 접은 공간에서 1, 2, 3
+    indices = np.array([0, 1, 2, 3, 4], dtype=np.int64)
+    collapsed = collapse_class_indices(indices, (0, 4), (1, 2, 3))
+    np.testing.assert_array_equal(collapsed, [0, 1, 2, 3, 0])
+
+
+def test_collapse_preserves_ignore_index() -> None:
+    """배치 패딩 프레임은 접기 대상이 아니다 — 평가에서 제외되어야 한다."""
+    indices = np.array([0, -100, 2, -100], dtype=np.int64)
+    collapsed = collapse_class_indices(indices, (0, 4), (1, 2, 3), ignore_index=-100)
+    np.testing.assert_array_equal(collapsed, [0, -100, 2, -100])
+
+
+def test_collapse_rejects_ignore_index_that_is_a_real_class() -> None:
+    indices = np.array([0, 1], dtype=np.int64)
+    with pytest.raises(ValueError, match="ignore_index"):
+        collapse_class_indices(indices, (0,), (1,), ignore_index=1)
+
+
+def test_collapsed_macro_f1_ignores_confusion_among_background_classes() -> None:
+    """배경끼리 서로 틀려도 접은 기준 점수는 만점이어야 한다 — 이 지표의 존재 이유다.
+
+    원본 기준으로는 배경 0과 4를 뒤바꿔 맞혀 점수가 깎이지만, 우리는 그 구분에
+    관심이 없다. 이 차이가 곧 잘못된 epoch을 고르게 만드는 원인이다.
+    """
+    targets = np.array([0, 4, 1, 2], dtype=np.int64)
+    predictions = np.array([4, 0, 1, 2], dtype=np.int64)  # 배경끼리만 뒤바뀜
+
+    raw = compute_classification_report(predictions, targets, num_classes=5)
+    assert raw.macro_f1 < 1.0
+
+    collapsed = compute_classification_report(
+        collapse_class_indices(predictions, (0, 4), (1, 2, 3)),
+        collapse_class_indices(targets, (0, 4), (1, 2, 3)),
+        num_classes=4,
+    )
+    assert collapsed.macro_f1 == pytest.approx(1.0)

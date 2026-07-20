@@ -25,6 +25,34 @@ class ClassificationReport:
     confusion: IntArray  # (num_classes, num_classes), 행=정답, 열=예측
 
 
+def collapse_class_indices(
+    indices: IntArray,
+    background_indices: tuple[int, ...],
+    foreground_indices: tuple[int, ...],
+    ignore_index: int = -100,
+) -> IntArray:
+    """원본 클래스 index를 "배경 1개 + 제스처 N개" 공간으로 접는다(0=배경, k+1=제스처k).
+
+    배경을 여러 클래스로 나눠 학습하므로(`DEFAULT_BACKGROUND_LABELS`), 원본
+    클래스 수 그대로 macro-F1을 재면 **서로 구분할 필요가 없는 배경 클래스들을 얼마나
+    잘 가르는지**까지 평균에 섞인다. 그 점수로 early stopping을 하면 우리가 원하지
+    않는 능력을 최적화한 epoch이 선택된다 — 그래서 선택 지표는 접은 공간에서 잰다.
+
+    `ignore_index`(배치 패딩)는 그대로 보존한다.
+    """
+    if ignore_index in background_indices or ignore_index in foreground_indices:
+        raise ValueError("ignore_index must not be a valid class index")
+
+    lookup = {index: 0 for index in background_indices}
+    for position, index in enumerate(foreground_indices):
+        lookup[index] = position + 1
+
+    collapsed = np.full_like(indices, ignore_index)
+    for original, target in lookup.items():
+        collapsed[indices == original] = target
+    return collapsed
+
+
 def compute_classification_report(
     predictions: IntArray,
     targets: IntArray,

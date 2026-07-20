@@ -28,6 +28,7 @@ from jarvis.gesture_fusion.model_protocol import (
     ModelConfig,
     ModelMetadata,
     ModelPrediction,
+    collapse_background_probabilities,
     normalized_entropy,
 )
 
@@ -192,15 +193,20 @@ class CausalTCNGestureModel:
         gesture_probs = torch.softmax(gesture_logits[0, :, -1], dim=0).numpy()
         phase_probs = torch.softmax(phase_logits[0, :, -1], dim=0).numpy()
 
-        gesture_index = int(np.argmax(gesture_probs))
+        # 배경 클래스들(가만히 있는 손·손가락 두드리기·아무 동작)은 각각 다른 클래스로
+        # 학습하지만 런타임 결정에서는 그 구분이 의미가 없다. 전체 argmax 대신 배경
+        # 확률을 합산해 비교한다 — 이유는 `collapse_background_probabilities` 참고.
+        gesture_index, gesture_confidence, collapsed_probs = collapse_background_probabilities(
+            gesture_probs, self._config.background_indices, self._config.foreground_indices
+        )
         phase_index = int(np.argmax(phase_probs))
 
         return ModelPrediction(
             gesture=self._config.gesture_labels[gesture_index],
-            gesture_confidence=float(gesture_probs[gesture_index]),
+            gesture_confidence=gesture_confidence,
             phase=PHASE_LABELS[phase_index],
             phase_confidence=float(phase_probs[phase_index]),
-            uncertainty=normalized_entropy(gesture_probs),
+            uncertainty=normalized_entropy(collapsed_probs),
         )
 
     def _pad_to_window(self, window: FloatArray) -> FloatArray:

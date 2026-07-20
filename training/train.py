@@ -35,9 +35,25 @@ from jarvis.gesture_fusion.model_protocol import DEFAULT_GESTURE_LABELS, ModelMe
 from training.config import DEFAULT_TRAINING_CONFIG, TrainingConfig
 from training.dataset import GESTURE_LABEL_TO_INDEX, IGNORE_INDEX, ClipDataset, collate_fn
 from training.losses import GesturePhaseLoss, compute_class_weights
-from training.metrics import ClassificationReport, compute_classification_report
+from training.metrics import (
+    ClassificationReport,
+    collapse_class_indices,
+    compute_classification_report,
+)
 
 _NUM_GESTURE_CLASSES = len(DEFAULT_GESTURE_LABELS)
+
+# 배경 클래스 index는 `ModelConfig`가 라벨 집합에서 유도한다 — 여기서 다시 세지 않아
+# 라벨이 바뀌어도 학습·추론이 같은 정의를 본다. feature_dim은 이 유도와 무관하므로
+# 자리표시자를 쓴다(shape 검증만 통과하면 된다).
+_LABEL_LAYOUT = ModelConfig(feature_dim=1)
+_BACKGROUND_INDICES = _LABEL_LAYOUT.background_indices
+_FOREGROUND_INDICES = _LABEL_LAYOUT.foreground_indices
+_NUM_COLLAPSED_CLASSES = 1 + len(_FOREGROUND_INDICES)
+# 텐서 인덱싱에는 list를 쓴다 — tuple은 numpy에서 "다차원 인덱스"로 해석될 여지가
+# 있어(축 하나에 대한 fancy indexing이 아니라) 의미가 모호하다.
+_BACKGROUND_SELECTOR = list(_BACKGROUND_INDICES)
+_FOREGROUND_SELECTOR = list(_FOREGROUND_INDICES)
 
 
 def _build_model(gesture_config: GestureConfig) -> tuple[CausalTCN, ModelConfig]:
@@ -81,14 +97,32 @@ def _compute_input_stats(
     return mean.to(torch.float32), torch.sqrt(var).to(torch.float32)
 
 
+def _collapsed_predictions(gesture_logits: "torch.Tensor") -> "torch.Tensor":
+    """런타임 결정 규칙과 **동일하게** 배경 확률을 합산해 접은 공간의 예측을 만든다.
+
+    `argmax` 후에 배경 index를 0으로 접는 것과는 결과가 다르다 — 그렇게 하면 배경
+    표 분산이 그대로 남아, 실제 런타임(`collapse_background_probabilities`)보다
+    낙관적이거나 비관적인 엉뚱한 점수가 나온다. 지표는 배포되는 결정 규칙을 재야
+    한다. 동점 시 배경이 이기는 것도 `torch.cat`에서 배경을 앞에 두어 일치시킨다.
+    """
+    probs = torch.softmax(gesture_logits, dim=1)
+    background = probs[:, _BACKGROUND_SELECTOR, :].sum(dim=1, keepdim=True)
+    foreground = probs[:, _FOREGROUND_SELECTOR, :]
+    return torch.cat([background, foreground], dim=1).argmax(dim=1)
+
+
 def _run_epoch(
     net: CausalTCN,
     loss_fn: GesturePhaseLoss,
     loader: DataLoader,
     optimizer: "torch.optim.Optimizer | None",
     device: str,
-) -> tuple[float, ClassificationReport]:
-    """한 epoch(학습 또는 검증)을 돈다. `optimizer=None`이면 검증(gradient 없음)."""
+) -> tuple[float, ClassificationReport, ClassificationReport]:
+    """한 epoch(학습 또는 검증)을 돈다. `optimizer=None`이면 검증(gradient 없음).
+
+    리포트를 둘 반환한다 — 원본 클래스 기준(진단용 클래스별 F1·혼동행렬)과 배경을
+    접은 기준(모델 선택·early stopping용). 접은 쪽이 우리가 실제로 원하는 성능이다.
+    """
     is_train = optimizer is not None
     net.train(is_train)
 
@@ -96,6 +130,7 @@ def _run_epoch(
     n_batches = 0
     all_preds: list[np.ndarray] = []
     all_targets: list[np.ndarray] = []
+    all_collapsed_preds: list[np.ndarray] = []
 
     for features, gesture_targets, phase_targets in loader:
         features = features.to(device)
@@ -115,15 +150,26 @@ def _run_epoch(
 
         total_loss += float(loss.detach())
         n_batches += 1
-        all_preds.append(gesture_logits.detach().argmax(dim=1).cpu().numpy())
+        detached_logits = gesture_logits.detach()
+        all_preds.append(detached_logits.argmax(dim=1).cpu().numpy())
+        all_collapsed_preds.append(_collapsed_predictions(detached_logits).cpu().numpy())
         all_targets.append(gesture_targets.cpu().numpy())
 
     flat_preds = np.concatenate([p.reshape(-1) for p in all_preds])
     flat_targets = np.concatenate([t.reshape(-1) for t in all_targets])
+    flat_collapsed_preds = np.concatenate([p.reshape(-1) for p in all_collapsed_preds])
     report = compute_classification_report(
         flat_preds, flat_targets, num_classes=_NUM_GESTURE_CLASSES, ignore_index=IGNORE_INDEX
     )
-    return total_loss / max(1, n_batches), report
+    collapsed_report = compute_classification_report(
+        flat_collapsed_preds,
+        collapse_class_indices(
+            flat_targets, _BACKGROUND_INDICES, _FOREGROUND_INDICES, IGNORE_INDEX
+        ),
+        num_classes=_NUM_COLLAPSED_CLASSES,
+        ignore_index=IGNORE_INDEX,
+    )
+    return total_loss / max(1, n_batches), report, collapsed_report
 
 
 def _save_checkpoint(
@@ -265,33 +311,42 @@ def train(
     )
 
     for epoch in range(epoch_limit):
-        train_loss, train_report = _run_epoch(net, loss_fn, train_loader, optimizer, device)
-        val_loss, val_report = _run_epoch(net, loss_fn, val_loader, None, device)
+        train_loss, train_report, train_collapsed = _run_epoch(
+            net, loss_fn, train_loader, optimizer, device
+        )
+        val_loss, val_report, val_collapsed = _run_epoch(net, loss_fn, val_loader, None, device)
         scheduler.step()
 
         writer.add_scalar("lr", scheduler.get_last_lr()[0], epoch)
         writer.add_scalar("loss/train", train_loss, epoch)
         writer.add_scalar("loss/val", val_loss, epoch)
-        writer.add_scalar("macro_f1/train", train_report.macro_f1, epoch)
-        writer.add_scalar("macro_f1/val", val_report.macro_f1, epoch)
+        writer.add_scalar("macro_f1_raw/train", train_report.macro_f1, epoch)
+        writer.add_scalar("macro_f1_raw/val", val_report.macro_f1, epoch)
+        writer.add_scalar("macro_f1/train", train_collapsed.macro_f1, epoch)
+        writer.add_scalar("macro_f1/val", val_collapsed.macro_f1, epoch)
         for cls, f1 in val_report.per_class_f1.items():
             writer.add_scalar(f"f1_per_class_val/{DEFAULT_GESTURE_LABELS[cls]}", f1, epoch)
 
         print(
             f"epoch {epoch}: train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
-            f"val_macro_f1={val_report.macro_f1:.4f}"
+            f"val_macro_f1={val_collapsed.macro_f1:.4f} (raw {val_report.macro_f1:.4f})"
         )
 
-        if val_report.macro_f1 > best_macro_f1:
-            best_macro_f1 = val_report.macro_f1
+        # 선택 기준은 **접은** macro-F1이다 — 원본 기준으로 고르면 서로 구분할 필요가
+        # 없는 배경 클래스들을 잘 가르는 epoch이 뽑힌다(collapse_class_indices 참고).
+        if val_collapsed.macro_f1 > best_macro_f1:
+            best_macro_f1 = val_collapsed.macro_f1
             epochs_without_improvement = 0
             metadata = ModelMetadata(
                 version=f"{stage}-epoch{epoch}",
                 trained=True,
                 training_data_source=dataset_id,
                 evaluation_notes=(
-                    f"val macro-F1={best_macro_f1:.4f}, dataset_id={dataset_id!r}, "
-                    f"epoch={epoch}, feature_dim={feature_dimension(gesture_config)} "
+                    f"val macro-F1={best_macro_f1:.4f} (배경 클래스 합산 후 "
+                    f"{_NUM_COLLAPSED_CLASSES}클래스 기준 — 런타임 결정 규칙과 동일), "
+                    f"원본 {_NUM_GESTURE_CLASSES}클래스 기준={val_report.macro_f1:.4f}, "
+                    f"dataset_id={dataset_id!r}, epoch={epoch}, "
+                    f"feature_dim={feature_dimension(gesture_config)} "
                     f"(development-principles.md 1.4: dataset·조건·측정 시점 기록)"
                 ),
             )
