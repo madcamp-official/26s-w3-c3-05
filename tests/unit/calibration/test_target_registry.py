@@ -77,7 +77,7 @@ def test_registration_diagnostics_count_rejected_frames() -> None:
     assert not session.add(_gaze(4, 30.0), 1.0)
 
     assert session.diagnostic_summary() == (
-        "seen=5, valid=1, tracking_lost=1, closed_eyes=1, low_conf=1, jump=1"
+        "seen=5, valid=1, rays=0, tracking_lost=1, closed_eyes=1, low_conf=1, jump=1"
     )
 
 
@@ -194,6 +194,23 @@ def test_insufficient_head_movement_falls_back_to_angular_only() -> None:
     assert not session.triangulation_result.passes_quality_gates(session.config)
     # 각도 기반 등록은 3D 실패와 무관하게 정상적으로 완료된다.
     assert record.direction.yaw != 0.0 or record.direction.pitch != 0.0
+
+
+def test_required_3d_registration_rejects_angular_fallback() -> None:
+    config = GazeConfig(require_3d_target_registration=True)
+    target = np.array([50.0, -20.0, 1500.0])
+    session = TargetRegistrationSession(
+        "lamp", "조명", "LIGHT", "device-1", minimum_valid_frames=20, config=config
+    )
+    for frame, (direction, origin) in enumerate(_rays_at(target, baseline_radius_mm=1.0)):
+        assert session.add(_ray_gaze(frame, direction, origin), 1.0)
+
+    with pytest.raises(ValueError, match="3D target registration failed"):
+        session.finalize()
+
+    assert session.triangulation_result is not None
+    assert not session.triangulation_result.passes_quality_gates(config)
+    assert "failed" in session.triangulation_diagnostic()
 
 
 def test_too_few_rays_skips_triangulation_attempt_entirely() -> None:

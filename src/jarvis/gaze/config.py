@@ -93,6 +93,9 @@ class GazeConfig:
     classification stays on the more stable angle profile.
     """
 
+    require_3d_target_registration: bool = False
+    """Reject look-to-register targets unless multi-ray 3D triangulation succeeds."""
+
     # 3D triangulation (calibration/triangulation.py) — 10초 등록 동안 머리를
     # 움직여 얻은 여러 시선 광선으로 물체의 실제 위치·크기를 추정할 때의 품질
     # 기준. 기준을 만족하지 못하면 각도 기반(mean_direction + variance) 등록으로

@@ -697,7 +697,10 @@ class MainWindow(QMainWindow):
         self._sample_store = GazeSampleStore(
             samples_path or Path("data/evaluation/gaze_samples.json")
         )
-        self._gaze_config = GazeConfig(enable_3d_target_matching=True)
+        self._gaze_config = GazeConfig(
+            enable_3d_target_matching=True,
+            require_3d_target_registration=True,
+        )
         self._calibration_store = GazeCalibrationStore(_default_calibration_model_path())
         self._target_registry = TargetRegistry(self._profiles_path)
         self._registration: TargetRegistrationSession | None = None

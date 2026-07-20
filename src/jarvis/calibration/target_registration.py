@@ -102,6 +102,9 @@ class TargetRegistrationSession:
         center = np.median(samples, axis=0)
         deviations = np.abs(samples - center)
         spread = np.percentile(deviations, 90, axis=0)
+        position_3d = self._try_triangulate()
+        if self.config.require_3d_target_registration and position_3d is None:
+            raise ValueError(f"3D target registration failed: {self.triangulation_diagnostic()}")
         return TargetRecord(
             target_id=self.target_id,
             name=self.name,
@@ -109,7 +112,7 @@ class TargetRegistrationSession:
             direction=TargetDirection(float(center[0]), float(center[1])),
             spread=TargetSpread(max(4.0, float(spread[0])), max(4.0, float(spread[1]))),
             device_id=self.device_id,
-            position_3d=self._try_triangulate(),
+            position_3d=position_3d,
         )
 
     def _try_triangulate(self) -> TargetGeometry3DRecord | None:
@@ -140,7 +143,49 @@ class TargetRegistrationSession:
         """Human-readable counts explaining why registration frames were rejected."""
         return (
             f"seen={self.total_frames_seen}, valid={self.valid_frame_count}, "
+            f"rays={len(self._rays)}, "
             f"tracking_lost={self.rejected_tracking_lost}, "
             f"closed_eyes={self.rejected_closed_eyes}, "
             f"low_conf={self.rejected_low_confidence}, jump={self.rejected_jump}"
+        )
+
+    def triangulation_diagnostic(self) -> str:
+        """Human-readable 3D registration quality report."""
+        if len(self._rays) < self.config.minimum_triangulation_frames:
+            return (
+                f"not enough gaze rays: {len(self._rays)}/"
+                f"{self.config.minimum_triangulation_frames}"
+            )
+        result = self.triangulation_result
+        if result is None:
+            return "triangulation was not attempted"
+        checks = [
+            (
+                "baseline",
+                result.baseline_mm,
+                self.config.minimum_triangulation_baseline_mm,
+                result.baseline_mm >= self.config.minimum_triangulation_baseline_mm,
+            ),
+            (
+                "eigen",
+                result.min_eigenvalue,
+                self.config.minimum_triangulation_eigenvalue,
+                result.min_eigenvalue >= self.config.minimum_triangulation_eigenvalue,
+            ),
+            (
+                "residual",
+                result.residual_rms_mm,
+                self.config.maximum_triangulation_residual_mm,
+                result.residual_rms_mm <= self.config.maximum_triangulation_residual_mm,
+            ),
+        ]
+        failed = [
+            f"{name}={value:.3f} threshold={threshold:.3f}"
+            for name, value, threshold, passed in checks
+            if not passed
+        ]
+        status = "ok" if not failed else "failed " + ", ".join(failed)
+        return (
+            f"{status}; rays={result.frame_count}, baseline={result.baseline_mm:.1f}mm, "
+            f"residual={result.residual_rms_mm:.1f}mm, eigen={result.min_eigenvalue:.4f}"
         )
