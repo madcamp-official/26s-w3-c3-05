@@ -76,7 +76,8 @@ def test_format_sample_shows_vector_head_and_target(tmp_path: Path) -> None:
 
     assert "#1 [1f]" in rendered
     assert "gaze=(-0.137, +0.151, +0.979)" in rendered
-    assert "gaze_y/p=(-8.0, -8.7)" in rendered
+    assert "raw_y/p=(-8.0, -8.7)" in rendered
+    assert "final_y/p=(-8.0, -8.7)" in rendered
     assert "head=(+3.0, -4.0, +1.0)" in rendered
     assert "판단=응시대상 없음 P=0.00" in rendered
 
@@ -91,6 +92,13 @@ def test_window_averages_multiple_smoothed_frames(tmp_path: Path) -> None:
     assert sample["window_duration_ms"] == 132
     assert sample["gaze_direction"] == pytest.approx(
         [-0.1372622, 0.1506876, 0.9790058], abs=1e-3
+    )
+    assert sample["raw_gaze_yaw_pitch_deg"] == pytest.approx(
+        {"yaw": -8.0, "pitch": -8.7}, abs=0.1
+    )
+    assert sample["calibration_applied"] is False
+    assert sample["face_metrics"] == pytest.approx(
+        {"center": [0.5, 0.3], "scale": 0.2}, abs=1e-6
     )
 
 

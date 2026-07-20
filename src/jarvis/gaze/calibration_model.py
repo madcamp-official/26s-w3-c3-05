@@ -25,6 +25,21 @@ from jarvis.gaze.direction import direction_to_yaw_pitch, yaw_pitch_to_direction
 from jarvis.gaze.features import FaceObservation, GazeVector, Vector3
 
 _FEATURE_DIM = 13
+FEATURE_NAMES: tuple[str, ...] = (
+    "bias",
+    "raw_gaze_yaw",
+    "raw_gaze_pitch",
+    "left_iris_x",
+    "left_iris_y",
+    "right_iris_x",
+    "right_iris_y",
+    "head_yaw",
+    "head_pitch",
+    "head_roll",
+    "face_center_x",
+    "face_center_y",
+    "face_scale",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +175,7 @@ class GazeCalibrationModel:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "feature_names": list(FEATURE_NAMES),
             "sample_count": self._sample_count,
             "target_count": self._target_count,
             "regularization": self._regularization,

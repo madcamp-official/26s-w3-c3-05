@@ -81,6 +81,17 @@ class GazeSampleStore:
             raise ValueError("gaze directions cancel out to an invalid mean")
         mean_direction = mean_direction / norm
         gaze_yaw_deg, gaze_pitch_deg = direction_to_yaw_pitch(mean_direction)
+        raw_directions = [
+            snapshot.raw_gaze_direction for snapshot in valid if snapshot.raw_gaze_direction is not None
+        ]
+        raw_gaze_yaw_pitch: dict[str, float] | None = None
+        if raw_directions:
+            raw_mean_direction = np.asarray(raw_directions, dtype=np.float64).mean(axis=0)
+            raw_norm = float(np.linalg.norm(raw_mean_direction))
+            if math.isfinite(raw_norm) and raw_norm > 0.0:
+                raw_mean_direction = raw_mean_direction / raw_norm
+                raw_yaw_deg, raw_pitch_deg = direction_to_yaw_pitch(raw_mean_direction)
+                raw_gaze_yaw_pitch = {"yaw": raw_yaw_deg, "pitch": raw_pitch_deg}
         nearest = latest.device_details[0] if latest.device_details else None
 
         def mean(values: Sequence[float]) -> float:
@@ -101,6 +112,19 @@ class GazeSampleStore:
             for item in valid
             if item.right_eye_center_normalized is not None
         ]
+        face_center: list[float] | None = None
+        face_scale: float | None = None
+        if left_eye_centers and right_eye_centers:
+            left_mean = mean_pair(left_eye_centers)
+            right_mean = mean_pair(right_eye_centers)
+            face_center = [
+                (left_mean[0] + right_mean[0]) * 0.5,
+                (left_mean[1] + right_mean[1]) * 0.5,
+            ]
+            face_scale = math.hypot(right_mean[0] - left_mean[0], right_mean[1] - left_mean[1])
+        origins = [
+            item.smoothed_gaze_origin for item in valid if item.smoothed_gaze_origin is not None
+        ]
         sample: dict[str, object] = {
             "sample_index": self.count + 1,
             "timestamp_ms": latest.timestamp_ms,
@@ -114,6 +138,8 @@ class GazeSampleStore:
                 "yaw": gaze_yaw_deg,
                 "pitch": gaze_pitch_deg,
             },
+            "raw_gaze_yaw_pitch_deg": raw_gaze_yaw_pitch,
+            "calibration_applied": any(item.calibration_applied for item in valid),
             "gaze_confidence": mean(eye_confidences),
             "head_pose_deg": {
                 "yaw": mean([item.head_yaw_deg for item in valid]),
@@ -131,6 +157,19 @@ class GazeSampleStore:
             ),
             "right_eye_center_normalized": (
                 mean_pair(right_eye_centers) if right_eye_centers else None
+            ),
+            "face_metrics": {
+                "center": face_center,
+                "scale": face_scale,
+            },
+            "head_origin": (
+                [
+                    mean([origin[0] for origin in origins]),
+                    mean([origin[1] for origin in origins]),
+                    mean([origin[2] for origin in origins]),
+                ]
+                if origins
+                else None
             ),
             "target": latest.target,
             "target_label": latest.target_label,
@@ -183,10 +222,12 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
     direction = sample.get("gaze_direction")
     head_pose = sample.get("head_pose_deg")
     gaze_angles = sample.get("gaze_yaw_pitch_deg")
+    raw_gaze_angles = sample.get("raw_gaze_yaw_pitch_deg")
     nearest_range = sample.get("nearest_target_range")
     vector = direction if isinstance(direction, list) else []
     head = head_pose if isinstance(head_pose, dict) else {}
     gaze_yaw_pitch = gaze_angles if isinstance(gaze_angles, dict) else {}
+    raw_gaze_yaw_pitch = raw_gaze_angles if isinstance(raw_gaze_angles, dict) else {}
     range_detail = nearest_range if isinstance(nearest_range, dict) else None
 
     def number(value: object) -> float:
@@ -200,6 +241,8 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
     roll = number(head.get("roll"))
     gaze_yaw = number(gaze_yaw_pitch.get("yaw"))
     gaze_pitch = number(gaze_yaw_pitch.get("pitch"))
+    raw_gaze_yaw = number(raw_gaze_yaw_pitch.get("yaw"))
+    raw_gaze_pitch = number(raw_gaze_yaw_pitch.get("pitch"))
     index = sample.get("sample_index", "?")
     target = sample.get("target", "UNKNOWN")
     target_label = sample.get("target_label", target)
@@ -213,10 +256,13 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
         judged = str(target)
     row = (
         f"#{index} [{frame_count}f] gaze=({x:+.3f}, {y:+.3f}, {z:+.3f})  "
-        f"gaze_y/p=({gaze_yaw:+.1f}, {gaze_pitch:+.1f})  "
+        f"raw_y/p=({raw_gaze_yaw:+.1f}, {raw_gaze_pitch:+.1f})  "
+        f"final_y/p=({gaze_yaw:+.1f}, {gaze_pitch:+.1f})  "
         f"head=({yaw:+.1f}, {pitch:+.1f}, {roll:+.1f})  "
         f"판단={judged} P={probability:.2f}"
     )
+    if sample.get("calibration_applied"):
+        row += " CAL"
     if range_detail is not None:
         device_id = range_detail.get("device_id", "--")
         distance = number(range_detail.get("angular_distance_deg"))

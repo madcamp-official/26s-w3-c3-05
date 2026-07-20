@@ -95,8 +95,11 @@ class GazeSnapshot:
     eyes_open: bool
 
     # 2b — composed gaze vector (None when tracking is lost / rejected)
+    raw_gaze_direction: tuple[float, float, float] | None
+    raw_gaze_confidence: float | None
     gaze_direction: tuple[float, float, float] | None
     gaze_confidence: float | None
+    calibration_applied: bool
     calibration_features: tuple[float, ...] | None
 
     # 2c — temporal smoothing
@@ -257,12 +260,20 @@ def evaluate(
     only addition is that the intermediate values are kept for display.
     """
     blink_hold = observation.face_detected and not observation.eyes_open
-    gaze_vector = None if blink_hold else compose_gaze_vector(observation, config)
+    raw_gaze_vector = None if blink_hold else compose_gaze_vector(observation, config)
     calibration_features = (
-        observation_features(observation, gaze_vector) if gaze_vector is not None else None
+        observation_features(observation, raw_gaze_vector)
+        if raw_gaze_vector is not None
+        else None
     )
-    if gaze_vector is not None and calibration_model is not None:
-        gaze_vector = calibration_model.correct(observation, gaze_vector)
+    gaze_vector = raw_gaze_vector
+    calibration_applied = False
+    if raw_gaze_vector is not None and calibration_model is not None:
+        corrected = calibration_model.correct(observation, raw_gaze_vector)
+        calibration_applied = calibration_model.fitted and not np.allclose(
+            corrected.direction, raw_gaze_vector.direction
+        )
+        gaze_vector = corrected
     smoothed = (
             smoother.update(gaze_vector)
             if gaze_vector is not None
@@ -271,8 +282,17 @@ def evaluate(
             else smoother.hold_tracking_loss(observation.timestamp_ms, observation.frame_id)
         )
 
+    raw_gaze_direction: tuple[float, float, float] | None = None
+    raw_gaze_confidence: float | None = None
     gaze_direction: tuple[float, float, float] | None = None
     gaze_confidence: float | None = None
+    if raw_gaze_vector is not None:
+        raw_gaze_direction = (
+            float(raw_gaze_vector.direction[0]),
+            float(raw_gaze_vector.direction[1]),
+            float(raw_gaze_vector.direction[2]),
+        )
+        raw_gaze_confidence = raw_gaze_vector.confidence
     if gaze_vector is not None:
         gaze_direction = (
             float(gaze_vector.direction[0]),
@@ -343,8 +363,11 @@ def evaluate(
             observation.eye_tracking_confidence, observation.face_tracking_confidence
         ),
         eyes_open=observation.eyes_open,
+        raw_gaze_direction=raw_gaze_direction,
+        raw_gaze_confidence=raw_gaze_confidence,
         gaze_direction=gaze_direction,
         gaze_confidence=gaze_confidence,
+        calibration_applied=calibration_applied,
         calibration_features=calibration_features,
         smoothed_stability=smoothed_stability,
         smoothed_gaze_direction=classify_direction,
