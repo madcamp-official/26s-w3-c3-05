@@ -14,7 +14,11 @@ from jarvis.gaze.classifier import (
     effective_distance_and_variance,
 )
 from jarvis.gaze.config import GazeConfig
-from jarvis.gaze.feature_profile import TargetFeatureProfile, TargetFeatureSample
+from jarvis.gaze.feature_profile import (
+    TargetFeatureProfile,
+    TargetFeatureSample,
+    build_feature_profile,
+)
 
 
 def _unit(vector: list[float]) -> np.ndarray:
@@ -78,6 +82,21 @@ def test_feature_profile_rejects_far_distribution() -> None:
     )
 
     assert result.target == GazeConfig().UNKNOWN_TARGET
+
+
+def test_built_feature_profile_tolerates_head_pose_when_gaze_matches() -> None:
+    profile = build_feature_profile(
+        [
+            TargetFeatureSample(1.0, 4.0, -5.0, 2.0, 0.0, 0.10),
+            TargetFeatureSample(1.2, 4.1, -4.0, 2.5, 0.5, 0.10),
+            TargetFeatureSample(0.8, 3.9, -6.0, 1.5, -0.5, 0.10),
+            TargetFeatureSample(1.1, 4.0, -5.5, 2.2, 0.2, 0.10),
+        ]
+    ).profile
+
+    same_gaze_different_head = TargetFeatureSample(1.0, 4.0, -15.0, 3.5, -0.6, 0.10)
+
+    assert profile.mahalanobis_distance(same_gaze_different_head) <= profile.threshold
 
 
 def test_selects_closest_device_by_cosine_similarity() -> None:

@@ -29,6 +29,15 @@ FEATURE_NAMES: tuple[str, ...] = (
     "face_scale",
 )
 FEATURE_DIMENSION = len(FEATURE_NAMES)
+HEAD_FEATURE_INDICES: tuple[int, ...] = (2, 3, 4)
+"""Feature indices for head yaw/pitch/roll.
+
+Head pose is useful context, but it should not veto a target when the final gaze
+direction is close.  We therefore make head dimensions intentionally tolerant in
+the learned distribution.
+"""
+
+GAZE_FEATURE_INDICES: tuple[int, ...] = (0, 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +133,7 @@ def build_feature_profile(
     samples: list[TargetFeatureSample],
     *,
     regularization: float = 1.0,
+    head_regularization: float = 64.0,
     threshold_floor: float = 2.5,
     threshold_quantile: float = 0.90,
 ) -> FeatureProfileBuildResult:
@@ -157,6 +167,8 @@ def build_feature_profile(
         covariance = np.cov(kept, rowvar=False)
     covariance = np.asarray(covariance, dtype=np.float64)
     covariance += np.eye(FEATURE_DIMENSION, dtype=np.float64) * regularization
+    for index in HEAD_FEATURE_INDICES:
+        covariance[index, index] += head_regularization
     provisional = TargetFeatureProfile(
         mean=tuple(float(value) for value in mean),
         covariance=tuple(tuple(float(value) for value in row) for row in covariance),
