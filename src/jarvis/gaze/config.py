@@ -51,7 +51,7 @@ class GazeConfig:
     head_yaw_weight: float = 0.25
     """How strongly head yaw contributes to gaze yaw before iris correction."""
 
-    head_pitch_weight: float = 0.25
+    head_pitch_weight: float = 0.40
     """How strongly head pitch contributes to gaze pitch before iris correction."""
 
     head_only_confidence_scale: float = 0.45
