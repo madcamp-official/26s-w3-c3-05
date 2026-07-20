@@ -226,6 +226,7 @@ class TargetClassifier:
         *,
         current_face_scale: float | None = None,
         feature_sample: TargetFeatureSample | None = None,
+        gaze_motion_delta_deg: tuple[float, float] | None = None,
     ) -> ClassificationResult:
         """합성된 시선 방향 단위 벡터로부터 대상 기기를 추정한다.
 
@@ -250,6 +251,7 @@ class TargetClassifier:
                 direction,
                 origin,
                 current_face_scale,
+                gaze_motion_delta_deg,
             )
 
         return self._classify_by_direction_profile(direction, origin, current_face_scale)
@@ -327,12 +329,14 @@ class TargetClassifier:
         direction: Vector3 | None = None,
         origin: Vector3 | None = None,
         current_face_scale: float | None = None,
+        gaze_motion_delta_deg: tuple[float, float] | None = None,
     ) -> ClassificationResult:
         area_result = self._classify_by_area_profile(
             feature_sample,
             direction,
             origin,
             current_face_scale,
+            gaze_motion_delta_deg,
         )
         if area_result is not None:
             return area_result
@@ -427,6 +431,7 @@ class TargetClassifier:
         direction: Vector3 | None,
         origin: Vector3 | None,
         current_face_scale: float | None,
+        gaze_motion_delta_deg: tuple[float, float] | None = None,
     ) -> ClassificationResult | None:
         if not self._area_profiles:
             return None
@@ -450,10 +455,15 @@ class TargetClassifier:
             )
             area_score = math.exp(-0.5 * normalized_distance**2)
             alignment_score = math.exp(-0.5 * (center_distance_deg / alignment_radius) ** 2)
+            motion_alignment_score = self._motion_alignment_score(
+                feature_sample,
+                profile,
+                gaze_motion_delta_deg,
+            )
             # 겹친 target에서는 단순 IN/OUT보다 "현재 시선 방향이 어느 중심을 더
             # 향하는지"가 더 중요하다. 큰 허용영역이 작은/정확한 영역을 먹지 않도록
             # 중심 방향 정렬 점수를 한 번 더 강하게 반영한다.
-            combined_score = area_score * alignment_score**2
+            combined_score = area_score * alignment_score**2 * motion_alignment_score
             candidates.append((combined_score, center_distance_deg, normalized_distance, device_id))
         if not candidates:
             return None
@@ -473,6 +483,30 @@ class TargetClassifier:
             probability=best / total if total > 0.0 else 1.0,
             second_best_probability=second / total if total > 0.0 else 0.0,
         )
+
+    def _motion_alignment_score(
+        self,
+        sample: TargetFeatureSample,
+        profile: TargetAreaProfile,
+        gaze_motion_delta_deg: tuple[float, float] | None,
+    ) -> float:
+        if gaze_motion_delta_deg is None:
+            return 1.0
+        motion_yaw, motion_pitch = gaze_motion_delta_deg
+        motion_norm = math.hypot(motion_yaw, motion_pitch)
+        if not math.isfinite(motion_norm) or motion_norm < 0.25:
+            return 1.0
+        target_yaw = profile.center_yaw - sample.gaze_yaw
+        target_pitch = profile.center_pitch - sample.gaze_pitch
+        target_norm = math.hypot(target_yaw, target_pitch)
+        if not math.isfinite(target_norm) or target_norm < 0.25:
+            return 1.0
+        cosine = (motion_yaw * target_yaw + motion_pitch * target_pitch) / (
+            motion_norm * target_norm
+        )
+        cosine = max(-1.0, min(1.0, cosine))
+        weight = self._config.target_motion_alignment_weight
+        return 1.0 + weight * max(0.0, cosine)
 
     def _area_radius_scale(self, device_id: str, current_face_scale: float | None) -> float:
         profile = self._profiles.get(device_id)

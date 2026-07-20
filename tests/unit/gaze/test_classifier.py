@@ -232,6 +232,44 @@ def test_overlapping_area_profiles_prefer_gaze_aligned_center() -> None:
     assert result.target == "aimed_area"
 
 
+def test_overlapping_area_profiles_use_recent_gaze_motion_as_tiebreaker() -> None:
+    classifier = TargetClassifier(
+        GazeConfig(
+            unknown_probability_threshold=0.0,
+            target_match_tolerance=1.1,
+            target_motion_alignment_weight=0.5,
+        )
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("left", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        area_profile=TargetAreaProfile(
+            center_yaw=-2.0,
+            center_pitch=0.0,
+            radius_yaw=6.0,
+            radius_pitch=6.0,
+            sample_count=120,
+        ),
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("right", _unit([0.1, 0.0, 0.99]), variance=0.01),
+        area_profile=TargetAreaProfile(
+            center_yaw=2.0,
+            center_pitch=0.0,
+            radius_yaw=6.0,
+            radius_pitch=6.0,
+            sample_count=120,
+        ),
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(0.0, 0.0, 0.0, 0.0, 0.0, 0.1),
+        gaze_motion_delta_deg=(1.0, 0.0),
+    )
+
+    assert result.target == "right"
+
+
 def test_built_feature_profile_tolerates_head_pose_when_gaze_matches() -> None:
     profile = build_feature_profile(
         [
