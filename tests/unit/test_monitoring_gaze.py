@@ -8,6 +8,8 @@ what ``GazeTargetingEngine.process`` produces for the same input.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from jarvis.gaze.classifier import DeviceGazeProfile, TargetClassifier
@@ -111,6 +113,36 @@ def test_aligned_device_is_selected_with_small_angle() -> None:
     assert detail.device_id == "laptop"
     assert detail.is_selected is True
     assert detail.angular_distance_deg < 1.0
+    assert math.isclose(detail.allowed_radius_deg, math.degrees(math.sqrt(0.05)))
+    assert detail.normalized_distance < 1.0
+    assert detail.within_profile_radius is True
+    assert detail.range_status == "IN"
+
+
+def test_device_detail_reports_outside_registered_range() -> None:
+    smoother, classifier, lock, config = _fresh()
+    classifier.register_profile(
+        DeviceGazeProfile(
+            device_id="small_target",
+            mean_direction=np.array([0.0, 0.0, 1.0]),
+            variance=math.radians(2.0) ** 2,
+        )
+    )
+
+    snapshot = evaluate(
+        _observation(yaw=12.0),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+
+    (detail,) = snapshot.device_details
+    assert detail.device_id == "small_target"
+    assert detail.allowed_radius_deg == 2.0
+    assert detail.normalized_distance > 1.0
+    assert detail.within_profile_radius is False
+    assert detail.range_status == "OUT"
 
 
 def test_target_label_uses_registered_display_name() -> None:

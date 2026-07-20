@@ -147,9 +147,21 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot) -> Frame:
         cv2.arrowedLine(frame, center, tip, ray_color, 2, cv2.LINE_AA, tipLength=0.2)
 
     stability = snapshot.smoothed_stability
+    nearest = snapshot.device_details[0] if snapshot.device_details else None
+    if nearest is None or np.isnan(nearest.angular_distance_deg):
+        range_line = "range  --"
+        range_color = grey
+    else:
+        range_line = (
+            f"range {nearest.device_id} "
+            f"{nearest.angular_distance_deg:.1f}/{nearest.allowed_radius_deg:.1f}deg "
+            f"x{nearest.normalized_distance:.2f} {nearest.range_status}"
+        )
+        range_color = (80, 200, 80) if nearest.within_profile_radius else (90, 90, 240)
     lines: list[tuple[str, tuple[int, int, int]]] = [
         (f"LOCK  {state}", ray_color),
         (f"TARGET  {snapshot.target_label}  {snapshot.probability:.0%}", white),
+        (range_line, range_color),
         (
             f"yaw {snapshot.head_yaw_deg:+5.0f}  pitch {snapshot.head_pitch_deg:+5.0f}"
             f"  roll {snapshot.head_roll_deg:+5.0f}",

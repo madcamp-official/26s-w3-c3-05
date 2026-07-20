@@ -245,9 +245,17 @@ class GazePanel(QScrollArea):
         if not s.device_details:
             self._devices.addItem("등록된 기기 프로파일 없음 — jarvis-gaze calibrate 필요")
         for d in s.device_details:
-            angle = "--" if np.isnan(d.angular_distance_deg) else f"{d.angular_distance_deg:6.1f}°"
-            mark = "◀ 선택" if d.is_selected else ""
-            self._devices.addItem(f"{d.device_id:<16} {angle}  {mark}")
+            if np.isnan(d.angular_distance_deg):
+                angle = "err -- / radius --"
+                ratio = "x--"
+            else:
+                angle = f"err {d.angular_distance_deg:5.1f}deg / radius {d.allowed_radius_deg:4.1f}deg"
+                ratio = f"x{d.normalized_distance:4.2f}"
+            mark = "selected" if d.is_selected else ""
+            self._devices.addItem(
+                f"{d.device_id:<16} {angle}  {ratio} {d.range_status}  {mark}"
+            )
+
 
         self._track_conf.set_value(s.tracking_confidence, color="#58a6ff")
         self._gaze_conf.set_value(s.gaze_confidence, color="#58a6ff")

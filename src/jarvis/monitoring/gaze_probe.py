@@ -54,7 +54,17 @@ class DeviceGazeDetail:
 
     device_id: str
     angular_distance_deg: float
+    allowed_radius_deg: float
+    normalized_distance: float
+    within_profile_radius: bool
     is_selected: bool
+
+    @property
+    def range_status(self) -> str:
+        """Human-readable live range check for the registered target profile."""
+        if math.isnan(self.angular_distance_deg):
+            return "--"
+        return "IN" if self.within_profile_radius else "OUT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,20 +131,33 @@ def _reject_reason(
     details: tuple[DeviceGazeDetail, ...],
     config: GazeConfig,
 ) -> str | None:
-    """Explain *why* the classifier returned UNKNOWN (or None if it did not).
-
-    Re-derives the same conditions the classifier uses (classifier.py) so the
-    debugging view can name the cause instead of just showing "UNKNOWN".
-    """
+    """Explain why the classifier returned UNKNOWN, including profile range diagnostics."""
     if result.target != config.UNKNOWN_TARGET:
         return None
     if not details:
-        return "등록된 기기 프로파일 없음 (calibration 필요)"
+        return "등록된 target 프로파일 없음 (calibration required)"
+
     best_angle = min(d.angular_distance_deg for d in details)
+    nearest = min(details, key=lambda d: d.angular_distance_deg)
     if best_angle > config.unknown_max_angle_deg:
-        return f"가장 가까운 기기도 {best_angle:.1f}° > {config.unknown_max_angle_deg:.0f}° (각도 초과)"
+        return (
+            f"nearest target angle {best_angle:.1f}deg > "
+            f"{config.unknown_max_angle_deg:.0f}deg"
+        )
+    if nearest.normalized_distance > 1.0:
+        return (
+            f"nearest target range OUT: "
+            f"{nearest.angular_distance_deg:.1f}deg / {nearest.allowed_radius_deg:.1f}deg "
+            f"(x{nearest.normalized_distance:.2f})"
+        )
     if result.probability < config.unknown_probability_threshold:
-        return f"top-1 확률 {result.probability:.0%} < {config.unknown_probability_threshold:.0%} (확신 부족)"
+        return (
+            f"top-1 probability {result.probability:.0%} < "
+            f"{config.unknown_probability_threshold:.0%}"
+        )
+    margin = result.probability - result.second_best_probability
+    if margin < config.minimum_margin:
+        return f"top-1/top-2 margin {margin:.2f} < {config.minimum_margin:.2f}"
     return "UNKNOWN"
 
 
@@ -153,32 +176,42 @@ def _device_details(
     config: GazeConfig,
     selected_target: str,
 ) -> tuple[DeviceGazeDetail, ...]:
-    """Angular distance from the gaze direction to each registered device.
-
-    3D geometry가 등록된 기기는 `classify()`와 똑같이 현재 머리 위치(origin)
-    기준으로 매 프레임 새로 계산한 깊이 보정 각도를 보여준다
-    (`effective_distance_and_variance` 재사용 — 디버그 패널이 classify()가 실제로
-    쓴 값과 다른, 낡은 고정 각도를 보여주지 않게 한다).
-    """
+    """Distance and registered-range diagnostics for each registered device."""
     profiles = classifier.profiles
     if not profiles or direction is None:
         return tuple(
-            DeviceGazeDetail(device_id=device_id, angular_distance_deg=math.nan, is_selected=False)
+            DeviceGazeDetail(
+                device_id=device_id,
+                angular_distance_deg=math.nan,
+                allowed_radius_deg=math.nan,
+                normalized_distance=math.nan,
+                within_profile_radius=False,
+                is_selected=False,
+            )
             for device_id in profiles
         )
+
     gaze = np.array(direction, dtype=np.float64)
     ray_origin: Vector3 | None = np.array(origin, dtype=np.float64) if origin is not None else None
     geometries = classifier.geometries
-    details = []
+    details: list[DeviceGazeDetail] = []
     for device_id, profile in profiles.items():
         geometry = geometries.get(device_id) if config.enable_3d_target_matching else None
-        angular_distance, _variance = effective_distance_and_variance(
+        angular_distance, variance = effective_distance_and_variance(
             gaze, ray_origin, profile, geometry, config
+        )
+        angular_distance_deg = math.degrees(angular_distance)
+        allowed_radius_deg = math.degrees(math.sqrt(max(variance, 0.0)))
+        normalized_distance = (
+            angular_distance_deg / allowed_radius_deg if allowed_radius_deg > 0.0 else math.inf
         )
         details.append(
             DeviceGazeDetail(
                 device_id=device_id,
-                angular_distance_deg=math.degrees(angular_distance),
+                angular_distance_deg=angular_distance_deg,
+                allowed_radius_deg=allowed_radius_deg,
+                normalized_distance=normalized_distance,
+                within_profile_radius=normalized_distance <= 1.0,
                 is_selected=(device_id == selected_target),
             )
         )
