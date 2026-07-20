@@ -36,6 +36,7 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
         assert tabs.tabText(4) == "지연·어댑터"
         assert window._sample_button.text() == "시선 샘플 저장 (0/10)"
         assert window._sample_list.count() == 0
+        assert window._gaze_config.enable_3d_target_matching is True
         assert window._register_target_button.text() == "물체 등록"
     finally:
         window.close()
