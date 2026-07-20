@@ -70,6 +70,56 @@ class GazeConfig:
 
     UNKNOWN_TARGET: str = "UNKNOWN"
 
+    # 3D triangulation (calibration/triangulation.py) — 10초 등록 동안 머리를
+    # 움직여 얻은 여러 시선 광선으로 물체의 실제 위치·크기를 추정할 때의 품질
+    # 기준. 기준을 만족하지 못하면 각도 기반(mean_direction + variance) 등록으로
+    # 자동 대체한다(documents/decisions.md 참고).
+    minimum_triangulation_baseline_mm: float = 60.0
+    """광선 원점(머리 위치)들의 강건한 퍼짐(중앙값 기준 90퍼센타일*2)의 최소값.
+
+    이 값보다 작으면 등록 중 머리가 충분히 움직이지 않은 것으로 보고 3D를
+    포기한다 — 원점이 거의 고정된 채 눈만 움직인 경우, 삼각측량이 카메라
+    바로 앞의 한 점으로 수렴해 버리는 것을 막는다.
+    """
+
+    minimum_triangulation_eigenvalue: float = 0.004
+    """광선 방향들의 각도 다양성 하한(A 행렬의 최소 고유값 / 프레임 수).
+
+    baseline_mm만으로는 "원점은 퍼졌지만 물체가 멀어 광선이 여전히 거의
+    평행한" 경우를 잡지 못한다 — 이 값이 함께 낮으면 조건이 나쁜 것으로 본다.
+    합성 광선(다양한 baseline·거리 조합)으로 실측 없이 보정한 값이다: baseline
+    반경 150mm·거리 2000mm(스마트 전구 정도 거리) 조합은 고유값≈0.0057·위치
+    오차 26mm로 통과시키되, baseline 60~100mm·거리 2000~3000mm(고유값
+    0.0004~0.0025, 오차 35~300mm)는 거부한다 — 실제 카메라로 첫 통합 테스트를
+    할 때(README 16장 Day 1) 재보정이 필요할 수 있다.
+    """
+
+    maximum_triangulation_residual_mm: float = 35.0
+    """추정된 위치와 각 광선 사이 수직 거리의 RMS 상한 — 이보다 크면 광선들이
+    한 점에서 잘 수렴하지 않은 것으로 보고 3D를 포기한다. 깊이 방향 오조건은
+    residual만으로 잘 드러나지 않으므로(위 min_eigenvalue가 그 역할을 한다),
+    이 값은 주로 서로 다른 물체를 보는 등 명백히 어긋난 광선을 걸러내는
+    안전망이다."""
+
+    minimum_triangulation_frames: int = 20
+    """3D 삼각측량을 시도하기 위한 최소 유효 프레임 수."""
+
+    target_radius_floor_mm: float = 20.0
+    """등록된 물체의 유효 반경(radius_mm)이 이보다 작아지지 않도록 하는 하한.
+
+    이 반경은 실제로 측정한 물체 크기가 아니라 삼각측량 잔차에서 유도한
+    "판정 허용 오차"다 — 운 좋게 낮은 잔차가 나와도 비현실적으로 좁은 반경이
+    되지 않도록 막는다.
+    """
+
+    target_minimum_angular_variance_deg: float = 4.0
+    """3D 모드에서 계산한 각도 분산(atan(radius/depth)^2)의 하한(도).
+
+    각도 기반 등록의 기존 최소 퍼짐(4도, target_registration.py)과 맞춰,
+    3D 모드가 각도 모드보다 더 엄격하게(더 쉽게 UNKNOWN으로) 판정하지 않도록
+    한다.
+    """
+
     def __post_init__(self) -> None:
         if self.dwell_time_ms < 0 or self.target_lock_ttl_ms <= 0:
             raise ValueError("Gaze timing thresholds must be non-negative and TTL must be positive")
@@ -101,6 +151,26 @@ class GazeConfig:
             raise ValueError("small_motion_deadzone_deg must be finite and non-negative")
         if not self.UNKNOWN_TARGET:
             raise ValueError("UNKNOWN_TARGET must not be empty")
+        positive_mm_fields = {
+            "minimum_triangulation_baseline_mm": self.minimum_triangulation_baseline_mm,
+            "maximum_triangulation_residual_mm": self.maximum_triangulation_residual_mm,
+            "target_radius_floor_mm": self.target_radius_floor_mm,
+        }
+        for name, value in positive_mm_fields.items():
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive, got {value}")
+        if (
+            not math.isfinite(self.minimum_triangulation_eigenvalue)
+            or self.minimum_triangulation_eigenvalue <= 0.0
+        ):
+            raise ValueError("minimum_triangulation_eigenvalue must be finite and positive")
+        if self.minimum_triangulation_frames <= 0:
+            raise ValueError("minimum_triangulation_frames must be positive")
+        if (
+            not math.isfinite(self.target_minimum_angular_variance_deg)
+            or not 0.0 < self.target_minimum_angular_variance_deg <= 90.0
+        ):
+            raise ValueError("target_minimum_angular_variance_deg must be finite and within (0, 90]")
 
 
 DEFAULT_GAZE_CONFIG = GazeConfig()

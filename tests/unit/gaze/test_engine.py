@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from jarvis.contracts.messages import TargetEstimate
-from jarvis.gaze.classifier import DeviceGazeProfile
+from jarvis.gaze.classifier import DeviceGazeProfile, TargetGeometry3D
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.engine import GazeTargetingEngine
 from jarvis.gaze.features import FaceObservation
@@ -96,3 +96,37 @@ def test_unregister_device_falls_back_to_unknown() -> None:
     engine.unregister_device("laptop")
     estimate = engine.process(_observation(0, 1_000))
     assert estimate.target == UNKNOWN
+
+
+def test_3d_registered_device_resolves_correctly_through_full_pipeline() -> None:
+    """head_position_mm이 프레임마다 주어지면 smoothing이 origin을 평균 내
+    engine 전체 파이프라인을 통해 3D geometry 매칭까지 이어져야 한다."""
+    config = GazeConfig(unknown_probability_threshold=0.5)
+    engine = GazeTargetingEngine(config)
+    engine.register_device(
+        DeviceGazeProfile("laptop", np.array([0.0, 0.0, 1.0]), variance=0.05),
+        geometry_3d=TargetGeometry3D(np.array([0.0, 0.0, 500.0]), radius_mm=50.0),
+    )
+
+    head_position = np.array([0.0, 0.0, 0.0])
+    estimate = None
+    for i in range(config.smoothing_window_frames + 2):
+        observation = FaceObservation(
+            timestamp_ms=i * 30,
+            frame_id=i,
+            left_iris_relative=(0.0, 0.0),
+            right_iris_relative=(0.0, 0.0),
+            head_yaw_deg=0.0,
+            head_pitch_deg=0.0,
+            head_roll_deg=0.0,
+            eye_tracking_confidence=1.0,
+            face_tracking_confidence=1.0,
+            face_detected=True,
+            head_position_mm=head_position,
+        )
+        estimate = engine.process(observation)
+
+    assert estimate is not None
+    assert estimate.target == "laptop"
+    assert engine.last_smoothed_gaze is not None
+    assert engine.last_smoothed_gaze.origin is not None

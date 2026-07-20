@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
 from jarvis.calibration.registry import TargetRecord, TargetRegistry
 from jarvis.calibration.target_registration import TargetRegistrationSession
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
+from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.lock import GazeLockState
 from jarvis.gaze.smoothing import SmoothedGaze
@@ -675,13 +676,16 @@ class MainWindow(QMainWindow):
         self._sample_store = GazeSampleStore(
             samples_path or Path("data/evaluation/gaze_samples.json")
         )
+        self._gaze_config = GazeConfig()
         self._target_registry = TargetRegistry(self._profiles_path)
         self._registration: TargetRegistrationSession | None = None
         self._registration_points: list[tuple[float, float]] = []
         self._target_list = QListWidget()
         self._register_target_button = QPushButton()
         self._probe = GazeProbe(
-            model_path=self._model_path, profiles_path=self._profiles_path
+            model_path=self._model_path,
+            profiles_path=self._profiles_path,
+            config=self._gaze_config,
         )
         self._hand_probe = HandProbe(model_path=self._hand_model_path)
 
@@ -746,10 +750,9 @@ class MainWindow(QMainWindow):
             self._sample_list.addItem(format_gaze_sample(sample))
         layout.addWidget(self._sample_list)
         self._refresh_sample_button()
-        return container
 
         target_controls = QHBoxLayout()
-        self._register_target_button = QPushButton("기기 바라보고 등록")
+        self._register_target_button = QPushButton("물체 등록")
         self._register_target_button.clicked.connect(self._start_target_registration)
         self._reregister_target_button = QPushButton("위치 다시 등록")
         self._reregister_target_button.clicked.connect(self._reregister_selected_target)
@@ -859,11 +862,17 @@ class MainWindow(QMainWindow):
     def _smoothed_from_snapshot(snapshot: GazeSnapshot) -> SmoothedGaze | None:
         if snapshot.smoothed_gaze_direction is None or snapshot.smoothed_stability is None:
             return None
+        origin = (
+            np.array(snapshot.smoothed_gaze_origin, dtype=np.float64)
+            if snapshot.smoothed_gaze_origin is not None
+            else None
+        )
         return SmoothedGaze(
             direction=np.array(snapshot.smoothed_gaze_direction, dtype=np.float64),
             stability=snapshot.smoothed_stability,
             timestamp_ms=snapshot.timestamp_ms,
             frame_id=snapshot.frame_id,
+            origin=origin,
         )
 
     def _selected_target(self) -> TargetRecord | None:
@@ -872,23 +881,20 @@ class MainWindow(QMainWindow):
         return records[row] if 0 <= row < len(records) else None
 
     def _start_target_registration(self) -> None:
-        target_id, ok = QInputDialog.getText(self, "기기 등록", "Target ID")
-        if not ok or not target_id.strip():
-            return
-        name, ok = QInputDialog.getText(self, "기기 등록", "표시 이름", text=target_id.strip())
+        name, ok = QInputDialog.getText(self, "물체 등록", "물체 이름")
         if not ok or not name.strip():
             return
-        device_type, ok = QInputDialog.getText(self, "기기 등록", "기기 종류", text="LIGHT")
-        if not ok or not device_type.strip():
-            return
-        device_id, ok = QInputDialog.getText(
-            self, "기기 등록", "Adapter Device ID", text=target_id.strip()
-        )
-        if not ok or not device_id.strip():
-            return
-        self._begin_registration(
-            target_id.strip(), name.strip(), device_type.strip(), device_id.strip()
-        )
+        target_id = self._next_target_id()
+        self._begin_registration(target_id, name.strip(), "UNKNOWN", target_id)
+
+    def _next_target_id(self) -> str:
+        existing = {record.target_id for record in self._target_registry.records}
+        index = 1
+        while True:
+            target_id = f"target_{index:03d}"
+            if target_id not in existing:
+                return target_id
+            index += 1
 
     def _begin_registration(
         self, target_id: str, name: str, device_type: str, device_id: str
@@ -896,10 +902,12 @@ class MainWindow(QMainWindow):
         if self._registration is not None:
             self._log.warn("이미 기기 등록이 진행 중입니다")
             return
-        self._registration = TargetRegistrationSession(target_id, name, device_type, device_id)
+        self._registration = TargetRegistrationSession(
+            target_id, name, device_type, device_id, config=self._gaze_config
+        )
         self._registration_points = []
         self._register_target_button.setEnabled(False)
-        self._log.info(f"'{name}'을 2초 동안 바라보며 고개를 조금씩 움직여 주세요")
+        self._log.info(f"'{name}'을 10초 동안 바라보며 고개를 좌우·상하로 크게 움직여 주세요")
 
     def _finish_target_registration(self) -> None:
         assert self._registration is not None
@@ -916,9 +924,10 @@ class MainWindow(QMainWindow):
                 names = ", ".join(item.name for item in nearby)
                 self._log.warn(f"등록 방향이 기존 기기와 가깝습니다: {names}")
             self._target_registry.upsert(record)
-            self._probe.register_profile(record.to_profile())
+            self._probe.register_profile(record.to_profile(), geometry_3d=record.to_geometry_3d())
             self._log.info(
-                f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames)"
+                f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames) "
+                f"— {self._describe_triangulation_outcome(record)}"
             )
         except ValueError as exc:
             self._log.warn(f"기기 등록 실패: {exc}")
@@ -927,6 +936,23 @@ class MainWindow(QMainWindow):
             self._registration_points = []
             self._register_target_button.setEnabled(True)
             self._refresh_targets()
+
+    def _describe_triangulation_outcome(self, record: TargetRecord) -> str:
+        """3D 위치 추정이 성공했는지, 실패했다면 왜 각도 모드로 대체됐는지를
+        그대로 보여준다 — 성공을 지어내지 않는다(development-principles.md 1절)."""
+        assert self._registration is not None
+        triangulation = self._registration.triangulation_result
+        if record.position_3d is not None:
+            if triangulation is None:
+                return "3D 위치 추정 성공"
+            return f"3D 위치 추정 성공 (baseline {triangulation.baseline_mm:.0f}mm)"
+        if triangulation is None:
+            return "각도 모드로 대체 (머리 움직임 데이터 부족)"
+        return (
+            "각도 모드로 대체 (baseline "
+            f"{triangulation.baseline_mm:.0f}mm, 잔차 {triangulation.residual_rms_mm:.0f}mm, "
+            f"고유값 {triangulation.min_eigenvalue:.4f} — 머리를 더 크게 움직여 보세요)"
+        )
 
     def _reregister_selected_target(self) -> None:
         record = self._selected_target()

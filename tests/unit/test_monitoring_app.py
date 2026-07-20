@@ -36,6 +36,22 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
         assert tabs.tabText(4) == "지연·어댑터"
         assert window._sample_button.text() == "시선 샘플 저장 (0/10)"
         assert window._sample_list.count() == 0
+        assert window._register_target_button.text() == "물체 등록"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_target_registration_uses_auto_id(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        profiles_path=tmp_path / "profiles.json",
+        samples_path=tmp_path / "samples.json",
+    )
+    try:
+        assert window._next_target_id() == "target_001"
     finally:
         window.close()
         app.processEvents()

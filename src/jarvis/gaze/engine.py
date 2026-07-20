@@ -14,7 +14,12 @@
 from __future__ import annotations
 
 from jarvis.contracts.messages import TargetEstimate
-from jarvis.gaze.classifier import ClassificationResult, DeviceGazeProfile, TargetClassifier
+from jarvis.gaze.classifier import (
+    ClassificationResult,
+    DeviceGazeProfile,
+    TargetClassifier,
+    TargetGeometry3D,
+)
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.features import FaceObservation, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockState, GazeLockStateMachine
@@ -44,8 +49,10 @@ class GazeTargetingEngine:
         """Cursor Control Mapper 게이트(README 6장 `Gaze Lock == laptop`)에서 쓴다."""
         return self._lock.is_locked_to(device_id)
 
-    def register_device(self, profile: DeviceGazeProfile) -> None:
-        self._classifier.register_profile(profile)
+    def register_device(
+        self, profile: DeviceGazeProfile, geometry_3d: TargetGeometry3D | None = None
+    ) -> None:
+        self._classifier.register_profile(profile, geometry_3d=geometry_3d)
 
     def unregister_device(self, device_id: str) -> None:
         self._classifier.unregister_profile(device_id)
@@ -89,7 +96,7 @@ class GazeTargetingEngine:
                 stability=0.0,
             )
 
-        classification = self._classifier.classify(smoothed.direction)
+        classification = self._classifier.classify(smoothed.direction, origin=smoothed.origin)
         self._lock.update(smoothed.timestamp_ms, classification)
 
         return TargetEstimate(

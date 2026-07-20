@@ -33,10 +33,11 @@ from jarvis.gaze.classifier import (
     ClassificationResult,
     DeviceGazeProfile,
     TargetClassifier,
-    cosine_similarity,
+    TargetGeometry3D,
+    effective_distance_and_variance,
 )
 from jarvis.gaze.config import GazeConfig
-from jarvis.gaze.features import FaceObservation, compose_gaze_vector
+from jarvis.gaze.features import FaceObservation, Vector3, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
 from jarvis.gaze.smoothing import GazeSmoother
 
@@ -86,6 +87,7 @@ class GazeSnapshot:
     # 2c — temporal smoothing
     smoothed_stability: float | None
     smoothed_gaze_direction: tuple[float, float, float] | None
+    smoothed_gaze_origin: tuple[float, float, float] | None
     buffer_fill: int
     buffer_capacity: int
 
@@ -145,10 +147,18 @@ def _is_confident(result: ClassificationResult, config: GazeConfig) -> bool:
 
 def _device_details(
     direction: tuple[float, float, float] | None,
+    origin: tuple[float, float, float] | None,
     classifier: TargetClassifier,
+    config: GazeConfig,
     selected_target: str,
 ) -> tuple[DeviceGazeDetail, ...]:
-    """Angular distance from the gaze direction to each registered device."""
+    """Angular distance from the gaze direction to each registered device.
+
+    3D geometry가 등록된 기기는 `classify()`와 똑같이 현재 머리 위치(origin)
+    기준으로 매 프레임 새로 계산한 깊이 보정 각도를 보여준다
+    (`effective_distance_and_variance` 재사용 — 디버그 패널이 classify()가 실제로
+    쓴 값과 다른, 낡은 고정 각도를 보여주지 않게 한다).
+    """
     profiles = classifier.profiles
     if not profiles or direction is None:
         return tuple(
@@ -156,14 +166,18 @@ def _device_details(
             for device_id in profiles
         )
     gaze = np.array(direction, dtype=np.float64)
+    ray_origin: Vector3 | None = np.array(origin, dtype=np.float64) if origin is not None else None
+    geometries = classifier.geometries
     details = []
     for device_id, profile in profiles.items():
-        similarity = cosine_similarity(gaze, profile.mean_direction)
-        angle_deg = math.degrees(math.acos(similarity))
+        geometry = geometries.get(device_id)
+        angular_distance, _variance = effective_distance_and_variance(
+            gaze, ray_origin, profile, geometry, config
+        )
         details.append(
             DeviceGazeDetail(
                 device_id=device_id,
-                angular_distance_deg=angle_deg,
+                angular_distance_deg=math.degrees(angular_distance),
                 is_selected=(device_id == selected_target),
             )
         )
@@ -205,6 +219,7 @@ def evaluate(
 
     smoothed_stability: float | None = None
     classify_direction: tuple[float, float, float] | None = None
+    classify_origin: tuple[float, float, float] | None = None
     if smoothed is None:
         result = ClassificationResult(
             target=config.UNKNOWN_TARGET, probability=0.0, second_best_probability=0.0
@@ -225,7 +240,13 @@ def evaluate(
             float(smoothed.direction[1]),
             float(smoothed.direction[2]),
         )
-        result = classifier.classify(smoothed.direction)
+        if smoothed.origin is not None:
+            classify_origin = (
+                float(smoothed.origin[0]),
+                float(smoothed.origin[1]),
+                float(smoothed.origin[2]),
+            )
+        result = classifier.classify(smoothed.direction, origin=smoothed.origin)
         lock.update(smoothed.timestamp_ms, result)
         estimate = TargetEstimate(
             timestamp_ms=smoothed.timestamp_ms,
@@ -236,7 +257,7 @@ def evaluate(
             stability=smoothed.stability,
         )
 
-    details = _device_details(classify_direction, classifier, result.target)
+    details = _device_details(classify_direction, classify_origin, classifier, config, result.target)
 
     return GazeSnapshot(
         timestamp_ms=observation.timestamp_ms,
@@ -257,6 +278,7 @@ def evaluate(
         gaze_confidence=gaze_confidence,
         smoothed_stability=smoothed_stability,
         smoothed_gaze_direction=classify_direction,
+        smoothed_gaze_origin=classify_origin,
         buffer_fill=len(smoother._buffer),  # noqa: SLF001 - diagnostic read of buffer depth
         buffer_capacity=config.smoothing_window_frames,
         target=result.target,
@@ -299,13 +321,22 @@ class GazeProbe:
         self._profile_count = self._load_profiles(profiles_path)
 
     def _load_profiles(self, profiles_path: Path | None) -> int:
+        """Load every registered target, including 3D geometry when present.
+
+        Uses `TargetRegistry` (not the flat `calibration.profiles` loader) so
+        `position_3d` survives an app restart — loading only the flat angular
+        profile here would silently drop 3D geometry every relaunch even
+        though the JSON file still has it (`TargetRegistry` is the same file
+        `app.py` writes to via `self._profiles_path`).
+        """
         if profiles_path is None or not profiles_path.is_file():
             return 0
-        from jarvis.calibration.profiles import load_profiles
+        from jarvis.calibration.registry import TargetRegistry
 
+        registry = TargetRegistry(profiles_path)
         count = 0
-        for profile in load_profiles(profiles_path):
-            self._classifier.register_profile(profile)
+        for record in registry.records:
+            self._classifier.register_profile(record.to_profile(), geometry_3d=record.to_geometry_3d())
             count += 1
         return count
 
@@ -321,10 +352,12 @@ class GazeProbe:
     def profile_count(self) -> int:
         return self._profile_count
 
-    def register_profile(self, profile: DeviceGazeProfile) -> None:
+    def register_profile(
+        self, profile: DeviceGazeProfile, geometry_3d: TargetGeometry3D | None = None
+    ) -> None:
         """Add or replace one target profile in the live classifier."""
         existed = profile.device_id in self._classifier.profiles
-        self._classifier.register_profile(profile)
+        self._classifier.register_profile(profile, geometry_3d=geometry_3d)
         if not existed:
             self._profile_count += 1
 

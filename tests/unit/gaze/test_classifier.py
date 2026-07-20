@@ -7,7 +7,12 @@ import math
 import numpy as np
 import pytest
 
-from jarvis.gaze.classifier import DeviceGazeProfile, TargetClassifier
+from jarvis.gaze.classifier import (
+    DeviceGazeProfile,
+    TargetClassifier,
+    TargetGeometry3D,
+    effective_distance_and_variance,
+)
 from jarvis.gaze.config import GazeConfig
 
 
@@ -130,3 +135,124 @@ def test_device_gaze_profile_rejects_non_finite_values() -> None:
         DeviceGazeProfile("bad", np.array([0.0, 0.0, float("nan")]), variance=0.01)
     with pytest.raises(ValueError):
         DeviceGazeProfile("bad", _unit([0.0, 0.0, 1.0]), variance=float("nan"))
+
+
+# --- 3D geometry (documents/decisions.md: "3D 시도 + 신뢰도 낮으면 각도 모델로 폴백") ---
+
+
+def test_target_geometry_3d_rejects_bad_center_or_radius() -> None:
+    with pytest.raises(ValueError):
+        TargetGeometry3D(np.array([0.0, 0.0, float("nan")]), radius_mm=20.0)
+    with pytest.raises(ValueError):
+        TargetGeometry3D(np.array([0.0, 0.0, 1.0]), radius_mm=0.0)
+    with pytest.raises(ValueError):
+        TargetGeometry3D(np.array([0.0, 0.0, 1.0]), radius_mm=-5.0)
+
+
+def test_3d_geometry_corrects_for_head_movement_since_registration() -> None:
+    """등록 후 머리가 크게 이동하면 고정 각도(mean_direction)는 더 이상 맞지 않는다.
+
+    3D geometry가 있으면 현재 머리 위치(origin) 기준으로 매 프레임 새로 방향을
+    계산하므로, 각도 전용 모델이 오답을 내는 상황에서도 올바른 기기를 고른다.
+    """
+    config = GazeConfig(unknown_probability_threshold=0.5)
+    classifier = TargetClassifier(config)
+
+    bulb_position = np.array([300.0, 0.0, 2000.0])
+    registration_origin = np.array([0.0, 0.0, 0.0])
+    bulb_registered_direction = _unit((bulb_position - registration_origin).tolist())
+
+    classifier.register_profile(DeviceGazeProfile("laptop", _unit([0.0, 0.0, 1.0]), variance=0.02))
+    classifier.register_profile(
+        DeviceGazeProfile("bulb", bulb_registered_direction, variance=0.02),
+        geometry_3d=TargetGeometry3D(center_mm=bulb_position, radius_mm=50.0),
+    )
+
+    runtime_origin = np.array([800.0, 0.0, 0.0])
+    true_direction_to_bulb = _unit((bulb_position - runtime_origin).tolist())
+
+    # 각도 전용(=origin 없이 classify)이면 여전히 등록 시 고정 방향과 비교되어
+    # laptop을 잘못 고른다.
+    stale_result = classifier.classify(true_direction_to_bulb)
+    assert stale_result.target == "laptop"
+
+    # origin이 주어지면 bulb의 3D geometry로 매 프레임 새로 계산해 올바르게 고른다.
+    corrected_result = classifier.classify(true_direction_to_bulb, origin=runtime_origin)
+    assert corrected_result.target == "bulb"
+
+
+def test_classify_without_origin_ignores_registered_geometry() -> None:
+    """origin을 넘기지 않으면 3D geometry가 등록되어 있어도 각도 모드와 동일하다
+    (하위 호환 — 기존 호출부는 그대로 동작해야 한다)."""
+    config = GazeConfig(unknown_probability_threshold=0.0)
+    with_geometry = TargetClassifier(config)
+    without_geometry = TargetClassifier(config)
+
+    profile = DeviceGazeProfile("bulb", _unit([0.1, 0.0, 0.99]), variance=0.02)
+    with_geometry.register_profile(
+        profile, geometry_3d=TargetGeometry3D(np.array([300.0, 0.0, 2000.0]), radius_mm=50.0)
+    )
+    without_geometry.register_profile(profile)
+
+    direction = _unit([0.05, 0.0, 0.99])
+    result_with = with_geometry.classify(direction)
+    result_without = without_geometry.classify(direction)
+
+    assert result_with.target == result_without.target
+    assert result_with.probability == pytest.approx(result_without.probability)
+
+
+def test_degenerate_depth_falls_back_to_angular() -> None:
+    """물체 위치가 현재 머리 위치와 거의 같으면(깊이 퇴화) 각도 모드로 대체된다."""
+    profile = DeviceGazeProfile("bulb", _unit([0.0, 0.0, 1.0]), variance=0.02)
+    origin = np.array([100.0, 50.0, 10.0])
+    geometry = TargetGeometry3D(center_mm=origin.copy(), radius_mm=20.0)
+
+    angular_distance, variance = effective_distance_and_variance(
+        _unit([0.0, 0.0, 1.0]), origin, profile, geometry, GazeConfig()
+    )
+
+    assert angular_distance == pytest.approx(0.0, abs=1e-9)
+    assert variance == pytest.approx(profile.variance)
+
+
+def test_variance_floor_prevents_3d_mode_being_stricter_than_angular() -> None:
+    """작거나 먼 물체의 물리적 각도 분산이 각도 모드 최소 퍼짐보다 좁아지지
+    않아야 한다 — 그렇지 않으면 3D 모드가 각도 모드보다 더 쉽게 UNKNOWN을 낸다."""
+    config = GazeConfig(target_minimum_angular_variance_deg=4.0)
+    profile = DeviceGazeProfile("bulb", _unit([0.0, 0.0, 1.0]), variance=0.02)
+    origin = np.array([0.0, 0.0, 0.0])
+    # 작은 반경(10mm)·먼 거리(5000mm) -> 물리적 각도 분산은 매우 작다.
+    geometry = TargetGeometry3D(center_mm=np.array([0.0, 0.0, 5000.0]), radius_mm=10.0)
+
+    _angular_distance, variance = effective_distance_and_variance(
+        _unit([0.0, 0.0, 1.0]), origin, profile, geometry, config
+    )
+
+    floor = math.radians(config.target_minimum_angular_variance_deg) ** 2
+    assert variance == pytest.approx(floor)
+
+
+def test_geometries_property_and_unregister_removes_geometry() -> None:
+    classifier = TargetClassifier()
+    profile = DeviceGazeProfile("bulb", _unit([0.0, 0.0, 1.0]), variance=0.02)
+    geometry = TargetGeometry3D(np.array([0.0, 0.0, 2000.0]), radius_mm=30.0)
+    classifier.register_profile(profile, geometry_3d=geometry)
+
+    assert "bulb" in classifier.geometries
+
+    classifier.unregister_profile("bulb")
+    assert classifier.geometries == {}
+    assert classifier.profiles == {}
+
+
+def test_reregistering_without_geometry_clears_previous_geometry() -> None:
+    classifier = TargetClassifier()
+    profile = DeviceGazeProfile("bulb", _unit([0.0, 0.0, 1.0]), variance=0.02)
+    classifier.register_profile(
+        profile, geometry_3d=TargetGeometry3D(np.array([0.0, 0.0, 2000.0]), radius_mm=30.0)
+    )
+    assert "bulb" in classifier.geometries
+
+    classifier.register_profile(profile)
+    assert "bulb" not in classifier.geometries
