@@ -736,11 +736,9 @@ class MainWindow(QMainWindow):
         )
         self._calibration_store = GazeCalibrationStore(_default_calibration_model_path())
         self._target_registry = TargetRegistry(self._profiles_path)
-        self._active_calibration_model = (
-            self._calibration_store.model
-            if len(self._target_registry.records) >= 2
-            else None
-        )
+        # Diagnostic experiment #1: keep learned gaze calibration OFF so raw/head
+        # composition can be inspected without a regression model shifting final y/p.
+        self._active_calibration_model = None
         self._registration: TargetRegistrationSession | None = None
         self._registration_points: list[tuple[float, float]] = []
         self._registration_calibration_features: list[tuple[float, ...]] = []
@@ -1060,9 +1058,7 @@ class MainWindow(QMainWindow):
                 for features in self._registration_calibration_features
             ]
             model = self._calibration_store.add_samples(calibration_samples)
-            self._active_calibration_model = (
-                model if len(self._target_registry.records) >= 2 else None
-            )
+            self._active_calibration_model = None
             self._probe.set_calibration_model(self._active_calibration_model)
             self._log.info(
                 f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames) "
