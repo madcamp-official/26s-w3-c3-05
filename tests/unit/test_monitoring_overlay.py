@@ -152,6 +152,65 @@ def test_render_normalized_hand_is_not_vertically_flipped() -> None:
     )
 
 
+def test_render_vector_draws_arrow() -> None:
+    from jarvis.monitoring.overlay import render_vector
+
+    canvas = render_vector((0.3, 0.1), size=200, scale=0.3)
+    assert canvas.shape == (200, 200, 3)
+    assert canvas.any()  # something drawn
+
+
+def test_render_vector_handles_no_signal() -> None:
+    from jarvis.monitoring.overlay import render_vector
+
+    canvas = render_vector(None, size=120, scale=1.0)
+    assert canvas.shape == (120, 120, 3)
+
+
+def test_render_vector_zero_scale_does_not_crash() -> None:
+    """추적 첫 프레임처럼 running-max scale이 아직 0이어도 예외 없이 그려야 한다."""
+    from jarvis.monitoring.overlay import render_vector
+
+    canvas = render_vector((0.0, 0.0), size=100, scale=0.0)
+    assert canvas.shape == (100, 100, 3)
+
+
+def test_render_vector_length_scales_with_magnitude() -> None:
+    """스케일 대비 벡터 크기가 클수록 화살표가 중심에서 더 멀리 뻗어야 한다."""
+    from jarvis.monitoring.overlay import render_vector
+
+    size = 200
+
+    def _tip_distance_from_center(canvas: np.ndarray) -> float:
+        # green arrow pixels (BGR ~ (80,200,80)) vs background/ring/text — take the
+        # farthest lit pixel from center as a proxy for the arrowhead position.
+        mask = (canvas[:, :, 1] > 150) & (canvas[:, :, 0] < 150)
+        ys, xs = np.nonzero(mask)
+        if xs.size == 0:
+            return 0.0
+        center = size / 2
+        return float(np.max(np.hypot(xs - center, ys - center)))
+
+    small = render_vector((0.1, 0.0), size=size, scale=1.0)
+    large = render_vector((0.9, 0.0), size=size, scale=1.0)
+    assert _tip_distance_from_center(large) > _tip_distance_from_center(small)
+
+
+def test_render_vector_mirror_flips_x_only() -> None:
+    from jarvis.monitoring.overlay import render_vector
+
+    size = 200
+
+    def _centroid_x(canvas: np.ndarray) -> float:
+        mask = (canvas[:, :, 1] > 150) & (canvas[:, :, 0] < 150)
+        xs = np.nonzero(mask)[1]
+        return float(xs.mean())
+
+    normal = render_vector((0.5, 0.0), size=size, scale=1.0, mirror=False)
+    mirrored = render_vector((0.5, 0.0), size=size, scale=1.0, mirror=True)
+    assert _centroid_x(mirrored) < size / 2 < _centroid_x(normal)
+
+
 def test_placeholder_frame_shape_and_content() -> None:
     frame = placeholder_frame(width=320, height=240, text="NO CAMERA")
     assert frame.shape == (240, 320, 3)

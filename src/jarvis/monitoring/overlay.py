@@ -8,6 +8,7 @@ rest of ``jarvis.monitoring`` never needs cv2.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import cv2
@@ -226,6 +227,53 @@ def render_normalized_hand(
     for x, y in px:
         cv2.circle(canvas, (x, y), 3, (235, 235, 235), thickness=-1)
     cv2.circle(canvas, px[0], 5, (60, 150, 230), thickness=-1)  # wrist (origin)
+    return canvas
+
+
+def render_vector(
+    vector: tuple[float, float] | None,
+    *,
+    size: int = 200,
+    scale: float,
+    mirror: bool = False,
+) -> Frame:
+    """Draw a 2D (x, y) vector as an arrow from the canvas center.
+
+    ``scale`` is a running max magnitude the caller maintains across frames (like
+    ``render_normalized_hand``'s fixed pixel scale, but adaptive) — a fixed
+    hardcoded scale would either clip a fast swipe or make a still hand's tiny
+    jitter invisible, so the arrow length is always relative to the largest
+    magnitude seen so far. ``vector=None`` (tracking lost / no history yet) draws
+    an empty canvas with a "no signal" note rather than a stale arrow.
+    ``mirror`` flips the x-component to match a horizontally-flipped (selfie/거울상)
+    display frame — a display concern only, ``vector`` itself is unchanged. Y is
+    drawn without flipping to match MediaPipe's y-down image convention, the same
+    choice ``render_normalized_hand`` makes for the adjacent model-input canvas.
+    """
+    canvas: Frame = np.zeros((size, size, 3), dtype=np.uint8)
+    canvas[:] = (18, 20, 26)
+    center = (size // 2, size // 2)
+    radius = int(size * 0.42)
+    cv2.circle(canvas, center, radius, (40, 44, 52), 1, cv2.LINE_AA)
+    cv2.circle(canvas, center, 3, (110, 110, 120), thickness=-1)
+
+    if vector is None:
+        cv2.putText(canvas, "no signal", (size // 2 - 42, size // 2 + 4), _FONT, 0.5,
+                    (90, 90, 100), 1, cv2.LINE_AA)
+        return canvas
+
+    x, y = vector
+    if mirror:
+        x = -x
+    magnitude = math.sqrt(x * x + y * y)
+    if scale > 0.0:
+        tip = (int(center[0] + (x / scale) * radius), int(center[1] + (y / scale) * radius))
+    else:
+        tip = center
+    color = (80, 200, 80)
+    cv2.arrowedLine(canvas, center, tip, color, 2, cv2.LINE_AA, tipLength=0.25)
+    cv2.putText(canvas, f"{magnitude:.3f}", (8, size - 10), _FONT, 0.45,
+                (200, 200, 200), 1, cv2.LINE_AA)
     return canvas
 
 

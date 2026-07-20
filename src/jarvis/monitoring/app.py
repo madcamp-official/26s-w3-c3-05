@@ -75,6 +75,7 @@ from jarvis.monitoring.overlay import (
     draw_hud,
     placeholder_frame,
     render_normalized_hand,
+    render_vector,
 )
 from jarvis.monitoring.pipeline_status import StageState, StageStatus, detect_pipeline_status
 from jarvis.runtime_protocol.config import read_env_file
@@ -353,6 +354,43 @@ class VectorView(QWidget):
         self._magnitude.setText(f"‖·‖ {magnitude:9.3f}")
 
 
+class VectorArrowView(QWidget):
+    """A titled 2D vector shown as a direction+magnitude arrow, not per-axis bars.
+
+    Same auto-scaling idea as ``VectorView`` (running max magnitude, so a still
+    hand's tiny jitter and a fast swipe both stay readable) but drawn as an actual
+    arrow via ``overlay.render_vector`` — closer to "seeing" the motion than
+    reading two independent x/y bars.
+    """
+
+    def __init__(self, title: str, subtitle: str, *, mirror: bool = False) -> None:
+        super().__init__()
+        self.setMinimumWidth(196)
+        self.setMaximumWidth(268)
+        layout = QVBoxLayout(self)
+        layout.addWidget(_header(title))
+        sub = QLabel(subtitle)
+        sub.setWordWrap(True)
+        sub.setStyleSheet("color:#6e7681; font-size:11px;")
+        layout.addWidget(sub)
+        self._canvas = QLabel()
+        self._canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._canvas.setStyleSheet("background:#12141a; border:1px solid #30363d;")
+        layout.addWidget(self._canvas)
+        layout.addStretch(1)
+        self._scale = 1e-6  # running max magnitude, floors arrow scaling
+        self._mirror = mirror
+
+    def set_vector(self, vec: tuple[float, float] | None) -> None:
+        if vec is not None:
+            self._scale = max(self._scale, math.sqrt(vec[0] * vec[0] + vec[1] * vec[1]))
+        frame = render_vector(vec, scale=self._scale, mirror=self._mirror)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        image = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+        self._canvas.setPixmap(QPixmap.fromImage(image))
+
+
 class HandPanel(QScrollArea):
     """Live MediaPipe hand-tracking view + honest gesture-recognition status."""
 
@@ -380,10 +418,12 @@ class HandPanel(QScrollArea):
         columns.setContentsMargins(0, 0, 0, 0)
         columns.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        self._velocity_view = VectorView(
+        self._velocity_view = VectorArrowView(
             "손목 이동 속도 (모델 입력)",
             "정규화 손목 평행이동의 속도 (palm-width/s · x·y). 손목 원점 정규화로 "
-            "landmark 블록에서 지워지는 swipe 신호를 이 벡터가 담아 모델에 넣는다.",
+            "landmark 블록에서 지워지는 swipe 신호를 이 벡터가 담아 모델에 넣는다. "
+            "화살표는 웹캠과 맞춘 거울상(좌우 반전)이며 표시 전용 — 모델 입력은 원본 그대로다.",
+            mirror=True,
         )
         columns.addWidget(self._velocity_view, 0)
 

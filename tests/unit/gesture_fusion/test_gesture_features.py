@@ -35,13 +35,14 @@ def _obs(
     frame_id: int,
     hand_detected: bool = True,
     wrist_position: object = None,
+    palm_scale: float = 0.2,
 ) -> HandObservation:
     return HandObservation(
         timestamp_ms=timestamp_ms,
         frame_id=frame_id,
         landmarks=landmarks.astype(np.float64),
         handedness="Right",
-        palm_scale=0.2,
+        palm_scale=palm_scale,
         detection_confidence=0.9,
         handedness_score=0.9,
         hand_detected=hand_detected,
@@ -343,3 +344,73 @@ def test_wrist_translation_resets_on_tracking_loss() -> None:
         _obs(_zeros(), timestamp_ms=1066, frame_id=3, wrist_position=[0.5, 0.0])
     )
     assert np.all(_wrist_velocity_block(after) == 0.0)
+
+
+# --- palm_scale 평활화 (2026-07-19, 손목 잡음 수정) ---
+#
+# 원인: wrist_position = origin / palm_scale에서 분자(화면상 절대 위치)가 일반
+# landmark의 분자(손 안에서의 상대적 차이)보다 훨씬 커서, 매 프레임 새로 계산되는
+# palm_scale의 잡음이 나눗셈을 타고 크게 증폭된다. 정지한 손 시뮬레이션 실측으로
+# 확인: 이 증폭 때문에 손목 속도 잡음이 손가락 끝 속도 잡음보다 약 2.5배 컸다(기존
+# _wrist_smoother는 나눗셈 *이후* 값만 다뤄 이 증폭을 못 잡음). palm_scale 자체를
+# 별도로 평활화해 나눗셈에 쓰면 정지 시 잡음이 약 3.85배 줄어든다(documents/decisions.md).
+
+
+def test_palm_scale_smoothing_is_on_by_default() -> None:
+    assert GestureConfig().smooth_palm_scale is True
+
+
+def test_palm_scale_smoothing_reduces_wrist_velocity_noise_on_a_still_hand() -> None:
+    """손목이 실제로 정지해 있어도(원점 고정) palm_scale 측정값 자체가 프레임마다
+    떨리면 wrist_position=origin/palm_scale의 나눗셈이 그 잡음을 증폭한다.
+    palm_scale 평활화가 이 증폭을 줄여야 한다(landmark 평활화 검증과 같은 패턴 —
+    같은 노이즈 시퀀스를 on/off 두 추출기에 흘려 속도 에너지를 비교)."""
+    rng = np.random.default_rng(1)
+    true_origin = np.array([1.0, 0.0])  # 실제로는 고정된 손목(원점)
+    base_scale = 0.2
+    noisy_scales = base_scale + rng.normal(0.0, 0.006, size=40)  # palm_scale 자체의 프레임별 잡음(~3%)
+
+    raw = HandFeatureExtractor(GestureConfig(smooth_landmarks=True, smooth_palm_scale=False))
+    smooth = HandFeatureExtractor(GestureConfig(smooth_landmarks=True, smooth_palm_scale=True))
+    raw_energy = 0.0
+    smooth_energy = 0.0
+    for i, scale in enumerate(noisy_scales):
+        scale = float(scale)
+        wrist_position = (true_origin / scale).tolist()
+        obs = _obs(
+            _zeros(), timestamp_ms=1000 + i * 33, frame_id=i,
+            wrist_position=wrist_position, palm_scale=scale,
+        )
+        raw_energy += float(np.sum(_wrist_velocity_block(raw.push(obs)) ** 2))
+        smooth_energy += float(np.sum(_wrist_velocity_block(smooth.push(obs)) ** 2))
+
+    # 손목은 실제로 정지해 있으므로 이상적 속도는 0. palm_scale 평활화가 이 증폭된
+    # 미분 노이즈를 확실히 낮춰야 한다.
+    assert smooth_energy < raw_energy * 0.5
+
+
+def test_palm_scale_smoothing_is_noop_when_scale_never_changes() -> None:
+    """palm_scale이 프레임마다 똑같으면(잡음 없음) 재조정 비율이 항상 1이라
+    평활화 on/off 결과가 완전히 같아야 한다 — 진짜 신호를 왜곡하지 않는지 확인."""
+
+    def _run(smooth_scale: bool) -> np.ndarray:
+        extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=True, smooth_palm_scale=smooth_scale))
+        extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1, wrist_position=[0.0, 0.0], palm_scale=0.2))
+        features = extractor.push(
+            _obs(_zeros(), timestamp_ms=1033, frame_id=2, wrist_position=[0.2, 0.0], palm_scale=0.2)
+        )
+        return _wrist_velocity_block(features)
+
+    np.testing.assert_allclose(_run(smooth_scale=True), _run(smooth_scale=False), atol=1e-9)
+
+
+def test_disabling_palm_scale_smoothing_keeps_old_behavior_available() -> None:
+    """smooth_palm_scale=False는 이 수정 이전 동작(재조정 없음)과 동일해야 한다."""
+    extractor = HandFeatureExtractor(GestureConfig(smooth_landmarks=False, smooth_palm_scale=False))
+    extractor.push(_obs(_zeros(), timestamp_ms=1000, frame_id=1, wrist_position=[0.0, 0.0], palm_scale=0.2))
+    features = extractor.push(
+        _obs(_zeros(), timestamp_ms=1100, frame_id=2, wrist_position=[0.2, 0.0], palm_scale=0.5)
+    )
+    # 재조정이 없으므로 raw wrist_position 그대로 차분: 0.2/0.1s = 2.0 (palm_scale 변화와 무관).
+    velocity = _wrist_velocity_block(features)
+    assert velocity[0] == pytest.approx(2.0)

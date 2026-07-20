@@ -158,6 +158,20 @@ class HandFeatureExtractor:
             if config.smooth_landmarks
             else None
         )
+        # palm_scale smoother (2026-07-19, 손목 평행이동 잡음 수정 — GestureConfig의
+        # smooth_palm_scale 문서 참조). wrist_position = origin/palm_scale은 분자(절대
+        # 위치)가 커서 palm_scale의 프레임별 잡음이 크게 증폭되는데, 위 _wrist_smoother는
+        # 나눗셈 *이후* 값만 다뤄 이 증폭을 못 잡는다. palm_scale 자체를 평활화해 그
+        # 증폭의 원인을 줄인다(실측: 정지 시 손목 속도 잡음이 약 3.85배 감소).
+        self._palm_scale_smoother: OneEuroFilter | None = (
+            OneEuroFilter(
+                min_cutoff=config.palm_scale_smoothing_min_cutoff,
+                beta=config.palm_scale_smoothing_beta,
+                d_cutoff=config.palm_scale_smoothing_d_cutoff,
+            )
+            if config.smooth_landmarks and config.smooth_palm_scale
+            else None
+        )
 
     @property
     def dimension(self) -> int:
@@ -204,6 +218,8 @@ class HandFeatureExtractor:
             self._smoother.reset()
         if self._wrist_smoother is not None:
             self._wrist_smoother.reset()
+        if self._palm_scale_smoother is not None:
+            self._palm_scale_smoother.reset()
 
     def push(self, observation: HandObservation) -> FrameFeatures:
         """관측값 하나를 처리해 이 프레임의 feature를 반환한다(과거만 사용)."""
@@ -227,6 +243,16 @@ class HandFeatureExtractor:
         # 손목 평행이동도 같은 dt로 causal 차분한다. 미분 전에 (설정 시) 평활화해
         # palm_scale·손목 점의 지터가 속도로 증폭되지 않게 한다 — 랜드마크와 동일 규칙.
         wrist_position = observation.wrist_position
+        if self._palm_scale_smoother is not None:
+            # wrist_position(=origin/raw palm_scale)을 평활화된 palm_scale 기준으로
+            # 재조정한다. raw/smoothed 비율을 곱하면 origin에 직접 접근하지 않고도
+            # origin/palm_scale(smoothed)를 정확히 재현할 수 있다(2026-07-19 결정,
+            # documents/decisions.md — 정지 시 손목 속도 잡음 약 3.85배 감소 실측).
+            smoothed_palm_scale = float(
+                self._palm_scale_smoother.filter(observation.palm_scale, observation.timestamp_ms)
+            )
+            if math.isfinite(smoothed_palm_scale) and smoothed_palm_scale > 0.0:
+                wrist_position = wrist_position * (observation.palm_scale / smoothed_palm_scale)
         if self._wrist_smoother is not None:
             wrist_position = self._wrist_smoother.filter(
                 wrist_position, observation.timestamp_ms

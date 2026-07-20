@@ -86,6 +86,34 @@ class GestureConfig:
     smoothing_d_cutoff: float = 1.5
     """내부 속도 추정의 평활 컷오프(Hz)."""
 
+    # --- palm_scale 평활화 (2026-07-19, 손목 평행이동 잡음 수정) ---
+    # `wrist_position = origin / palm_scale`은 분자(화면상 절대 위치, 대략 0.3~0.7)가
+    # 일반 landmark의 분자(손 안에서의 상대적 차이, 손목 자신은 0)보다 훨씬 커서,
+    # 매 프레임 새로 계산되는 palm_scale의 잡음이 나눗셈을 타고 훨씬 크게 증폭된다.
+    # 정지한 손 시뮬레이션 실측: 이 증폭 때문에 손목 속도 잡음이 손가락 끝 속도 잡음보다
+    # 약 2.5배 컸다(위 smoothing_* 만으로는 못 잡음 — 그 필터는 나눗셈 *이후* 값에만
+    # 적용됨). palm_scale 자체를 별도로 평활화해 나눗셈에 쓰면(기존 필터는 그대로 두고
+    # 추가) 정지 시 잡음이 약 3.85배 줄어든다(문서화된 실측: 0.81 → 0.21 palm-width/s).
+    # `normalize_hand`는 순수 함수라 여기서 palm_scale을 평활화할 수 없으므로,
+    # `HandFeatureExtractor`가 raw palm_scale과 평활화된 palm_scale의 비율로
+    # `wrist_position`을 재조정한다(`origin`에 직접 접근하지 않고도 재현 가능:
+    # `wrist_position × raw_palm_scale / smoothed_palm_scale = origin / smoothed_palm_scale`).
+    smooth_palm_scale: bool = True
+    """`smooth_landmarks`와 함께 켜진다(같은 "미분 전 평활화" 전략의 일부).
+    별도 토글이 필요하면 이 필드를 독립시킨다."""
+
+    palm_scale_smoothing_min_cutoff: float = 1.0
+    """palm_scale 평활 강도(Hz). 손 크기는 카메라 거리 변화 외엔 천천히 바뀌므로
+    낮은 값으로도 충분히 안정적이다."""
+
+    palm_scale_smoothing_beta: float = 0.0
+    """palm_scale 변화 속도에 따른 컷오프 개방 계수. 0 = 속도 적응 없이 고정 컷오프로만
+    평활화(단순 저역통과) — palm_scale은 랜드마크 위치와 달리 "빠른 동작"이라는
+    개념이 없어 속도 적응이 불필요하다는 실측 결과를 반영."""
+
+    palm_scale_smoothing_d_cutoff: float = 1.0
+    """palm_scale 내부 변화율 추정의 평활 컷오프(Hz)."""
+
     # --- Feature engineering (README 8장 "속도·관절 각도 생성") ---
     # 어떤 feature 그룹을 모델 입력 벡터에 넣을지 켜고 끈다. 모델을 갈아끼우거나
     # 입력 차원을 줄일 때 코드 수정 없이 조절한다. 순서(위치→각도→속도)는
@@ -158,6 +186,12 @@ class GestureConfig:
             raise ValueError("smoothing_d_cutoff must be finite and positive")
         if not math.isfinite(self.smoothing_beta) or self.smoothing_beta < 0.0:
             raise ValueError("smoothing_beta must be finite and non-negative")
+        if not math.isfinite(self.palm_scale_smoothing_min_cutoff) or self.palm_scale_smoothing_min_cutoff <= 0.0:
+            raise ValueError("palm_scale_smoothing_min_cutoff must be finite and positive")
+        if not math.isfinite(self.palm_scale_smoothing_d_cutoff) or self.palm_scale_smoothing_d_cutoff <= 0.0:
+            raise ValueError("palm_scale_smoothing_d_cutoff must be finite and positive")
+        if not math.isfinite(self.palm_scale_smoothing_beta) or self.palm_scale_smoothing_beta < 0.0:
+            raise ValueError("palm_scale_smoothing_beta must be finite and non-negative")
         if not any(
             (
                 self.include_positions,

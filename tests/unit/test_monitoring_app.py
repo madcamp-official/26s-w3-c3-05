@@ -67,7 +67,9 @@ def test_hand_panel_renders_wrist_vectors_and_tracking_loss() -> None:
             wrist_acceleration=(0.5, 0.1),
         )
         panel.update_snapshot(detected)
-        assert "‖·‖" in panel._velocity_view._magnitude.text()
+        # 속도는 화살표(VectorArrowView, 2026-07-19)로 그려진다 — 픽셀 내용까지는
+        # overlay.render_vector 단위 테스트가 검증하고, 여기서는 배선만 확인한다.
+        assert not panel._velocity_view._canvas.pixmap().isNull()
         assert "‖·‖" in panel._accel_view._magnitude.text()
 
         lost = HandSnapshot(
@@ -87,8 +89,9 @@ def test_hand_panel_renders_wrist_vectors_and_tracking_loss() -> None:
             wrist_velocity=None,
             wrist_acceleration=None,
         )
-        panel.update_snapshot(lost)  # None 벡터 → "히스토리 없음", 예외 없이
-        assert "히스토리 없음" in panel._velocity_view._magnitude.text()
+        panel.update_snapshot(lost)  # None 벡터 → 예외 없이 "no signal" 캔버스로 처리
+        assert not panel._velocity_view._canvas.pixmap().isNull()
+        assert "히스토리 없음" in panel._accel_view._magnitude.text()
     finally:
         panel.deleteLater()
         app.processEvents()
