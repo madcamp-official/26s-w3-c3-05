@@ -18,8 +18,8 @@ from jarvis.runtime_protocol.adapters.windows import InputKey, MouseButton
 class _FakeSink:
     calls: list[tuple] = field(default_factory=list)
 
-    def move_cursor(self, dx: int, dy: int) -> None:
-        self.calls.append(("move", dx, dy))
+    def move_cursor(self, dx: int, dy: int, *, dragging: bool = False) -> None:
+        self.calls.append(("move", dx, dy, dragging))
 
     def click(self, button: MouseButton) -> None:
         self.calls.append(("click", button))
@@ -38,7 +38,7 @@ def test_move_executes_even_though_it_is_not_logged() -> None:
     sink = _FakeSink()
     bridge = PoseControlBridge(sink=sink, enabled=True)
     bridge.apply([PoseEvent("move", 0, delta=(12.0, -4.0))])
-    assert ("move", 12, -4) in sink.calls
+    assert ("move", 12, -4, False) in sink.calls
     assert bridge.history == []  # 로그는 남지 않는다
 
 

@@ -22,6 +22,13 @@ SCROLL_INTERVAL_MS = 60
 SCROLL_TICKS = 1
 
 
+def _transition_key() -> InputKey:
+    """주먹→보 전이에 쓸 키. macOS는 F11(바탕화면), Windows는 재생/일시정지."""
+    import sys
+
+    return InputKey.PLAY_PAUSE if sys.platform.startswith("win") else InputKey.SHOW_DESKTOP
+
+
 def default_input_sink() -> InputSink | None:
     """플랫폼에 맞는 입력 싱크. 지원하지 않는 OS에서는 None(제어를 흉내내지 않는다)."""
     import sys
@@ -47,6 +54,7 @@ class PoseControlBridge:
     _last_scroll_ms: int = 0
     _dragging: bool = False
     history: list[str] = field(default_factory=list)
+    transition_key: InputKey = field(default_factory=_transition_key)
 
     def apply(self, events: list[PoseEvent]) -> None:
         """이벤트를 실행한다. 꺼져 있으면 기록만 남기고 아무것도 실행하지 않는다."""
@@ -82,14 +90,20 @@ class PoseControlBridge:
             "right_click": "우클릭",
             "drag_start": "드래그 시작",
             "drag_end": "드래그 끝",
-            # 임시: 재생/일시정지 대신 F11(바탕화면 표시). 주먹→보 전이마다 토글된다.
-            "media_toggle": "바탕화면 (F11)",
+            # 주먹→보 전이. macOS=F11(바탕화면), Windows=재생/일시정지.
+            "media_toggle": (
+                "바탕화면 (F11)" if self.transition_key is InputKey.SHOW_DESKTOP
+                else "재생/일시정지"
+            ),
         }.get(event.kind, "")
 
     def _execute(self, event: PoseEvent) -> None:
         assert self.sink is not None
         if event.kind == "move":
-            self.sink.move_cursor(round(event.delta[0]), round(event.delta[1]))
+            # 드래그 중이면 sink가 드래그 이벤트를 보내 창이 실시간으로 따라오게 한다.
+            self.sink.move_cursor(
+                round(event.delta[0]), round(event.delta[1]), dragging=self._dragging
+            )
         elif event.kind == "click":
             self.sink.click(MouseButton.LEFT)
         elif event.kind == "right_click":
@@ -101,6 +115,6 @@ class PoseControlBridge:
             self.sink.press(MouseButton.LEFT, down=False)
             self._dragging = False
         elif event.kind == "media_toggle":
-            self.sink.tap_key(InputKey.SHOW_DESKTOP)
+            self.sink.tap_key(self.transition_key)
         elif event.kind == "scroll":
             self.sink.scroll(SCROLL_TICKS if event.value > 0 else -SCROLL_TICKS)

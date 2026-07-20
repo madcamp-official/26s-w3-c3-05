@@ -117,18 +117,21 @@ class MacOSInputSink:
             )
             self._post(event.CGEvent())
 
-    def move_cursor(self, dx: int, dy: int) -> None:
-        """현재 커서 위치에서 상대 이동(Win32의 `MOUSEEVENTF_MOVE`와 같은 의미).
+    def move_cursor(self, dx: int, dy: int, *, dragging: bool = False) -> None:
+        """현재 커서 위치에서 상대 이동. `dragging`이면 드래그 이벤트를 보낸다.
 
-        CGEvent의 마우스 이동은 절대좌표만 받으므로, 현재 위치를 읽어 델타를
-        더한 뒤 그 절대좌표로 이동 이벤트를 만든다.
+        CGEvent의 마우스 이동은 절대좌표만 받으므로, 현재 위치를 읽어 델타를 더한 뒤
+        그 절대좌표로 이벤트를 만든다. **드래그 중에는 `MouseMoved`가 아니라
+        `LeftMouseDragged`를 보내야** 창·선택 영역이 실시간으로 따라온다 — MouseMoved만
+        보내면 버튼을 뗄 때까지 대상이 안 움직이고 최종 위치로만 튄다.
         """
         import Quartz
 
         current = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
         target = (current.x + dx, current.y + dy)
+        event_type = Quartz.kCGEventLeftMouseDragged if dragging else Quartz.kCGEventMouseMoved
         event = Quartz.CGEventCreateMouseEvent(
-            None, Quartz.kCGEventMouseMoved, target, Quartz.kCGMouseButtonLeft
+            None, event_type, target, Quartz.kCGMouseButtonLeft
         )
         self._post(event)
 

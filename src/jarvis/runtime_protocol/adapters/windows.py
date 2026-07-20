@@ -242,8 +242,9 @@ class Win32InputSink:
         user32.keybd_event(vk, 0, 0, 0)
         user32.keybd_event(vk, 0, _KEYEVENTF_KEYUP, 0)
 
-    def move_cursor(self, dx: int, dy: int) -> None:
-        # MOUSEEVENTF_MOVE (0x0001) moves relative to the current cursor position.
+    def move_cursor(self, dx: int, dy: int, *, dragging: bool = False) -> None:
+        # MOUSEEVENTF_MOVE (0x0001)는 버튼이 눌린 채면 OS가 드래그로 해석하므로,
+        # Windows에서는 드래그 여부와 무관하게 같은 상대 이동으로 충분하다.
         self._user32().mouse_event(0x0001, dx, dy, 0, 0)
 
     def switch_window(self, forward: bool, repeat: int) -> None:

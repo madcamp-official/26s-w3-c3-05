@@ -64,7 +64,7 @@ MIN_VERTICALITY = 0.5
 # 커서 이동: index_point(이동) 또는 pinch_index(드래그) 상태에서 손 이동을 커서로 옮긴다.
 # 좌표를 1:1로 대응시키지 않고, 마우스처럼 손 이동 **델타**에 이득을 곱한다.
 CURSOR_POSES = ("index_point", "pinch_index")
-CURSOR_BASE_GAIN = 900.0      # 손 이동(팜 단위) → 픽셀 기본 배율
+CURSOR_BASE_GAIN = 680.0      # 손 이동(팜 단위) → 픽셀 기본 배율
 CURSOR_ACCEL_GAIN = 1.4       # 속도가 빠를수록 이득이 커진다(정밀↔빠른 이동 양립)
 CURSOR_MAX_ACCEL = 3.5        # 이득 상한(급격한 튐 방지)
 CURSOR_DEADZONE = 0.006       # 이보다 작은 손 떨림은 무시(팜 단위)
