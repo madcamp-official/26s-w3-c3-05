@@ -19,7 +19,7 @@ from jarvis.gesture_fusion.config import (
     LANDMARK_DIMS,
     GestureConfig,
 )
-from jarvis.gesture_fusion.pose_protocol import PosePrediction, is_pose_trusted
+from jarvis.gesture_fusion.pose_protocol import PosePrediction, is_pose_trusted, pose_features
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -104,7 +104,12 @@ class TorchPoseClassifier:
         판정을 거부할 때도 `label`·`confidence`는 채워 돌려준다 — 무엇이 왜 거부됐는지
         보여줄 수 있어야 사용자가 자세를 고칠 수 있다.
         """
-        flat = np.asarray(landmarks, dtype=np.float64).reshape(-1)
+        points = np.asarray(landmarks, dtype=np.float64)
+        flat = (
+            pose_features(points)
+            if points.ndim == 2 and np.all(np.isfinite(points))
+            else np.zeros(0)
+        )
         if flat.shape != self._mean.shape or not np.all(np.isfinite(flat)):
             return PosePrediction(
                 label="", confidence=0.0, trusted=False,

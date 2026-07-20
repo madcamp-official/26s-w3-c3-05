@@ -17,6 +17,7 @@ import pytest
 import torch
 
 from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG, LANDMARK_DIMS
+from jarvis.gesture_fusion.pose_protocol import pose_feature_dimension
 from training.train_pose import (
     EPISODE_GAP_MS,
     episode_split,
@@ -120,7 +121,8 @@ def test_saved_model_records_preprocessing(tmp_path: Path) -> None:
 
     blob = torch.load(out, weights_only=False)
     assert blob["label_names"] == list(LABEL_NAMES)
-    assert blob["input_dim"] == 21 * LANDMARK_DIMS
+    # 좌표 + 손끝 쌍거리. 학습·추론이 같은 함수를 쓰는지 차원으로 고정한다.
+    assert blob["input_dim"] == pose_feature_dimension(21, LANDMARK_DIMS)
     pre = blob["preprocessing"]
     assert pre["landmark_dims"] == LANDMARK_DIMS
     assert pre["smoothing_min_cutoff"] == DEFAULT_GESTURE_CONFIG.smoothing_min_cutoff

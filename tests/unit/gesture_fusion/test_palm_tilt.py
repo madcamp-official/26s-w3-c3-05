@@ -94,3 +94,44 @@ def test_threshold_is_twenty_degrees() -> None:
 def test_invalid_threshold_rejected(bad: float) -> None:
     with pytest.raises(ValueError, match="max_palm_tilt_degrees"):
         GestureConfig(max_palm_tilt_degrees=bad)
+
+
+# --- 분류기 입력 특징 ---
+
+def test_pose_features_include_fingertip_distances() -> None:
+    """좌표 뒤에 손끝 쌍거리 10개가 붙는다.
+
+    좌표만 주면 작은 MLP가 손끝 사이의 *관계*를 스스로 뽑지 못한다 — 엄지-중지끝
+    거리는 단독으로도 index_point/pinch_middle을 오류율 10.9%로 가르는데, 좌표만 준
+    모델의 index_point 재현율은 50.2%였다. 명시적으로 더하자 94.0%가 됐다.
+    """
+    from jarvis.gesture_fusion.pose_protocol import (
+        FINGERTIPS,
+        pose_feature_dimension,
+        pose_features,
+    )
+
+    points = np.zeros((21, 2), dtype=np.float64)
+    points[FINGERTIPS[0]] = [0.0, 0.0]   # 엄지끝
+    points[FINGERTIPS[1]] = [3.0, 4.0]   # 검지끝 — 거리 5
+    features = pose_features(points)
+
+    assert features.shape == (pose_feature_dimension(21, 2),) == (52,)
+    assert np.allclose(features[:42], points.reshape(-1))
+    assert features[42] == pytest.approx(5.0)  # 첫 쌍 = 엄지-검지
+
+
+def test_pose_features_reject_flat_input() -> None:
+    """평탄화된 좌표를 넘기면 쌍거리를 계산할 수 없어 조용히 틀린 값을 내면 안 된다."""
+    from jarvis.gesture_fusion.pose_protocol import pose_features
+
+    with pytest.raises(ValueError, match="2-D"):
+        pose_features(np.zeros(42, dtype=np.float64))
+
+
+def test_two_fingers_tilt_limit_is_forty_degrees() -> None:
+    """30~40°에 표본 162개가 있어 근거가 있는 한계선(40° 초과는 21개뿐이라 열지 않음)."""
+    from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
+
+    assert DEFAULT_POSE_TILT_LIMITS["two_fingers"] == 40.0
+    assert DEFAULT_POSE_TILT_LIMITS["index_point"] == 20.0

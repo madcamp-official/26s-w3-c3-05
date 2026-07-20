@@ -39,6 +39,7 @@ from jarvis.gesture_fusion.config import (
     GestureConfig,
 )
 from jarvis.gesture_fusion.landmarks import RawHandLandmarks, normalize_hand, palm_tilt_degrees
+from jarvis.gesture_fusion.pose_protocol import pose_features
 from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 FloatArray = npt.NDArray[np.float64]
@@ -113,7 +114,8 @@ def load_samples(path: Path, config: GestureConfig = DEFAULT_GESTURE_CONFIG) -> 
         if labels[i] != prev_label or ts[i] - prev_ts > EPISODE_GAP_MS:
             episode += 1
         prev_label, prev_ts = int(labels[i]), int(ts[i])
-        feats.append(np.asarray(smoothed, dtype=np.float64).reshape(-1))
+        # 좌표 + 손끝 쌍거리. 추론과 **같은 함수**를 쓴다(어긋나면 조용히 망가진다).
+        feats.append(pose_features(np.asarray(smoothed, dtype=np.float64)))
         labs.append(int(labels[i]))
         eps.append(episode)
         tilts.append(

@@ -53,10 +53,46 @@ DEFAULT_POSE_TILT_LIMITS: dict[str, float] = {
     "index_point": 20.0,
     "pinch_index": 20.0,
     "pinch_middle": 20.0,
-    "two_fingers": 30.0,
+    # 30~40° 구간에 표본 162개가 있고 정확도가 유지된다(30~90° 묶음 99%). 40°를 넘는
+    # 구간은 표본 21개뿐이라 근거가 없어 열지 않는다 — 실사용에서 아래를 가리키는
+    # 스크롤 자세가 30° 초중반까지 간다는 관찰과도 맞는 한계선이다.
+    "two_fingers": 40.0,
     "open_palm": 30.0,
     "fist": 20.0,
 }
+
+
+# 손끝 랜드마크(엄지·검지·중지·약지·새끼). 이들 사이의 쌍거리를 feature에 더한다.
+FINGERTIPS: tuple[int, ...] = (4, 8, 12, 16, 20)
+
+
+def pose_features(landmarks: FloatArray) -> FloatArray:
+    """정규화된 (21, D) 좌표 → 분류기 입력 벡터. **학습과 추론이 같이 쓴다.**
+
+    좌표만 넣으면 손끝 사이의 *관계*를 모델이 스스로 뽑아내야 하는데, 작은 MLP는 그걸
+    잘 못 한다. 엄지-중지끝 거리는 단독으로도 index_point와 pinch_middle을 오류율
+    10.9%로 가르지만(중앙 0.254 vs 0.075), 좌표만 준 모델의 index_point 재현율은
+    50.2%였다. 손끝 쌍거리 10개를 명시적으로 더하자 전체 82.6%→92.3%,
+    index_point 50.2%→94.0%, fist 80.5%→99.9%로 올랐다(2026-07-20 실측).
+
+    이 함수가 학습·추론의 단일 진실이다 — 한쪽만 바뀌면 예외 없이 정확도만 떨어지는,
+    가장 찾기 어려운 고장이 된다. 저장 파일의 `input_dim`이 그 어긋남을 잡아준다.
+    """
+    points = np.asarray(landmarks, dtype=np.float64)
+    if points.ndim != 2:
+        raise ValueError(f"landmarks must be 2-D (21, D), got shape {points.shape}")
+    distances = [
+        float(np.linalg.norm(points[FINGERTIPS[a]] - points[FINGERTIPS[b]]))
+        for a in range(len(FINGERTIPS))
+        for b in range(a + 1, len(FINGERTIPS))
+    ]
+    return np.concatenate([points.reshape(-1), np.asarray(distances, dtype=np.float64)])
+
+
+def pose_feature_dimension(landmark_count: int, landmark_dims: int) -> int:
+    """`pose_features`가 내는 차원 — 모델 shape 검증용."""
+    pairs = len(FINGERTIPS) * (len(FINGERTIPS) - 1) // 2
+    return landmark_count * landmark_dims + pairs
 
 
 @dataclass(frozen=True, slots=True)
