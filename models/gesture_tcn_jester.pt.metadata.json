@@ -1,6 +1,6 @@
 {
-  "version": "pretrain-epoch44",
+  "version": "pretrain-epoch24",
   "trained": true,
   "training_data_source": "jester-v1 (공식 train/validation split)",
-  "evaluation_notes": "val macro-F1=0.8052 (배경 클래스 합산 후 7클래스 기준 — 런타임 결정 규칙과 동일), 원본 9클래스 기준=0.8321, dataset_id='jester-v1 (공식 train/validation split)', epoch=44, feature_dim=102 (development-principles.md 1.4: dataset·조건·측정 시점 기록)"
+  "evaluation_notes": "val macro-F1=0.8291 (배경 클래스 합산 후 8클래스 기준 — 런타임 결정 규칙과 동일), 원본 10클래스 기준=0.8497, dataset_id='jester-v1 (공식 train/validation split)', epoch=24, feature_dim=102 (development-principles.md 1.4: dataset·조건·측정 시점 기록)"
 }
