@@ -324,6 +324,12 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 | `iris_jump_threshold` | `0.18` | 프레임 간 홍채 offset jump 감지 기준 |
 | `max_valid_eye_offset` | `0.55` | 비현실적인 눈 가장자리 홍채 offset reject 기준 |
 | `small_motion_deadzone_deg` | `5.0` | 미세한 smoothed gaze 흔들림 흡수 각도 |
+| `personal_gaze_feature_weight` | `2.0` | 개인 target classifier에서 gaze yaw/pitch 우선도 |
+| `personal_head_feature_weight` | `0.4` | 개인 target classifier에서 head yaw/pitch/roll 보조 비중 |
+| `personal_face_scale_feature_weight` | `0.6` | 사용자-카메라 거리 문맥 비중 |
+| `target_motion_alignment_weight` | `0.35` | target 중심 방향과 같은 gaze 속도에 주는 최대 보너스 |
+| `target_acceleration_alignment_weight` | `0.15` | 같은 방향 gaze 가속도에 주는 추가 최대 보너스 |
+| `gaze_motion_max_interval_ms` | `250` | blink/추적 공백 뒤 잘못된 속도·가속도를 막는 최대 차분 간격 |
 | `unknown_probability_threshold` | `0.80` | target top-1 확률이 낮을 때 `UNKNOWN` reject |
 | `unknown_max_angle_deg` | `25.0` | 가장 가까운 등록 방향과도 너무 멀 때 `UNKNOWN` reject |
 | `target_match_tolerance` | `1.10` | 등록 반경 경계값을 살짝 넘는 gaze를 허용하는 정규화 거리 상한 |
@@ -421,6 +427,15 @@ Baseline:
 보정기로 활성화한다. 새 물체 등록 또는 위치 재등록이 끝나면 저장된 target별
 샘플 전체로 재학습하고, 실시간 추론 중에는 학습하지 않는다. 데이터와 모델은
 `data/calibration/gaze_regressor.json`에 함께 저장한다.
+
+별도의 개인 target Linear-softmax classifier는 표준화된
+`[gaze_yaw, gaze_pitch, head_yaw, head_pitch, head_roll, face_scale]`을 사용한다.
+현재 기본 우선도는 gaze `2.0`, head `0.4`, face scale `0.6`이며, 학습 후에도 각
+class의 head 유효 가중치가 gaze의 20%를 넘지 못하게 제한한다. 저장된 과거 샘플도
+실행 시 이 정책으로 메모리에서 다시 학습한다. gaze 속도·가속도가 등록 target 중심을
+향하면 각각 최대 `+0.35`, `+0.15`의 배율 보너스를 Linear classifier와 area matcher에
+동일하게 적용한다. 눈을 감거나 blink recovery/추적 hold 중에는 derivative history를
+갱신하지 않으며 250ms보다 긴 공백 뒤에는 속도·가속도를 초기화한다.
 
 ## Gaze Lock 상태 머신
 

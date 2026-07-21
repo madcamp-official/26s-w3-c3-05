@@ -94,6 +94,10 @@ def test_store_persists_snapshot_as_json(tmp_path: Path) -> None:
     assert payload[0]["dwell_required_ms"] == 3000
     assert payload[0]["unknown_elapsed_ms"] == 0
     assert payload[0]["unknown_required_ms"] == 2000
+    assert payload[0]["gaze_velocity_deg_s"] is None
+    assert payload[0]["gaze_acceleration_deg_s2"] is None
+    assert payload[0]["gaze_motion_history_valid"] is True
+    assert payload[0]["personal_feature_weights"] == [2.0, 2.0, 0.4, 0.4, 0.4, 0.6]
     assert payload[0]["nearest_target_range"] is None
 
 

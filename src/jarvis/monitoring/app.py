@@ -359,6 +359,25 @@ class GazePanel(QScrollArea):
             if s.gaze_motion_delta_deg is not None
             else "None"
         )
+        velocity = (
+            f"yaw={s.gaze_motion_velocity_deg_s[0]:+.1f}  "
+            f"pitch={s.gaze_motion_velocity_deg_s[1]:+.1f} deg/s"
+            if s.gaze_motion_velocity_deg_s is not None
+            else "None (blink/hold/jump/gap)"
+        )
+        acceleration = (
+            f"yaw={s.gaze_motion_acceleration_deg_s2[0]:+.1f}  "
+            f"pitch={s.gaze_motion_acceleration_deg_s2[1]:+.1f} deg/s2"
+            if s.gaze_motion_acceleration_deg_s2 is not None
+            else "None"
+        )
+        feature_weights = (
+            f"gaze x{s.personal_feature_weights[0]:.2f}  "
+            f"head x{s.personal_feature_weights[2]:.2f}  "
+            f"scale x{s.personal_feature_weights[5]:.2f}  head-cap 20%"
+            if s.personal_feature_weights is not None
+            else "None"
+        )
         ml = (
             f"{s.personal_prediction.target_id}  p={s.personal_prediction.confidence:.3f}  "
             f"p2={s.personal_prediction.second_best_confidence:.3f}  "
@@ -379,7 +398,10 @@ class GazePanel(QScrollArea):
             f"vector model  : {s.calibration_model_kind or 'geometric'} "
             f"({'APPLIED' if s.calibration_applied else 'raw'})\n"
             f"feature       : {feature}\n"
-            f"gaze motion   : {motion}\n"
+            f"gaze delta    : {motion}\n"
+            f"gaze velocity : {velocity}\n"
+            f"gaze accel    : {acceleration}\n"
+            f"ML priority   : {feature_weights}\n"
             f"ml score      : {ml}\n"
             f"smoothing buf : {s.buffer_fill}/{s.buffer_capacity} frames\n"
             "── TargetEstimate (contract) ──────────────\n"
@@ -990,7 +1012,8 @@ class MainWindow(QMainWindow):
             calibration_model_path or _default_calibration_model_path()
         )
         self._personal_target_store = PersonalTargetStore(
-            personal_classifier_path or _default_personal_classifier_path()
+            personal_classifier_path or _default_personal_classifier_path(),
+            feature_weights=self._gaze_config.personal_feature_weights,
         )
         self._target_registry = TargetRegistry(self._profiles_path)
         # Prefer the validated residual MLP; Ridge remains a fallback when the

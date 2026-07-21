@@ -229,6 +229,33 @@ final_pitch_deg =  head_pitch_deg * head_pitch_weight + eye_pitch_offset_deg
 
 Debug monitor policy: simple `iris jump` no longer freezes the vector completely; it lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames hold both the previous gaze direction and the complete classifier feature, so head/scale changes during a blink cannot switch the ML target. Eye closure uses an adaptive personal open-eye baseline with reopen hysteresis, not only one absolute threshold.
 
+### Gaze-first personal target scoring
+
+The per-user Linear-softmax classifier standardizes all six target features, then
+applies explicit priority multipliers before training and inference:
+
+| Feature group | Weight | Role |
+| --- | ---: | --- |
+| gaze yaw/pitch | `2.0` | Primary target evidence. |
+| head yaw/pitch/roll | `0.4` | Pose context; it must not overpower matching gaze. |
+| face scale | `0.6` | Camera-distance context. |
+
+Scaling alone does not guarantee the learned model will obey the priority because it
+can compensate with larger head coefficients. After fitting, each class therefore
+caps the effective head coefficient norm at 20% of its gaze coefficient norm. If gaze
+contains too little evidence, confidence falls through to the gaze-area matcher rather
+than allowing head pose to decide alone. Legacy model weights are not mixed with the
+new scale. Existing stored registration
+samples are retrained in memory with the current feature weights when the monitor
+loads. A later registration persists the migrated model.
+
+The old per-frame gaze delta remains available for diagnostics and compatibility,
+but live scoring now derives real time-normalized velocity (deg/s) and acceleration
+(deg/s²). Motion toward a registered target center can multiply both the personal
+classifier score and the area score by up to `1 + 0.35 + 0.15 = 1.50`. Opposite
+motion is not rewarded. Blink, recovery, and tracking-hold frames freeze the motion
+history; intervals over 250ms reset derivatives instead of producing a false spike.
+
 ### Target matching / UNKNOWN rejection
 
 | Setting | Current value | Meaning |
@@ -241,6 +268,14 @@ Debug monitor policy: simple `iris jump` no longer freezes the vector completely
 | `dwell_time_ms` | `3000` | Same target must remain the confident engine result for three continuous seconds before confirmation. |
 | `target_lock_ttl_ms` | `1500` | Gesture-wait/input-stream validity window; replacement candidates do not clear the confirmed target. |
 | `confirmed_unknown_timeout_ms` | `2000` | Release the Gaze confirmed target after two continuous seconds of classifier `UNKNOWN`. |
+| `personal_gaze_feature_weight` | `2.0` | Primary gaze contribution to the personal classifier. |
+| `personal_head_feature_weight` | `0.4` | Secondary head-pose context contribution. |
+| `personal_face_scale_feature_weight` | `0.6` | Camera-distance context contribution. |
+| `target_motion_alignment_weight` | `0.35` | Maximum velocity-direction target bonus. |
+| `target_acceleration_alignment_weight` | `0.15` | Maximum acceleration-direction target bonus. |
+| `gaze_motion_min_speed_deg_s` | `6.0` | Ignore slower motion as jitter. |
+| `gaze_motion_min_acceleration_deg_s2` | `80.0` | Ignore smaller acceleration as jitter. |
+| `gaze_motion_max_interval_ms` | `250` | Reset derivatives after longer gaps. |
 
 ### Registration / target profile
 

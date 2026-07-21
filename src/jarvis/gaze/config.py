@@ -48,6 +48,15 @@ class GazeConfig:
     되는 문제를 막는 절대 거리 안전 기준이다.
     """
 
+    personal_gaze_feature_weight: float = 2.0
+    """Priority multiplier for gaze yaw/pitch in the personal target classifier."""
+
+    personal_head_feature_weight: float = 0.4
+    """Context multiplier for head yaw/pitch/roll in the personal classifier."""
+
+    personal_face_scale_feature_weight: float = 0.6
+    """Context multiplier for camera-distance/face-scale evidence."""
+
     # Gaze vector composition (README 7장 "시선 방향 벡터 합성")
     max_eye_offset_deg: float = 45.0
 
@@ -183,7 +192,19 @@ class GazeConfig:
     """Allowed fractional target-area radius change from face-scale distance changes."""
 
     target_motion_alignment_weight: float = 0.35
-    """Bonus weight for targets in the same direction as recent gaze motion."""
+    """Velocity-direction bonus for targets in the direction of recent gaze motion."""
+
+    target_acceleration_alignment_weight: float = 0.15
+    """Acceleration-direction bonus used after the velocity direction bonus."""
+
+    gaze_motion_min_speed_deg_s: float = 6.0
+    """Ignore slower gaze motion when applying a target-direction bonus."""
+
+    gaze_motion_min_acceleration_deg_s2: float = 80.0
+    """Ignore smaller acceleration as likely landmark/smoothing noise."""
+
+    gaze_motion_max_interval_ms: int = 250
+    """Reset motion derivatives after a long gap, blink, or tracking hold."""
 
     target_match_tolerance: float = 1.10
     """Accept near-boundary target matches up to this normalized distance."""
@@ -243,6 +264,13 @@ class GazeConfig:
         }.items():
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
+        for name, value in {
+            "personal_gaze_feature_weight": self.personal_gaze_feature_weight,
+            "personal_head_feature_weight": self.personal_head_feature_weight,
+            "personal_face_scale_feature_weight": self.personal_face_scale_feature_weight,
+        }.items():
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
         if self.horizontal_axis_sign not in (-1.0, 1.0):
             raise ValueError("horizontal_axis_sign must be either -1.0 or 1.0")
         if not math.isfinite(self.unknown_max_angle_deg) or not 0.0 < self.unknown_max_angle_deg <= 180.0:
@@ -296,11 +324,32 @@ class GazeConfig:
         for name, value in {
             "target_area_scale_flex": self.target_area_scale_flex,
             "target_motion_alignment_weight": self.target_motion_alignment_weight,
+            "target_acceleration_alignment_weight": self.target_acceleration_alignment_weight,
         }.items():
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and within [0, 1]")
+        for name, value in {
+            "gaze_motion_min_speed_deg_s": self.gaze_motion_min_speed_deg_s,
+            "gaze_motion_min_acceleration_deg_s2": self.gaze_motion_min_acceleration_deg_s2,
+        }.items():
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
+        if self.gaze_motion_max_interval_ms <= 0:
+            raise ValueError("gaze_motion_max_interval_ms must be positive")
         if not math.isfinite(self.target_match_tolerance) or not 1.0 <= self.target_match_tolerance <= 2.0:
             raise ValueError("target_match_tolerance must be finite and within [1, 2]")
+
+    @property
+    def personal_feature_weights(self) -> tuple[float, ...]:
+        """Feature scaling used by the standardized personal softmax classifier."""
+        return (
+            self.personal_gaze_feature_weight,
+            self.personal_gaze_feature_weight,
+            self.personal_head_feature_weight,
+            self.personal_head_feature_weight,
+            self.personal_head_feature_weight,
+            self.personal_face_scale_feature_weight,
+        )
 
 
 DEFAULT_GAZE_CONFIG = GazeConfig()

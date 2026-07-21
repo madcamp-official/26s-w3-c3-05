@@ -214,11 +214,26 @@ class TargetClassifier:
         return self._personal_confidence_threshold
 
     def predict_personal(
-        self, sample: TargetFeatureSample | None
+        self,
+        sample: TargetFeatureSample | None,
+        *,
+        gaze_motion_delta_deg: tuple[float, float] | None = None,
+        gaze_motion_velocity_deg_s: tuple[float, float] | None = None,
+        gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None,
     ) -> PersonalTargetPrediction | None:
         if sample is None or self._personal_classifier is None:
             return None
-        return self._personal_classifier.predict(sample)
+        multipliers = {
+            target_id: self._motion_alignment_score(
+                sample,
+                self._area_profiles.get(target_id),
+                gaze_motion_delta_deg,
+                gaze_motion_velocity_deg_s,
+                gaze_motion_acceleration_deg_s2,
+            )
+            for target_id in self._personal_classifier.target_ids
+        }
+        return self._personal_classifier.predict(sample, score_multipliers=multipliers)
 
     @property
     def profiles(self) -> dict[str, DeviceGazeProfile]:
@@ -250,6 +265,8 @@ class TargetClassifier:
         current_face_scale: float | None = None,
         feature_sample: TargetFeatureSample | None = None,
         gaze_motion_delta_deg: tuple[float, float] | None = None,
+        gaze_motion_velocity_deg_s: tuple[float, float] | None = None,
+        gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None,
     ) -> ClassificationResult:
         """합성된 시선 방향 단위 벡터로부터 대상 기기를 추정한다.
 
@@ -279,6 +296,8 @@ class TargetClassifier:
                 origin,
                 current_face_scale,
                 gaze_motion_delta_deg,
+                gaze_motion_velocity_deg_s,
+                gaze_motion_acceleration_deg_s2,
             )
 
         return self._classify_by_direction_profile(direction, origin, current_face_scale)
@@ -357,8 +376,15 @@ class TargetClassifier:
         origin: Vector3 | None = None,
         current_face_scale: float | None = None,
         gaze_motion_delta_deg: tuple[float, float] | None = None,
+        gaze_motion_velocity_deg_s: tuple[float, float] | None = None,
+        gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None,
     ) -> ClassificationResult:
-        personal = self.predict_personal(feature_sample)
+        personal = self.predict_personal(
+            feature_sample,
+            gaze_motion_delta_deg=gaze_motion_delta_deg,
+            gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
+            gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
+        )
         if personal is not None and personal.confidence >= self._personal_confidence_threshold:
             return ClassificationResult(
                 target=personal.target_id,
@@ -371,6 +397,8 @@ class TargetClassifier:
             origin,
             current_face_scale,
             gaze_motion_delta_deg,
+            gaze_motion_velocity_deg_s,
+            gaze_motion_acceleration_deg_s2,
         )
         if area_result is not None:
             return area_result
@@ -466,6 +494,8 @@ class TargetClassifier:
         origin: Vector3 | None,
         current_face_scale: float | None,
         gaze_motion_delta_deg: tuple[float, float] | None = None,
+        gaze_motion_velocity_deg_s: tuple[float, float] | None = None,
+        gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None,
     ) -> ClassificationResult | None:
         if not self._area_profiles:
             return None
@@ -499,6 +529,8 @@ class TargetClassifier:
                 feature_sample,
                 profile,
                 gaze_motion_delta_deg,
+                gaze_motion_velocity_deg_s,
+                gaze_motion_acceleration_deg_s2,
             )
             # Edge-loop registration means every point inside the saved object
             # area is a valid look target.  Center closeness should raise
@@ -532,26 +564,62 @@ class TargetClassifier:
     def _motion_alignment_score(
         self,
         sample: TargetFeatureSample,
-        profile: TargetAreaProfile,
+        profile: TargetAreaProfile | None,
         gaze_motion_delta_deg: tuple[float, float] | None,
+        gaze_motion_velocity_deg_s: tuple[float, float] | None = None,
+        gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None,
     ) -> float:
-        if gaze_motion_delta_deg is None:
-            return 1.0
-        motion_yaw, motion_pitch = gaze_motion_delta_deg
-        motion_norm = math.hypot(motion_yaw, motion_pitch)
-        if not math.isfinite(motion_norm) or motion_norm < 0.25:
+        if profile is None:
             return 1.0
         target_yaw = profile.center_yaw - sample.gaze_yaw
         target_pitch = profile.center_pitch - sample.gaze_pitch
         target_norm = math.hypot(target_yaw, target_pitch)
         if not math.isfinite(target_norm) or target_norm < 0.25:
             return 1.0
+        score = 1.0
+        velocity = gaze_motion_velocity_deg_s or gaze_motion_delta_deg
+        minimum_velocity = (
+            self._config.gaze_motion_min_speed_deg_s
+            if gaze_motion_velocity_deg_s is not None
+            else 0.25
+        )
+        score += self._alignment_bonus(
+            velocity,
+            target_yaw,
+            target_pitch,
+            target_norm,
+            minimum_velocity,
+            self._config.target_motion_alignment_weight,
+        )
+        score += self._alignment_bonus(
+            gaze_motion_acceleration_deg_s2,
+            target_yaw,
+            target_pitch,
+            target_norm,
+            self._config.gaze_motion_min_acceleration_deg_s2,
+            self._config.target_acceleration_alignment_weight,
+        )
+        return score
+
+    @staticmethod
+    def _alignment_bonus(
+        motion: tuple[float, float] | None,
+        target_yaw: float,
+        target_pitch: float,
+        target_norm: float,
+        minimum_norm: float,
+        weight: float,
+    ) -> float:
+        if motion is None or weight <= 0.0:
+            return 0.0
+        motion_yaw, motion_pitch = motion
+        motion_norm = math.hypot(motion_yaw, motion_pitch)
+        if not math.isfinite(motion_norm) or motion_norm < minimum_norm:
+            return 0.0
         cosine = (motion_yaw * target_yaw + motion_pitch * target_pitch) / (
             motion_norm * target_norm
         )
-        cosine = max(-1.0, min(1.0, cosine))
-        weight = self._config.target_motion_alignment_weight
-        return 1.0 + weight * max(0.0, cosine)
+        return weight * max(0.0, min(1.0, cosine))
 
     def _area_radius_scale(self, device_id: str, current_face_scale: float | None) -> float:
         profile = self._profiles.get(device_id)

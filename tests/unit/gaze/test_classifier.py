@@ -357,6 +357,55 @@ def test_overlapping_area_profiles_use_recent_gaze_motion_as_tiebreaker() -> Non
     assert result.target == "right"
 
 
+def test_velocity_and_acceleration_bonus_reaches_personal_classifier() -> None:
+    config = GazeConfig(
+        unknown_probability_threshold=0.0,
+        target_motion_alignment_weight=0.35,
+        target_acceleration_alignment_weight=0.15,
+    )
+    classifier = TargetClassifier(config)
+    for device_id, center_yaw in (("left", -2.0), ("right", 2.0)):
+        classifier.register_profile(
+            DeviceGazeProfile(device_id, _unit([0.0, 0.0, 1.0]), variance=0.01),
+            area_profile=TargetAreaProfile(
+                center_yaw=center_yaw,
+                center_pitch=0.0,
+                radius_yaw=6.0,
+                radius_pitch=6.0,
+                sample_count=120,
+            ),
+        )
+    model = PersonalTargetClassifier(
+        target_ids=["left", "right"],
+        mean=np.zeros(6, dtype=np.float64),
+        scale=np.ones(6, dtype=np.float64),
+        weights=np.zeros((6, 2), dtype=np.float64),
+        bias=np.zeros(2, dtype=np.float64),
+        feature_weights=np.asarray(config.personal_feature_weights, dtype=np.float64),
+        sample_count=40,
+    )
+    classifier.set_personal_classifier(model, confidence_threshold=0.55)
+    sample = TargetFeatureSample(0.0, 0.0, 0.0, 0.0, 0.0, 0.1)
+
+    prediction = classifier.predict_personal(
+        sample,
+        gaze_motion_velocity_deg_s=(10.0, 0.0),
+        gaze_motion_acceleration_deg_s2=(100.0, 0.0),
+    )
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=sample,
+        gaze_motion_velocity_deg_s=(10.0, 0.0),
+        gaze_motion_acceleration_deg_s2=(100.0, 0.0),
+    )
+
+    assert prediction is not None
+    assert prediction.target_id == "right"
+    assert prediction.confidence == pytest.approx(0.6)
+    assert result.target == "right"
+    assert result.probability == pytest.approx(0.6)
+
+
 def test_built_feature_profile_tolerates_head_pose_when_gaze_matches() -> None:
     profile = build_feature_profile(
         [

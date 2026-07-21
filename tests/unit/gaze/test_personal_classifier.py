@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
+from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.feature_profile import TargetFeatureSample
 from jarvis.gaze.personal_classifier import (
     PersonalTargetClassifier,
@@ -61,6 +64,11 @@ def test_linear_softmax_predicts_target_from_registered_features() -> None:
     )
 
     assert fitted is not None
+    np.testing.assert_allclose(fitted.feature_weights, GazeConfig().personal_feature_weights)
+    effective = fitted.weights * fitted.feature_weights[:, None]
+    gaze_norm = float(np.linalg.norm(effective[:2]))
+    head_norm = float(np.linalg.norm(effective[2:5]))
+    assert head_norm <= gaze_norm * 0.2 + 1e-9
     prediction = fitted.predict(
         TargetFeatureSample(18.1, 8.1, 15.2, 4.0, 0.5, 0.10)
     )
@@ -84,6 +92,8 @@ def test_store_replaces_target_samples_and_persists_model(tmp_path: Path) -> Non
     assert model is not None
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["model"]["target_ids"] == ["monitor", "speaker"]
+    assert payload["model"]["feature_weights"] == [2.0, 2.0, 0.4, 0.4, 0.4, 0.6]
+    assert payload["model"]["gaze_priority_constrained"] is True
 
     replacement = [
         feature
@@ -112,3 +122,24 @@ def test_store_waits_until_two_targets_have_enough_samples(tmp_path: Path) -> No
 
     assert model is None
     assert store.model is None
+
+
+def test_motion_score_multiplier_reorders_personal_softmax_candidates() -> None:
+    model = PersonalTargetClassifier(
+        target_ids=["left", "right"],
+        mean=np.zeros(6, dtype=np.float64),
+        scale=np.ones(6, dtype=np.float64),
+        weights=np.zeros((6, 2), dtype=np.float64),
+        bias=np.zeros(2, dtype=np.float64),
+        feature_weights=np.asarray(GazeConfig().personal_feature_weights, dtype=np.float64),
+        sample_count=40,
+    )
+
+    prediction = model.predict(
+        TargetFeatureSample(0.0, 0.0, 0.0, 0.0, 0.0, 0.1),
+        score_multipliers={"left": 1.0, "right": 1.5},
+    )
+
+    assert prediction is not None
+    assert prediction.target_id == "right"
+    assert np.isclose(prediction.confidence, 0.6)

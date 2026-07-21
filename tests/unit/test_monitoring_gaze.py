@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 
 from jarvis.gaze.classifier import DeviceGazeProfile, TargetClassifier
 from jarvis.gaze.config import GazeConfig
@@ -32,6 +33,7 @@ def _observation(
     confidence: float = 1.0,
     eyes_open: bool = True,
     iris_relative: tuple[float, float] = (0.0, 0.0),
+    with_eye_centers: bool = False,
 ) -> FaceObservation:
     return FaceObservation(
         timestamp_ms=timestamp_ms,
@@ -45,6 +47,8 @@ def _observation(
         face_tracking_confidence=confidence,
         face_detected=detected,
         eyes_open=eyes_open,
+        left_eye_center_normalized=(0.4, 0.4) if with_eye_centers else None,
+        right_eye_center_normalized=(0.6, 0.4) if with_eye_centers else None,
     )
 
 
@@ -183,6 +187,96 @@ def test_blink_holds_previous_classifier_feature_including_head_pose() -> None:
 
     assert blink.feature_sample == previous
     assert blink.gaze_motion_delta_deg is None
+    assert blink.gaze_motion_velocity_deg_s is None
+    assert blink.gaze_motion_acceleration_deg_s2 is None
+
+
+def test_gaze_motion_uses_time_normalized_velocity_and_acceleration() -> None:
+    config = GazeConfig(
+        smoothing_window_frames=1,
+        small_motion_deadzone_deg=0.0,
+        iris_jump_threshold=1.0,
+    )
+    smoother = GazeSmoother(config)
+    classifier = TargetClassifier(config)
+    lock = GazeLockStateMachine(config)
+    first = evaluate(
+        _observation(
+            timestamp_ms=1_000,
+            iris_relative=(0.0, 0.0),
+            with_eye_centers=True,
+        ),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+    assert first.feature_sample is not None
+
+    moved = evaluate(
+        _observation(
+            timestamp_ms=1_100,
+            frame_id=1,
+            iris_relative=(0.2, 0.0),
+            with_eye_centers=True,
+        ),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+        previous_feature_sample=first.feature_sample,
+        previous_motion_timestamp_ms=1_000,
+        previous_gaze_velocity_deg_s=(0.0, 0.0),
+    )
+
+    assert moved.gaze_motion_delta_deg is not None
+    assert moved.gaze_motion_velocity_deg_s is not None
+    assert moved.gaze_motion_acceleration_deg_s2 is not None
+    assert moved.gaze_motion_velocity_deg_s[0] == pytest.approx(
+        moved.gaze_motion_delta_deg[0] / 0.1
+    )
+    assert moved.gaze_motion_acceleration_deg_s2[0] == pytest.approx(
+        moved.gaze_motion_velocity_deg_s[0] / 0.1
+    )
+
+
+def test_gaze_motion_derivatives_reset_after_long_gap() -> None:
+    config = GazeConfig(
+        smoothing_window_frames=1,
+        small_motion_deadzone_deg=0.0,
+        iris_jump_threshold=1.0,
+    )
+    smoother = GazeSmoother(config)
+    classifier = TargetClassifier(config)
+    lock = GazeLockStateMachine(config)
+    first = evaluate(
+        _observation(timestamp_ms=1_000, with_eye_centers=True),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+    assert first.feature_sample is not None
+
+    moved = evaluate(
+        _observation(
+            timestamp_ms=1_400,
+            frame_id=1,
+            iris_relative=(0.2, 0.0),
+            with_eye_centers=True,
+        ),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+        previous_feature_sample=first.feature_sample,
+        previous_motion_timestamp_ms=1_000,
+        previous_gaze_velocity_deg_s=(10.0, 0.0),
+    )
+
+    assert moved.gaze_motion_delta_deg is not None
+    assert moved.gaze_motion_velocity_deg_s is None
+    assert moved.gaze_motion_acceleration_deg_s2 is None
 
 
 def test_iris_jump_keeps_live_vector_with_low_confidence() -> None:
@@ -208,6 +302,9 @@ def test_iris_jump_keeps_live_vector_with_low_confidence() -> None:
     assert jumped.gaze_confidence == config.ema_min_alpha
     assert jumped.smoothed_gaze_direction is not None
     assert jumped.smoothed_gaze_direction != first.smoothed_gaze_direction
+    assert jumped.gaze_motion_history_valid is False
+    assert jumped.gaze_motion_velocity_deg_s is None
+    assert jumped.gaze_motion_acceleration_deg_s2 is None
 
 
 def test_blink_recovery_holds_until_iris_settles() -> None:

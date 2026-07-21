@@ -179,6 +179,14 @@ class GazeSnapshot:
     # per-frame gaze compute time (capture→estimate), measured, ms
     inference_ms: float
 
+    # Time-normalized derivatives of the smoothed gaze direction. These stay
+    # None during blink/recovery/tracking holds so stale landmarks cannot earn
+    # a target-direction bonus.
+    gaze_motion_velocity_deg_s: tuple[float, float] | None = None
+    gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None
+    personal_feature_weights: tuple[float, ...] | None = None
+    gaze_motion_history_valid: bool = False
+
     @property
     def tracking_lost(self) -> bool:
         return self.gaze_direction is None and self.smoothed_gaze_direction is None
@@ -467,6 +475,8 @@ def evaluate(
     previous_iris_offset: tuple[float, float] | None = None,
     last_closed_eye_ms: int | None = None,
     previous_feature_sample: TargetFeatureSample | None = None,
+    previous_motion_timestamp_ms: int | None = None,
+    previous_gaze_velocity_deg_s: tuple[float, float] | None = None,
 ) -> GazeSnapshot:
     """Run one observation through the full pipeline, capturing every stage.
 
@@ -492,6 +502,7 @@ def evaluate(
             frame_id=raw_gaze_vector.frame_id,
             origin=raw_gaze_vector.origin,
         )
+    motion_history_valid = raw_gaze_vector is not None and not jumpy_iris
     calibration_features = (
         observation_features(observation, raw_gaze_vector)
         if raw_gaze_vector is not None
@@ -538,6 +549,8 @@ def evaluate(
     current_face_scale = _face_scale(observation)
     feature_sample: TargetFeatureSample | None = None
     gaze_motion_delta_deg: tuple[float, float] | None = None
+    gaze_motion_velocity_deg_s: tuple[float, float] | None = None
+    gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None
     personal_prediction: PersonalTargetPrediction | None = None
     if smoothed is None:
         result = ClassificationResult(
@@ -573,18 +586,50 @@ def evaluate(
             if hold_gaze and previous_feature_sample is not None
             else _feature_sample(observation, classify_direction, current_face_scale)
         )
-        if not hold_gaze and feature_sample is not None and previous_feature_sample is not None:
+        if (
+            motion_history_valid
+            and feature_sample is not None
+            and previous_feature_sample is not None
+        ):
             gaze_motion_delta_deg = (
                 feature_sample.gaze_yaw - previous_feature_sample.gaze_yaw,
                 feature_sample.gaze_pitch - previous_feature_sample.gaze_pitch,
             )
-        personal_prediction = classifier.predict_personal(feature_sample)
+            if previous_motion_timestamp_ms is not None:
+                dt_ms = observation.timestamp_ms - previous_motion_timestamp_ms
+                if 0 < dt_ms <= config.gaze_motion_max_interval_ms:
+                    dt_s = dt_ms / 1000.0
+                    gaze_motion_velocity_deg_s = (
+                        gaze_motion_delta_deg[0] / dt_s,
+                        gaze_motion_delta_deg[1] / dt_s,
+                    )
+                    if previous_gaze_velocity_deg_s is not None:
+                        gaze_motion_acceleration_deg_s2 = (
+                            (
+                                gaze_motion_velocity_deg_s[0]
+                                - previous_gaze_velocity_deg_s[0]
+                            )
+                            / dt_s,
+                            (
+                                gaze_motion_velocity_deg_s[1]
+                                - previous_gaze_velocity_deg_s[1]
+                            )
+                            / dt_s,
+                        )
+        personal_prediction = classifier.predict_personal(
+            feature_sample,
+            gaze_motion_delta_deg=gaze_motion_delta_deg,
+            gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
+            gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
+        )
         result = classifier.classify(
             smoothed.direction,
             origin=smoothed.origin,
             current_face_scale=current_face_scale,
             feature_sample=feature_sample,
             gaze_motion_delta_deg=gaze_motion_delta_deg,
+            gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
+            gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
         )
         lock.update(smoothed.timestamp_ms, result)
         estimate = TargetEstimate(
@@ -684,6 +729,10 @@ def evaluate(
         is_confident=_is_confident(result, config),
         target_estimate=estimate,
         inference_ms=inference_ms,
+        gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
+        gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
+        personal_feature_weights=config.personal_feature_weights,
+        gaze_motion_history_valid=motion_history_valid,
     )
 
 
@@ -716,6 +765,8 @@ class GazeProbe:
         self._previous_iris_offset: tuple[float, float] | None = None
         self._last_closed_eye_ms: int | None = None
         self._previous_feature_sample: TargetFeatureSample | None = None
+        self._previous_motion_timestamp_ms: int | None = None
+        self._previous_gaze_velocity_deg_s: tuple[float, float] | None = None
         self._profile_count = self._load_profiles(profiles_path)
 
     def _load_profiles(self, profiles_path: Path | None) -> int:
@@ -762,6 +813,8 @@ class GazeProbe:
         # phase 1 trains a preview model before boundary collection.
         self._smoother.reset()
         self._previous_feature_sample = None
+        self._previous_motion_timestamp_ms = None
+        self._previous_gaze_velocity_deg_s = None
 
     def set_personal_classifier(
         self,
@@ -875,13 +928,17 @@ class GazeProbe:
             previous_iris_offset=self._previous_iris_offset,
             last_closed_eye_ms=self._last_closed_eye_ms,
             previous_feature_sample=self._previous_feature_sample,
+            previous_motion_timestamp_ms=self._previous_motion_timestamp_ms,
+            previous_gaze_velocity_deg_s=self._previous_gaze_velocity_deg_s,
         )
         if observation.face_detected and not observation.eyes_open:
             self._last_closed_eye_ms = observation.timestamp_ms
         if snapshot.raw_gaze_direction is not None:
             self._previous_iris_offset = _iris_offset(observation)
-        if snapshot.feature_sample is not None:
+        if snapshot.gaze_motion_history_valid and snapshot.feature_sample is not None:
             self._previous_feature_sample = snapshot.feature_sample
+            self._previous_motion_timestamp_ms = observation.timestamp_ms
+            self._previous_gaze_velocity_deg_s = snapshot.gaze_motion_velocity_deg_s
         return snapshot
 
     def close(self) -> None:
