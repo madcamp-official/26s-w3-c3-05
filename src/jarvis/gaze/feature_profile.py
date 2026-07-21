@@ -525,13 +525,21 @@ def build_pose_correction(
     bin_edges_deg: tuple[float, ...],
     minimum_bin_samples: int,
     maximum_offset_deg: float,
+    maximum_bin_iqr_deg: float = 4.0,
 ) -> TargetPoseCorrection | None:
-    """등록 1단계 샘플에서 head-yaw 구간별 gaze 보정 테이블을 만든다.
+    """등록 1단계(중앙 응시 + 고개 스윕) 샘플에서 head-yaw 구간별 gaze 보정
+    테이블을 만든다.
 
-    각 bin의 오프셋은 `median(bin gaze) − area 중심`이다 — 1단계가 물체
-    테두리를 자세를 바꿔가며 훑으므로, bin 안에서 테두리를 한 바퀴 이상
-    돌았다면 중앙값이 area 중심에 수렴하고 남는 차이가 곧 그 자세의 편향이다.
-    표본이 `minimum_bin_samples` 미만인 bin은 만들지 않고(지어내지 않는다),
+    각 bin의 오프셋은 `median(bin gaze) − center`다. 1단계가 물체 중앙 한 점을
+    응시한 채 고개만 돌리므로 bin 중앙값과 응시점의 차이가 곧 그 자세의 센서
+    편향이고, 응시점과 area 중심의 상수 차이는 아래 기준 자세 정규화에서
+    상쇄된다. 주의: 테두리를 훑으며 고개를 돌린 데이터로 만들면 사람이 보는
+    방향으로 고개를 돌리는 상관관계 때문에 편향의 부호가 뒤집힌다(2026-07-22
+    실측 — 등록 안내가 중앙 응시로 바뀐 이유).
+
+    표본이 `minimum_bin_samples` 미만이거나 bin 안 gaze IQR가
+    `maximum_bin_iqr_deg`보다 넓은 bin은 만들지 않는다(지어내지 않는다 —
+    실측에서 |head yaw| 30도 밖 bin은 IQR 9~30도로 반복성이 없었다).
     유효 bin이 2개 미만이면 보정 자체를 저장하지 않는다(상수 보정은 무의미).
     `reference_head_yaw_deg`(2단계 head yaw 중앙값)가 주어지면 그 자세의 보간
     오프셋을 전체에서 빼서, hull을 그린 기준 자세에서 보정이 0이 되게 한다.
@@ -540,6 +548,8 @@ def build_pose_correction(
         raise ValueError("minimum_bin_samples must be positive")
     if not math.isfinite(maximum_offset_deg) or maximum_offset_deg <= 0.0:
         raise ValueError("maximum_offset_deg must be finite and positive")
+    if not math.isfinite(maximum_bin_iqr_deg) or maximum_bin_iqr_deg <= 0.0:
+        raise ValueError("maximum_bin_iqr_deg must be finite and positive")
     edges = tuple(float(edge) for edge in bin_edges_deg)
     if any(later <= earlier for earlier, later in zip(edges, edges[1:], strict=False)):
         raise ValueError("bin_edges_deg must be strictly increasing")
@@ -560,6 +570,10 @@ def build_pose_correction(
         head_yaws = np.asarray([sample.head_yaw for sample in members], dtype=np.float64)
         gaze_yaws = np.asarray([sample.gaze_yaw for sample in members], dtype=np.float64)
         gaze_pitches = np.asarray([sample.gaze_pitch for sample in members], dtype=np.float64)
+        yaw_iqr = float(np.percentile(gaze_yaws, 75) - np.percentile(gaze_yaws, 25))
+        pitch_iqr = float(np.percentile(gaze_pitches, 75) - np.percentile(gaze_pitches, 25))
+        if yaw_iqr > maximum_bin_iqr_deg or pitch_iqr > maximum_bin_iqr_deg:
+            continue
         raw_points.append(
             PoseCorrectionPoint(
                 head_yaw_deg=float(np.median(head_yaws)),

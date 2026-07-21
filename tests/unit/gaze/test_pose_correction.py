@@ -89,6 +89,15 @@ def test_sparse_bins_are_skipped_and_single_bin_returns_none() -> None:
     assert build_pose_correction(samples, **BUILD_KWARGS) is None
 
 
+def test_wide_spread_bins_are_rejected() -> None:
+    """bin 안 gaze가 반복성 없이 흩어지면(테두리 훑기 오염, 포화 붕괴) 보정점을
+    만들지 않는다 — 2026-07-22 실측에서 |head yaw| 30도 밖 IQR 9~30도."""
+    samples = [_sample(0.1 * i, head_yaw=0.5 * i) for i in range(8)]
+    # head 25도 bin: gaze yaw가 -8..+6에 걸쳐 균일 분포(IQR ≈ 7도).
+    samples.extend(_sample(-8.0 + 2.0 * i, 3.0, head_yaw=25.0) for i in range(8))
+    assert build_pose_correction(samples, **BUILD_KWARGS) is None
+
+
 def test_offsets_are_clamped_to_maximum() -> None:
     samples = [_sample(0.1 * i, head_yaw=0.5 * i) for i in range(8)]
     samples.extend(_sample(-25.0, 0.0, head_yaw=25.0 + 0.3 * i) for i in range(8))

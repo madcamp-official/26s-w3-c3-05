@@ -88,8 +88,9 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
  face_scale, face_center_x, face_center_y]
 ```
 
-1단계에서는 물체 테두리를 훑으며 얼굴·몸을 대각선과 앞뒤로 움직여 자세·거리·
-화면 내 위치 문맥을 모은다. 2단계에서는 고개를 고정하고 테두리를 다시 한 바퀴
+1단계(2026-07-22 개정)에서는 물체 **중앙 한 점을 계속 응시한 채** 고개를 좌우
+끝까지·위아래로 돌리고 카메라 거리를 바꿔, 자세·거리 문맥과 자세별 gaze 편향
+(pose correction)을 모은다. 2단계에서는 고개를 고정하고 눈으로 테두리를 한 바퀴
 돌아 최종 area를 확정한다. 2단계 yaw/pitch 경계에서 95퍼센타일 밖 outlier를 제거하고
 convex hull 꼭짓점만 JSON에 저장한다. runtime은 polygon 안 후보만 만들고 8D profile로 검증·
 정렬한다. area 밖 후보는 profile이 가까워도 항상 `UNKNOWN`이다. area 안에서는 head
@@ -286,8 +287,17 @@ head yaw -38°~+45°)으로 확인한 사실:
 뺀다. 8D Mahalanobis는 원시 샘플 그대로 쓴다(그 분포 자체가 편향 포함 원시
 프레임으로 학습되므로). 표본이 부족한 bin은 만들지 않고, 유효 bin이 2개
 미만이면 보정을 저장하지 않으며, 예전 JSON은 보정 없이(None) 그대로 로드된다.
-기존 등록 target이 보정을 얻으려면 고개를 좌우로 크게 돌리는 1단계를 포함해
-재등록해야 한다. 디버그 패널의 area 거리도 같은 보정 거리를 쓴다.
+기존 등록 target이 보정을 얻으려면 재등록해야 한다. 디버그 패널의 area 거리도
+같은 보정 거리를 쓴다.
+
+**1단계 데이터는 반드시 중앙 응시 스윕이어야 한다 (2026-07-22 실측).** 첫
+구현은 "테두리를 훑으며 자세를 바꾸는" 기존 1단계 데이터로 오프셋을 배웠는데,
+사람은 보는 방향으로 고개를 돌리므로 bin 중앙값이 센서 편향이 아니라 "그
+자세에서 보던 테두리 위치"를 학습해 부호까지 뒤집혔다(head yaw -25~-30 실제
+편향 -3.4° vs 학습값 0~+3.9°). 그래서 등록 1단계 안내를 "중앙 한 점 응시 +
+고개 스윕"으로 바꿨고, `build_pose_correction`은 bin 안 gaze IQR가
+`maximum_bin_iqr_deg`(기본 4°)보다 넓으면 그 bin을 버린다 — 스윕 실측에서
+|head yaw| ≤ 30° bin은 IQR 1~2°, 그 밖은 9~30°였다.
 
 ### Target matching / UNKNOWN rejection
 

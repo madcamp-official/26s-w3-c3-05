@@ -129,12 +129,15 @@ def test_registration_guidance_covers_center_pose_and_boundary_edges() -> None:
     center_labels = [label for _end_ms, label, _video in _CENTER_GUIDANCE_PHASES]
     boundary_labels = [label for _end_ms, label, _video in _BOUNDARY_GUIDANCE_PHASES]
 
+    # 1단계는 중앙 한 점 응시를 유지한 채 고개만 돌린다 — 테두리를 훑으며
+    # 고개를 돌리면 pose 보정이 테두리 위치를 편향으로 오학습한다(gaze.md).
     assert len(center_labels) == 5
-    assert any("왼쪽 위" in label for label in center_labels)
-    assert any("오른쪽 아래" in label for label in center_labels)
-    assert any("왼쪽 아래" in label for label in center_labels)
-    assert any("오른쪽 위" in label for label in center_labels)
+    assert all("응시" in label for label in center_labels)
+    assert any("왼쪽" in label for label in center_labels)
+    assert any("오른쪽" in label for label in center_labels)
+    assert any("위·아래" in label for label in center_labels)
     assert any("가까이·멀리" in label for label in center_labels)
+    assert not any("테두리" in label for label in center_labels)
     assert len(boundary_labels) == 5
     assert any("윗변" in label for label in boundary_labels)
     assert any("오른쪽 변" in label for label in boundary_labels)

@@ -102,12 +102,16 @@ _LOCK_COLOR = {
     GazeLockState.EXPIRED: "#f85149",
     GazeLockState.COMMITTED: "#2ea043",
 }
+# 1단계는 "중앙 한 점 응시 + 고개 스윕"이다. 테두리를 훑으며 고개를 돌리면
+# 사람은 보는 방향으로 고개를 돌리므로 head-yaw bin이 센서 편향이 아니라
+# "그 자세에서 보던 테두리 위치"를 학습해 pose 보정의 부호가 뒤집힌다
+# (2026-07-22 실측, documents/gaze.md).
 _CENTER_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
-    (4_000, "테두리를 훑으며 얼굴·몸을 왼쪽 위로 천천히 이동", "TRACE BORDER - FACE LEFT-UP"),
-    (8_000, "테두리를 훑으며 얼굴·몸을 오른쪽 아래로 천천히 이동", "TRACE BORDER - FACE RIGHT-DOWN"),
-    (12_000, "테두리를 훑으며 얼굴·몸을 왼쪽 아래로 천천히 이동", "TRACE BORDER - FACE LEFT-DOWN"),
-    (16_000, "테두리를 훑으며 얼굴·몸을 오른쪽 위로 천천히 이동", "TRACE BORDER - FACE RIGHT-UP"),
-    (20_000, "테두리를 훑으며 카메라에 조금 가까이·멀리 이동", "TRACE BORDER - MOVE NEAR / FAR"),
+    (5_000, "물체 중앙 한 점을 응시한 채 고개를 왼쪽으로 천천히 끝까지", "FIX CENTER - TURN HEAD LEFT"),
+    (10_000, "중앙 응시 유지, 고개를 오른쪽으로 천천히 끝까지", "FIX CENTER - TURN HEAD RIGHT"),
+    (14_000, "중앙 응시 유지, 고개를 정면으로 되돌리고 위·아래로 천천히", "FIX CENTER - HEAD UP / DOWN"),
+    (17_000, "중앙 응시 유지, 카메라에 조금 가까이·멀리 이동", "FIX CENTER - MOVE NEAR / FAR"),
+    (20_000, "중앙 응시 유지, 편한 자세로 되돌아오기", "FIX CENTER - RETURN NEUTRAL"),
 )
 _BOUNDARY_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
     (2_000, "고개를 고정하고 시선을 물체의 왼쪽 위 모서리로 이동", "HEAD STILL - LOOK TOP-LEFT"),
@@ -1111,7 +1115,7 @@ class MainWindow(QMainWindow):
         self._registration_progress.setFormat("등록 대기")
         layout.addWidget(self._registration_progress)
         self._registration_status = QLabel(
-            "1단계에서는 테두리를 보며 자세·거리·얼굴 위치를 바꾸고, "
+            "1단계에서는 물체 중앙 한 점을 응시한 채 고개·거리만 바꾸고, "
             "2단계에서는 고개를 고정한 채 눈으로 테두리를 정밀하게 따라갑니다."
         )
         self._registration_status.setWordWrap(True)
@@ -1305,24 +1309,24 @@ class MainWindow(QMainWindow):
         )
         self._registration_phase_marker = None
         self._set_registration_controls(active=True)
-        self._registration_step.setText("1/2 자세·거리별 테두리 수집 · 20초")
+        self._registration_step.setText("1/2 중앙 응시 + 고개 스윕 · 20초")
         self._registration_progress.setValue(0)
-        self._registration_progress.setFormat("1/2 자세·거리별 테두리  %p%")
+        self._registration_progress.setFormat("1/2 중앙 응시 + 고개 스윕  %p%")
         self._registration_status.setText(
-            f"'{name}' 테두리를 눈으로 계속 훑으세요. 안내에 따라 얼굴·몸의 위치와 "
-            "카메라 거리를 함께 바꿔 4가지 입력의 유효 범위를 수집합니다."
+            f"'{name}' 중앙 한 점에서 눈을 떼지 마세요. 안내에 따라 고개를 "
+            "좌우 끝까지·위아래로 돌리고 카메라 거리를 바꿔 자세별 편향을 수집합니다."
         )
         self._registration_status.setStyleSheet(
             "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
             " border-radius:6px; padding:8px; font-weight:700;"
         )
         self._log.info(
-            f"'{name}' 2단계 등록 시작 — 1/2 자세·거리별 테두리 수집: "
-            "물체 테두리를 훑으면서 얼굴/몸을 좌상·우하·좌하·우상·근거리/원거리로 이동"
+            f"'{name}' 2단계 등록 시작 — 1/2 중앙 응시 + 고개 스윕: "
+            "물체 중앙 한 점을 계속 응시하면서 고개를 좌우 끝까지·위아래로 돌리고 거리 변경"
         )
         self._video.set_registration_guidance(
-            "REGISTRATION 1/2 - CONTEXT BOUNDARY",
-            "TRACE BORDER WHILE MOVING FACE",
+            "REGISTRATION 1/2 - POSE SWEEP",
+            "FIX CENTER, TURN HEAD",
             0.0,
         )
 
@@ -1368,10 +1372,10 @@ class MainWindow(QMainWindow):
         remaining_s = max(0.0, (phase_end_ms - elapsed_ms) / 1000.0)
         progress = self._registration.phase_progress(timestamp_ms)
         if phase == RegistrationPhase.CENTER:
-            step = "1/2 자세·거리별 테두리 수집"
+            step = "1/2 중앙 응시 + 고개 스윕"
             count = self._registration.center_valid_frame_count
             required = self._registration.minimum_valid_frames
-            title = "REGISTRATION 1/2 - CONTEXT BOUNDARY"
+            title = "REGISTRATION 1/2 - POSE SWEEP"
         else:
             step = "2/2 물체 영역 확정"
             count = self._registration.boundary_valid_frame_count
@@ -1432,7 +1436,7 @@ class MainWindow(QMainWindow):
             )
             self._log.info(
                 f"'{record.name}' 2단계 등록 완료 "
-                f"(자세별 테두리 {self._registration.center_valid_frame_count}, "
+                f"(중앙 응시 스윕 {self._registration.center_valid_frame_count}, "
                 f"정밀 테두리 {self._registration.boundary_valid_frame_count} frames) | "
                 f"{self._registration.diagnostic_summary()}"
             )
@@ -1467,7 +1471,7 @@ class MainWindow(QMainWindow):
         self._registration_progress.setValue(0)
         self._registration_progress.setFormat("등록 대기")
         self._registration_status.setText(
-            "1단계에서는 테두리를 보며 자세·거리·얼굴 위치를 바꾸고, "
+            "1단계에서는 물체 중앙 한 점을 응시한 채 고개·거리만 바꾸고, "
             "2단계에서는 고개를 고정한 채 눈으로 테두리를 정밀하게 따라갑니다."
         )
         self._registration_status.setStyleSheet(
