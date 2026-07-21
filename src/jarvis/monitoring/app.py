@@ -1419,6 +1419,17 @@ class MainWindow(QMainWindow):
         self._timer.timeout.connect(self._on_tick)
         self._timer.start(150)
 
+        # 표시(렌더)를 캡처와 분리한다: 카메라 스레드가 프레임을 밀어 넣는 속도와 무관하게
+        # GUI는 이 타이머로 최신 프레임만 고정 상한(~30fps)으로 그린다. _on_frame은 참조만
+        # 갈아 끼우고, 실제 스케일/오버레이는 여기서 보이는 탭 1벌만 수행한다.
+        self._latest_frame: Frame | None = None
+        self._frame_dirty = False
+        self._render_timer = QTimer(self)
+        self._render_timer.timeout.connect(self._render_latest)
+        self._render_timer.start(33)  # ~30fps 표시 상한
+        # 탭을 바꾸면 새로 보이는 뷰가 다음 틱에 바로 최신 프레임을 그리도록 dirty로 표시한다.
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+
     def _make_gesture_source(self) -> GestureSource:
         """학습된 체크포인트가 있으면 관측값 재사용 인식 소스를, 없으면 정직한 off 소스를 만든다.
 
@@ -1750,11 +1761,34 @@ class MainWindow(QMainWindow):
         self._log.info(f"카메라 {device_index}번 시작")
 
     def _on_frame(self, frame: Frame) -> None:
-        self._video.show_frame(frame)
-        # 시선 인식 탭·파인튜닝 탭의 웹캠 뷰에도 같은 프레임을 뿌린다(Qt 시그널 fan-out —
-        # 각 VideoView가 자기 복사본에 그리므로 서로 간섭하지 않는다).
-        self._gaze_video.show_frame(frame)
-        self._finetune_panel.video.show_frame(frame)
+        # 렌더는 _render_latest(표시 타이머)가 최신 프레임만 그린다. 여기서는 참조만
+        # 갈아 끼워 O(1)로 끝낸다 — frame_ready를 매번 렌더하면 GUI가 밀릴 때 시그널
+        # 큐가 무한히 쌓여 지연이 누적되고(오래된 프레임이 늦게 재생돼 롤백처럼 보임),
+        # 안 보이는 탭의 뷰까지 3벌 렌더돼 부하가 3배가 된다. cv2.VideoCapture.read()가
+        # 매번 새 배열을 주므로 카메라 스레드가 이 프레임을 덮어쓰지 않아 나중에 그려도 안전하다.
+        self._latest_frame = frame
+        self._frame_dirty = True
+
+    def _render_latest(self) -> None:
+        """표시 타이머 콜백: 최신 프레임을 '보이는' 뷰에만 그린다(캡처↔렌더 분리 + 가시탭 한정).
+
+        안 보이는 탭의 VideoView는 isVisible()이 False라 건너뛴다 — 프레임당 렌더 비용을
+        3벌에서 현재 탭 1벌로 줄인다(QTabWidget은 한 번에 한 페이지만 보이므로 최대 1벌).
+        새 프레임이 없으면(_frame_dirty=False) 같은 화면을 다시 스케일하지 않는다. 추론·제어·
+        녹화 경로(hand_ready/gaze_ready)는 여기서 절대 건드리지 않는다 — 버리는 것은 '그릴
+        픽셀'뿐이고 '추론할 프레임'이 아니다.
+        """
+        if self._latest_frame is None or not self._frame_dirty:
+            return
+        self._frame_dirty = False
+        frame = self._latest_frame
+        for view in (self._video, self._gaze_video, self._finetune_panel.video):
+            if view.isVisible():
+                view.show_frame(frame)
+
+    def _on_tab_changed(self, _index: int) -> None:
+        # 새로 보이게 된 탭의 뷰가 다음 표시 틱에 즉시 최신 프레임으로 갱신되게 한다.
+        self._frame_dirty = True
 
     def _on_gaze(self, snapshot: object) -> None:
         assert isinstance(snapshot, GazeSnapshot)
