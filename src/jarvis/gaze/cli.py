@@ -272,7 +272,8 @@ def _run_verify_target(args: argparse.Namespace) -> int:
     print(
         f"'{record.name}' 중앙 한 점에서 눈을 떼지 말고 고개만 움직이세요.\n"
         f"  좌로 끝까지 → 우로 끝까지 → 위·아래 → 카메라 가까이·멀리.\n"
-        f"{args.duration_seconds:.0f}초 캡처합니다. 먼저 끝나면 Ctrl+C."
+        f"{args.duration_seconds:.0f}초 캡처합니다. 먼저 끝나면 Ctrl+C.",
+        flush=True,
     )
     smoother = GazeSmoother(config)
     samples: list[TargetFeatureSample] = []
@@ -280,6 +281,11 @@ def _run_verify_target(args: argparse.Namespace) -> int:
     last_printed_ms = -args.interval_ms
     try:
         for observation in _observation_stream(Path(args.model), args.camera_index):
+            # deadline 검사는 유효성 필터보다 먼저 한다 — 얼굴 미검출/눈 감음
+            # 프레임이 continue로 빠지면 루프 끝의 검사를 영영 만나지 못해
+            # 캡처가 종료되지 않는다.
+            if time.monotonic() >= deadline:
+                break
             if not observation.eyes_open:
                 continue
             gaze_vector = compose_gaze_vector(observation, config)
@@ -317,10 +323,9 @@ def _run_verify_target(args: argparse.Namespace) -> int:
                 remaining = max(0.0, deadline - time.monotonic())
                 print(
                     f"[{remaining:4.1f}s] head_yaw={observation.head_yaw_deg:+6.1f} "
-                    f"area=x{distance:4.2f} {status}"
+                    f"area=x{distance:4.2f} {status}",
+                    flush=True,
                 )
-            if time.monotonic() >= deadline:
-                break
     except KeyboardInterrupt:
         print("캡처를 중단하고 지금까지의 프레임으로 판정합니다.")
 
