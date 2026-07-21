@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from jarvis.calibration.registry import TargetRecord
     from jarvis.monitoring.gaze_probe import GazeSnapshot
 
-SESSION_FORMAT_VERSION = 1
+SESSION_FORMAT_VERSION = 2
 
 #: 정답 라벨로 "아무 target도 보지 않음"을 뜻하는 예약어.
 NO_TARGET_LABEL = "none"
@@ -51,6 +51,32 @@ def _round_pair(pair: tuple[float, float] | None, digits: int = 4) -> list[float
     if pair is None:
         return None
     return [round(float(pair[0]), digits), round(float(pair[1]), digits)]
+
+
+def _round_triplet(
+    values: tuple[float, float, float] | None,
+    digits: int = 3,
+) -> list[float] | None:
+    if values is None:
+        return None
+    return [round(float(value), digits) for value in values]
+
+
+def _round_optional(value: float | None, digits: int = 4) -> float | None:
+    return round(float(value), digits) if value is not None else None
+
+
+def _face_center(
+    left: tuple[float, float] | None,
+    right: tuple[float, float] | None,
+) -> list[float] | None:
+    centers = [center for center in (left, right) if center is not None]
+    if not centers:
+        return None
+    return [
+        round(sum(center[0] for center in centers) / len(centers), 4),
+        round(sum(center[1] for center in centers) / len(centers), 4),
+    ]
 
 
 class GazeSessionRecorder:
@@ -137,15 +163,30 @@ class GazeSessionRecorder:
                 "iris_r": _round_pair(snapshot.right_iris_relative),
                 "eye_l": _round_pair(snapshot.left_eye_center_normalized),
                 "eye_r": _round_pair(snapshot.right_eye_center_normalized),
+                "face_center": _face_center(
+                    snapshot.left_eye_center_normalized,
+                    snapshot.right_eye_center_normalized,
+                ),
                 "face_scale": (
                     round(snapshot.face_scale, 5) if snapshot.face_scale is not None else None
                 ),
                 "eyes_open": snapshot.eyes_open,
+                "eye_open_ratio": [
+                    _round_optional(snapshot.left_eye_open_ratio),
+                    _round_optional(snapshot.right_eye_open_ratio),
+                ],
+                "eye_open_baseline": [
+                    _round_optional(snapshot.left_eye_open_baseline),
+                    _round_optional(snapshot.right_eye_open_baseline),
+                ],
                 "confidence": round(snapshot.tracking_confidence, 3),
             },
             "gaze": {
                 "raw": _yaw_pitch(snapshot.raw_gaze_direction),
+                "raw_confidence": _round_optional(snapshot.raw_gaze_confidence, 3),
                 "smoothed": _yaw_pitch(snapshot.smoothed_gaze_direction),
+                "origin_mm": _round_triplet(snapshot.smoothed_gaze_origin),
+                "confidence": _round_optional(snapshot.gaze_confidence, 3),
                 "feature": (
                     [round(sample.gaze_yaw, 3), round(sample.gaze_pitch, 3)]
                     if sample is not None
@@ -158,6 +199,22 @@ class GazeSessionRecorder:
                 ),
                 "source": snapshot.gaze_source,
                 "source_reason": snapshot.gaze_source_reason,
+                "buffer": [snapshot.buffer_fill, snapshot.buffer_capacity],
+                "motion_delta": _round_pair(snapshot.gaze_motion_delta_deg, 3),
+                "velocity_deg_s": _round_pair(
+                    snapshot.gaze_motion_velocity_deg_s,
+                    3,
+                ),
+                "acceleration_deg_s2": _round_pair(
+                    snapshot.gaze_motion_acceleration_deg_s2,
+                    3,
+                ),
+                "settle_velocity_deg_s": _round_pair(
+                    snapshot.gaze_settle_velocity_deg_s,
+                    3,
+                ),
+                "settle_age_ms": snapshot.gaze_settle_age_ms,
+                "motion_history_valid": snapshot.gaze_motion_history_valid,
             },
             "cls": {
                 "target": snapshot.target,

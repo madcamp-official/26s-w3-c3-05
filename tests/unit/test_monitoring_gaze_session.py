@@ -56,6 +56,10 @@ def _observation(
         face_tracking_confidence=1.0,
         face_detected=True,
         eyes_open=True,
+        left_eye_open_ratio=0.22,
+        right_eye_open_ratio=0.24,
+        left_eye_open_baseline=0.25,
+        right_eye_open_baseline=0.26,
         left_eye_center_normalized=(0.4, 0.4),
         right_eye_center_normalized=(0.6, 0.4),
     )
@@ -146,8 +150,15 @@ def test_recorder_writes_self_contained_session(tmp_path: Path) -> None:
     assert len(session.frames) == 12
 
     frame = session.frames[-1]
+    assert session.header["version"] == 2
     assert frame["obs"]["head"] == [0.0, 0.0, 0.0]
+    assert frame["obs"]["face_center"] == [0.5, 0.4]
+    assert frame["obs"]["eye_open_ratio"] == [0.22, 0.24]
+    assert frame["obs"]["eye_open_baseline"] == [0.25, 0.26]
     assert frame["gaze"]["smoothed"] is not None
+    assert frame["gaze"]["raw_confidence"] is not None
+    assert frame["gaze"]["buffer"][1] == GazeConfig().smoothing_window_frames
+    assert "motion_history_valid" in frame["gaze"]
     assert TARGET_ID in frame["targets"]
     assert frame["targets"][TARGET_ID]["area_nd"] <= 1.0
     assert frame["targets"][TARGET_ID]["correction_applied"] is False
