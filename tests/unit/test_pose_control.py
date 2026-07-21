@@ -87,8 +87,15 @@ def test_release_lifts_held_drag_button() -> None:
     assert ("press", MouseButton.LEFT, False) in sink.calls
 
 
-def test_media_toggle_sends_f11() -> None:
+def test_media_toggle_sends_transition_key() -> None:
+    """media_toggle은 플랫폼별 전이 키를 보낸다(Windows=재생/일시정지, macOS=F11).
+
+    프로덕션과 같은 `_transition_key()`로 기대값을 잡아, 하드코딩한 F11이 Windows에서
+    실패하던 문제를 없앤다(양 플랫폼에서 실제 계약을 검증한다).
+    """
+    from jarvis.monitoring.pose_control import _transition_key
+
     sink = _FakeSink()
     bridge = PoseControlBridge(sink=sink, enabled=True)
     bridge.apply([PoseEvent("media_toggle", 0)])
-    assert ("key", InputKey.SHOW_DESKTOP) in sink.calls
+    assert ("key", _transition_key()) in sink.calls
