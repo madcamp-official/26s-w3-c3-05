@@ -134,4 +134,4 @@ def test_two_fingers_tilt_limit_is_unrestricted() -> None:
     from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
 
     assert DEFAULT_POSE_TILT_LIMITS["two_fingers"] == 90.0
-    assert DEFAULT_POSE_TILT_LIMITS["index_point"] == 20.0
+    assert DEFAULT_POSE_TILT_LIMITS["index_point"] == 10.0
