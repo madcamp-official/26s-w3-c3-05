@@ -76,6 +76,34 @@ class MacOSInputSink:
         self.press(button, down=True)
         self.press(button, down=False)
 
+    def double_click(self, button: MouseButton) -> None:
+        """더블클릭을 전송한다 — 두 번의 down/up에 clickState를 실어 보낸다.
+
+        macOS는 단순히 click을 두 번 보내는 것만으로는 더블클릭으로 인식하지 않는다.
+        CGEvent의 `kCGMouseEventClickState` 필드가 각 이벤트의 '연속 클릭 횟수'를
+        나타내며, 두 번째 클릭에 2를 실어야 OS가 하나의 더블클릭으로 합친다.
+        """
+        import Quartz
+
+        if button is MouseButton.RIGHT:
+            down_type = Quartz.kCGEventRightMouseDown
+            up_type = Quartz.kCGEventRightMouseUp
+            mouse_button = Quartz.kCGMouseButtonRight
+        else:
+            down_type = Quartz.kCGEventLeftMouseDown
+            up_type = Quartz.kCGEventLeftMouseUp
+            mouse_button = Quartz.kCGMouseButtonLeft
+        location = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+        for click_state in (1, 2):
+            for event_type in (down_type, up_type):
+                event = Quartz.CGEventCreateMouseEvent(
+                    None, event_type, location, mouse_button
+                )
+                Quartz.CGEventSetIntegerValueField(
+                    event, Quartz.kCGMouseEventClickState, click_state
+                )
+                self._post(event)
+
     def scroll(self, ticks: int) -> None:
         import Quartz
 

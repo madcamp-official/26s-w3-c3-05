@@ -58,6 +58,10 @@ class InputSink(Protocol):
         """버튼 하나를 누름→뗌으로 전송한다(현재 커서 위치)."""
         ...
 
+    def double_click(self, button: MouseButton) -> None:
+        """버튼을 두 번 빠르게 눌러 더블클릭을 전송한다(현재 커서 위치)."""
+        ...
+
     def press(self, button: MouseButton, *, down: bool) -> None:
         """버튼을 누르거나 뗀다 — 드래그는 누른 채 커서를 옮겨야 하므로 분리한다."""
         ...
@@ -233,6 +237,13 @@ class Win32InputSink:
     def click(self, button: MouseButton) -> None:
         self.press(button, down=True)
         self.press(button, down=False)
+
+    def double_click(self, button: MouseButton) -> None:
+        # 두 번의 클릭을 연속으로 보낸다. Windows는 두 클릭의 간격이 GetDoubleClickTime
+        # (기본 500ms) 이내면 OS가 더블클릭으로 합쳐 인식한다 — 상태기계가 이미 그 안에서
+        # 승격했으므로 여기선 지연 없이 두 번 보내면 된다.
+        self.click(button)
+        self.click(button)
 
     def scroll(self, ticks: int) -> None:
         self._user32().mouse_event(_MOUSEEVENTF_WHEEL, 0, 0, ticks * _WHEEL_DELTA, 0)

@@ -122,6 +122,45 @@ def test_short_pinch_is_click() -> None:
     assert [e.kind for e in events] == ["click"]
 
 
+def _pinch_click(machine: PoseStateMachine, *, start: int) -> list:
+    """핀치를 짧게 쥐었다 떼는 한 사이클 — click/double_click 이벤트를 낸다."""
+    events = _feed(machine, "pinch_index", ms=150, start=start)  # dwell(120ms) 통과
+    t = start + 150 + 33
+    for _ in range(4):  # RELEASE_FRAMES(3) 넘겨 확실히 이탈
+        events.extend(machine.update(_pose(NONE_POSE), t))
+        t += 33
+    return events
+
+
+def test_two_quick_pinches_are_double_click() -> None:
+    """두 클릭 간격이 double_click_ms 안이면 두 번째가 더블클릭으로 승격된다."""
+    machine = PoseStateMachine()
+    first = _pinch_click(machine, start=0)
+    second = _pinch_click(machine, start=300)  # 첫 클릭에서 ~300ms 뒤
+    assert [e.kind for e in first] == ["click"]
+    assert [e.kind for e in second] == ["double_click"]
+
+
+def test_slow_second_pinch_is_plain_click() -> None:
+    """간격이 double_click_ms를 넘으면 둘 다 그냥 클릭이다."""
+    machine = PoseStateMachine()
+    first = _pinch_click(machine, start=0)
+    second = _pinch_click(machine, start=1000)  # 충분히 늦음
+    assert [e.kind for e in first] == ["click"]
+    assert [e.kind for e in second] == ["click"]
+
+
+def test_triple_pinch_does_not_chain_double_clicks() -> None:
+    """세 번 연속 핀치는 (클릭, 더블클릭, 클릭) — 더블클릭이 연쇄되지 않는다."""
+    machine = PoseStateMachine()
+    kinds = [
+        e.kind
+        for start in (0, 300, 600)
+        for e in _pinch_click(machine, start=start)
+    ]
+    assert kinds == ["click", "double_click", "click"]
+
+
 def test_long_pinch_becomes_drag() -> None:
     """오래 쥐면 드래그다. 시작 시점은 핀치 진입 순간으로 소급된다."""
     machine = PoseStateMachine()

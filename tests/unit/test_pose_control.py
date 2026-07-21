@@ -24,6 +24,9 @@ class _FakeSink:
     def click(self, button: MouseButton) -> None:
         self.calls.append(("click", button))
 
+    def double_click(self, button: MouseButton) -> None:
+        self.calls.append(("double_click", button))
+
     def press(self, button: MouseButton, *, down: bool) -> None:
         self.calls.append(("press", button, down))
 
@@ -66,6 +69,14 @@ def test_click_and_right_click() -> None:
     bridge.apply([PoseEvent("click", 0), PoseEvent("right_click", 0)])
     assert ("click", MouseButton.LEFT) in sink.calls
     assert ("click", MouseButton.RIGHT) in sink.calls
+
+
+def test_double_click_executes_and_logs() -> None:
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=True)
+    bridge.apply([PoseEvent("double_click", 0)])
+    assert ("double_click", MouseButton.LEFT) in sink.calls
+    assert bridge.last_action == "더블클릭"
 
 
 def test_drag_press_and_release() -> None:
