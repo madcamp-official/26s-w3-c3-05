@@ -78,6 +78,7 @@ from jarvis.monitoring.overlay import (
     draw_hud,
     placeholder_frame,
     render_normalized_hand,
+    render_normalized_hand_depth,
     render_vector,
 )
 from jarvis.monitoring.pipeline_status import StageState, StageStatus, detect_pipeline_status
@@ -500,6 +501,16 @@ class HandPanel(QScrollArea):
             self._smooth_toggle.toggled.connect(on_smoothing_toggled)
         layout.addWidget(self._smooth_toggle)
 
+        # Toggle: 2D 뷰(모델이 실제로 보는 것) vs z 부활 뷰(표시 전용 비교). 모델 경로는
+        # 어느 쪽이든 2D 그대로다 — 이 버튼은 캔버스 렌더링만 바꾼다. 손바닥이 카메라와
+        # 평행해지는 회전(팔뚝축 회전)에서 z가 담는 신호를 눈으로 비교하기 위한 것.
+        self._show_depth = False
+        self._depth_toggle = QCheckBox("z축(깊이) 부활 뷰 · 표시 전용, 모델은 2D 그대로")
+        self._depth_toggle.setChecked(False)
+        self._depth_toggle.toggled.connect(self._on_depth_toggled)
+        layout.addWidget(self._depth_toggle)
+        self._last_snapshot: HandSnapshot | None = None
+
         # The one thing that must not be misread: recognition is OFF (untrained).
         banner = QLabel("⚠ 제스처 인식 비활성\n" + gesture_status)
         banner.setWordWrap(True)
@@ -545,7 +556,18 @@ class HandPanel(QScrollArea):
         outer.addStretch(1)
         self.setWidget(body)
 
+    def _on_depth_toggled(self, checked: bool) -> None:
+        """Switch the canvas between the 2D model-input view and the z-revived view.
+
+        Display-only — the model path is 2D regardless. Re-renders the last frame so
+        the toggle responds immediately instead of waiting for the next webcam frame.
+        """
+        self._show_depth = checked
+        if self._last_snapshot is not None:
+            self.update_snapshot(self._last_snapshot)
+
     def update_snapshot(self, s: HandSnapshot) -> None:
+        self._last_snapshot = s
         self._status.setText(f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame")
         self._status.setStyleSheet("color:#3fb950;" if s.hand_detected else "color:#8b949e;")
         self._detected.setText(
@@ -559,7 +581,14 @@ class HandPanel(QScrollArea):
         # Render the actual model input: smoothed (real) or raw normalized per toggle.
         points = s.model_points if s.smoothed else s.model_points_raw
         # Mirror to match the selfie (거울상) webcam view — display only; points unchanged.
-        canvas = render_normalized_hand(points, smoothed=s.smoothed, mirror=True)
+        if self._show_depth and s.model_points_z is not None:
+            # z 부활 비교 뷰 — 깊이 채색 + 상단(x·z) 투영. z는 스무딩 경로에 없어 raw
+            # 정규화 x·y와 짝짓는다(모델 입력이 아니라 진단 뷰라 문제없다).
+            canvas = render_normalized_hand_depth(
+                s.model_points_raw, s.model_points_z, mirror=True
+            )
+        else:
+            canvas = render_normalized_hand(points, smoothed=s.smoothed, mirror=True)
         rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         image = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
@@ -567,12 +596,18 @@ class HandPanel(QScrollArea):
 
         if s.hand_detected:
             mode = "스무딩됨 (모델 실제 입력)" if s.smoothed else "raw (스무딩 꺼짐)"
-            self._numeric.setText(
+            text = (
                 f"모델 입력   : {mode}\n"
                 f"palm scale  : {s.palm_scale:.4f}\n"
                 f"landmarks   : {s.landmark_count} points (정규화·손목 원점)\n"
                 f"handedness  : {s.handedness}  score {s.handedness_score:.3f}"
             )
+            if self._show_depth and s.model_points_z is not None:
+                # 깊이 스프레드 = 이번 프레임 z의 max−min(palm-width). 손바닥이 카메라와
+                # 평행할수록(회전) 커진다 — z 신호가 실제로 얼마나 있는지 보여주는 단일 수치.
+                spread = max(s.model_points_z) - min(s.model_points_z)
+                text += f"\n깊이 스프레드: {spread:.3f} palm-width (z max−min, 표시 전용)"
+            self._numeric.setText(text)
         else:
             self._numeric.setText("손 없음 (추적 손실)")
 

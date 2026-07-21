@@ -356,6 +356,101 @@ def render_normalized_hand(
     return canvas
 
 
+# 깊이 발산형 colormap 양끝(BGR): 카메라에 가까움(z<0) → 따뜻한 빨강, 멀어짐(z>0) →
+# 차가운 파랑, 손목 깊이(0) → 밝은 회색. MediaPipe z는 카메라에 가까울수록 감소한다.
+_DEPTH_NEUTRAL = (235, 235, 235)
+_DEPTH_NEAR = (60, 60, 235)
+_DEPTH_FAR = (235, 150, 60)
+
+
+def _depth_color(z: float, z_scale: float) -> tuple[int, int, int]:
+    """Map a normalized depth to a diverging BGR color (near=warm, far=cool)."""
+    t = 0.0 if z_scale <= 0.0 else max(-1.0, min(1.0, z / z_scale))
+    end = _DEPTH_NEAR if t < 0 else _DEPTH_FAR
+    f = abs(t)
+    return (
+        int(_DEPTH_NEUTRAL[0] + (end[0] - _DEPTH_NEUTRAL[0]) * f),
+        int(_DEPTH_NEUTRAL[1] + (end[1] - _DEPTH_NEUTRAL[1]) * f),
+        int(_DEPTH_NEUTRAL[2] + (end[2] - _DEPTH_NEUTRAL[2]) * f),
+    )
+
+
+def render_normalized_hand_depth(
+    points: tuple[tuple[float, float], ...] | None,
+    depths: tuple[float, ...] | None,
+    *,
+    size: int = 260,
+    mirror: bool = False,
+) -> Frame:
+    """Render normalized landmarks with per-joint depth (z) encoded — **display only**.
+
+    Answers one question visually: would reviving z help the cases 2D can't see?
+    Two views share the canvas:
+
+    - **Frontal (x·y)**: the same skeleton as ``render_normalized_hand``, but each
+      joint is colored by its normalized depth (warm = toward camera, cool = away).
+      During forearm-axis rotation — the palm turning to face the camera edge-on —
+      the x·y positions barely move, yet the depth gradient across the palm flips.
+      That flip is exactly the signal ``config.LANDMARK_DIMS = 2`` discards.
+    - **Top-down inset (x·z)**: the palm seen from above, so that same rotation shows
+      up as a plain in-plane turn.
+
+    The model never consumes z (``LANDMARK_DIMS = 2``); this is purely a comparison
+    aid. ``depths`` aligns index-wise with ``points`` (both length 21), in palm-width
+    units with the wrist at 0. Falls back to the flat "no hand" canvas if either is
+    missing or malformed.
+    """
+    canvas: Frame = np.zeros((size, size, 3), dtype=np.uint8)
+    canvas[:] = (18, 20, 26)
+    cv2.putText(canvas, "z 부활 (표시 전용 · 모델은 z 미사용)", (8, 18), _FONT, 0.42,
+                (150, 150, 150), 1, cv2.LINE_AA)
+
+    if points is None or depths is None or len(points) != 21 or len(depths) != 21:
+        cv2.putText(canvas, "no hand", (size // 2 - 34, size // 2), _FONT, 0.6,
+                    (90, 90, 100), 1, cv2.LINE_AA)
+        return canvas
+
+    # 깊이 스케일: 이번 프레임 최대 |z|(바닥값으로 0으로 나눔 방지). 프레임마다 적응해
+    # 손바닥이 평평할 때의 미세 깊이도, 회전 시 큰 깊이도 함께 읽힌다.
+    z_scale = max(1e-3, max(abs(z) for z in depths))
+
+    # --- 정면 뷰 (x·y), 관절을 깊이로 채색 ---
+    cx, cy = size // 2, int(size * 0.72)
+    scale = size * 0.15
+    px = [
+        (int(cx - x * scale) if mirror else int(cx + x * scale), int(cy + y * scale))
+        for x, y in points
+    ]
+    for a, b in _HAND_CONNECTIONS:
+        cv2.line(canvas, px[a], px[b], (70, 74, 82), 2, cv2.LINE_AA)
+    for (x, y), z in zip(px, depths, strict=True):
+        cv2.circle(canvas, (x, y), 4, _depth_color(z, z_scale), thickness=-1)
+    cv2.circle(canvas, px[0], 5, (60, 150, 230), thickness=2)  # wrist (origin) 링
+
+    # --- 상단 뷰 인셋 (x·z): 팔뚝축 회전이 곧바로 in-plane 회전으로 보인다 ---
+    inset = int(size * 0.40)
+    x0, y0 = size - inset - 6, 26
+    cv2.rectangle(canvas, (x0, y0), (x0 + inset, y0 + inset), (48, 52, 60), 1)
+    cv2.putText(canvas, "top view x·z", (x0 + 4, y0 + 14), _FONT, 0.34,
+                (120, 124, 132), 1, cv2.LINE_AA)
+    icx = x0 + inset // 2
+    icy = y0 + inset // 2
+    ix_scale = inset * 0.30
+    iz_scale = (inset * 0.34) / z_scale
+    ipx = [
+        (
+            int(icx - x * ix_scale) if mirror else int(icx + x * ix_scale),
+            int(icy + z * iz_scale),  # +z(카메라에서 멂) = 아래
+        )
+        for (x, _y), z in zip(points, depths, strict=True)
+    ]
+    for a, b in _HAND_CONNECTIONS:
+        cv2.line(canvas, ipx[a], ipx[b], (70, 74, 82), 1, cv2.LINE_AA)
+    for (x, y), z in zip(ipx, depths, strict=True):
+        cv2.circle(canvas, (x, y), 2, _depth_color(z, z_scale), thickness=-1)
+    return canvas
+
+
 def render_vector(
     vector: tuple[float, float] | None,
     *,

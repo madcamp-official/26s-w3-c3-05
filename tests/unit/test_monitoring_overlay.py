@@ -189,6 +189,40 @@ def test_render_normalized_hand_handles_no_hand() -> None:
     assert canvas.shape == (120, 120, 3)
 
 
+def test_render_normalized_hand_depth_draws_skeleton() -> None:
+    from jarvis.monitoring.overlay import render_normalized_hand_depth
+
+    points = tuple((0.1 * i - 1.0, 0.05 * i) for i in range(21))
+    depths = tuple(0.1 * i - 1.0 for i in range(21))
+    canvas = render_normalized_hand_depth(points, depths, size=200)
+    assert canvas.shape == (200, 200, 3)
+    assert canvas.any()
+
+
+def test_render_normalized_hand_depth_handles_missing_depth() -> None:
+    """z가 없거나(추적 손실) 길이가 안 맞으면 빈 캔버스로 물러난다 — 지어내지 않는다."""
+    from jarvis.monitoring.overlay import render_normalized_hand_depth
+
+    points = tuple((0.1 * i - 1.0, 0.05 * i) for i in range(21))
+    assert render_normalized_hand_depth(points, None, size=120).shape == (120, 120, 3)
+    assert render_normalized_hand_depth(None, None, size=120).shape == (120, 120, 3)
+    # 길이 불일치도 빈 캔버스
+    assert render_normalized_hand_depth(points, (0.0, 1.0), size=120).shape == (120, 120, 3)
+
+
+def test_render_normalized_hand_depth_colors_near_and_far_differently() -> None:
+    """가까운(z<0) 관절과 먼(z>0) 관절이 다른 색으로 그려져야 한다 — z 신호의 시각화."""
+    from jarvis.monitoring.overlay import _depth_color
+
+    near = _depth_color(-1.0, 1.0)
+    far = _depth_color(1.0, 1.0)
+    neutral = _depth_color(0.0, 1.0)
+    assert near != far
+    assert near[2] > near[0]  # 가까움 = 따뜻한(빨강 우세, BGR의 R)
+    assert far[0] > far[2]  # 멂 = 차가운(파랑 우세, BGR의 B)
+    assert neutral == (235, 235, 235)
+
+
 def test_render_normalized_hand_is_not_vertically_flipped() -> None:
     """Fingers-up (negative y in image convention) must draw ABOVE the wrist.
 

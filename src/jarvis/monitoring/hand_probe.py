@@ -133,6 +133,14 @@ class HandSnapshot:
     # None when smoothing is off or the hand is lost. Display-only — this is *never*
     # fed to the model or logged for training (that path uses the raw ``points``).
     image_points_smoothed: tuple[Point2D, ...] | None = None
+    # Per-landmark normalized depth (z), wrist-origin + palm-scaled (same transform
+    # ``normalize_hand`` applies to x·y), in palm-width units — aligned index-wise
+    # with ``model_points``/``model_points_raw``. **Display-only.** The model never
+    # consumes z (``config.LANDMARK_DIMS = 2``); this exists solely so the 손 추적 tab
+    # can visualize what a z-revived pipeline *would* see (foreshortening during
+    # palm-parallel / forearm-axis rotation — the signal 2D discards). MediaPipe z
+    # decreases toward the camera. None when the hand is lost.
+    model_points_z: tuple[float, ...] | None = None
 
 
 def _gesture_recognition_status() -> str:
@@ -292,8 +300,12 @@ class HandProbe:
             return self._lost(timestamp_ms, frame_id, inference_ms)
 
         landmarks = result.hand_landmarks[0]
-        # z(깊이)는 단안 웹캠 추정값이라 노이즈가 커 버리고 x·y만 쓴다(config.LANDMARK_DIMS).
-        points = np.array([[lm.x, lm.y] for lm in landmarks], dtype=np.float64)
+        # z(깊이)는 단안 웹캠 추정값이라 노이즈가 커 모델은 x·y만 쓴다(config.LANDMARK_DIMS).
+        # 여기서는 z까지 담은 3D 배열을 만들되, 모델 경로에 넘기는 ``points``는 앞 2열을
+        # **슬라이스**로 파생한다 — 슬라이스라 x·y가 기존과 비트 단위로 동일하고, z는
+        # 아래에서 표시 전용으로만 쓴다(손 추적 탭의 z 부활 비교).
+        points_3d = np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float64)
+        points = points_3d[:, :2]
         if points.shape != (21, LANDMARK_DIMS):
             return self._lost(timestamp_ms, frame_id, inference_ms)
 
@@ -318,6 +330,7 @@ class HandProbe:
         image_points_smoothed = self._smooth_image_points(points[:, :2], timestamp_ms)
         model_points = None if model is None else tuple((float(p[0]), float(p[1])) for p in model)
         model_points_raw = tuple((float(p[0]), float(p[1])) for p in observation.landmarks)
+        model_points_z = self._normalized_depth(points_3d, observation.palm_scale)
         wrist_velocity = _as_vec2(self._extractor.last_wrist_velocity)
         wrist_acceleration = _as_vec2(self._extractor.last_wrist_acceleration)
         return HandSnapshot(
@@ -337,7 +350,24 @@ class HandProbe:
             wrist_velocity=wrist_velocity,
             wrist_acceleration=wrist_acceleration,
             image_points_smoothed=image_points_smoothed,
+            model_points_z=model_points_z,
         )
+
+    def _normalized_depth(
+        self, points_3d: npt.NDArray[np.float64], palm_scale: float
+    ) -> tuple[float, ...] | None:
+        """Wrist-origin + palm-scaled depth (z) per landmark, for display only.
+
+        Applies the same origin-shift and palm-scale division ``normalize_hand``
+        uses for x·y, so the returned z is in the same palm-width units as
+        ``model_points`` — a fair "what a z-revived pipeline would see" view. Returns
+        ``None`` when ``palm_scale`` is non-positive (no valid scale to divide by).
+        The model does not consume this (``config.LANDMARK_DIMS = 2``).
+        """
+        if palm_scale <= 0.0:
+            return None
+        origin_z = float(points_3d[self._config.origin_index, 2])
+        return tuple(float((z - origin_z) / palm_scale) for z in points_3d[:, 2])
 
     def _smooth_image_points(
         self, xy: npt.NDArray[np.float64], timestamp_ms: int
