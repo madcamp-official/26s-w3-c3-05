@@ -42,6 +42,7 @@ class InputKey(StrEnum):
     VOLUME_DOWN = "volume_down"
     MUTE = "mute"
     SHOW_DESKTOP = "show_desktop"  # F11 — 바탕화면 표시(누를 때마다 토글)
+    MISSION_CONTROL = "mission_control"  # macOS 전용 — Mission Control 열기(Ctrl+↑)
 
 
 class MouseButton(StrEnum):

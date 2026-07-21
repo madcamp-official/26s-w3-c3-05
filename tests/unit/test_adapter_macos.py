@@ -26,12 +26,15 @@ def test_macos_module_imports_without_pyobjc_at_module_level() -> None:
 def test_nx_keytype_table_covers_every_media_key() -> None:
     """미디어 키(시스템 정의 이벤트)만 이 표에 있어야 한다.
 
-    F11(SHOW_DESKTOP)은 표준 키보드 이벤트로 보내므로 이 표에 없는 것이 정상이다 —
-    미디어 키 경로로 F11을 보내면 OS가 인식하지 않는다.
+    F11(SHOW_DESKTOP)과 Mission Control(Ctrl+↑)은 표준 키보드 이벤트로 보내므로 이
+    표에 없는 것이 정상이다 — 미디어 키 경로로 보내면 OS가 인식하지 않는다.
     """
     from jarvis.runtime_protocol.adapters.macos import _NX_KEYTYPE
 
-    assert set(_NX_KEYTYPE) == set(InputKey) - {InputKey.SHOW_DESKTOP}
+    assert set(_NX_KEYTYPE) == set(InputKey) - {
+        InputKey.SHOW_DESKTOP,
+        InputKey.MISSION_CONTROL,
+    }
 
 
 def test_nx_keytype_values_are_unique() -> None:
