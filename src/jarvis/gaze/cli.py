@@ -127,6 +127,96 @@ def _run_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_diagnose_composition(args: argparse.Namespace) -> int:
+    from jarvis.gaze.composition_diagnostics import analyze_fixation_sweep, summarize
+    from jarvis.gaze.config import GazeConfig
+
+    config = GazeConfig()
+    print(
+        "한 지점(문제가 되는 물체의 중앙)에서 눈을 떼지 말고 고개만 움직이세요.\n"
+        f"  1) 좌↔우로 천천히 끝까지 (yaw), 2) 상↓하로 천천히 끝까지 (pitch).\n"
+        f"{args.duration_seconds:.0f}초 캡처합니다. 먼저 끝나면 Ctrl+C."
+    )
+    observations = []
+    deadline = time.monotonic() + args.duration_seconds
+    last_printed_ms = -args.interval_ms
+    try:
+        for observation in _observation_stream(Path(args.model), args.camera_index):
+            observations.append(observation)
+            if observation.timestamp_ms - last_printed_ms >= args.interval_ms:
+                last_printed_ms = observation.timestamp_ms
+                mean_x = (
+                    observation.left_iris_relative[0] + observation.right_iris_relative[0]
+                ) / 2.0
+                mean_y = (
+                    observation.left_iris_relative[1] + observation.right_iris_relative[1]
+                ) / 2.0
+                clamp_metric = max(abs(mean_x), abs(mean_y))
+                marker = "  <-- CLAMP" if clamp_metric > config.max_valid_eye_offset else ""
+                remaining = max(0.0, deadline - time.monotonic())
+                print(
+                    f"[{remaining:4.1f}s] head_yaw={observation.head_yaw_deg:+6.1f} "
+                    f"head_pitch={observation.head_pitch_deg:+6.1f} "
+                    f"iris=({mean_x:+.2f}, {mean_y:+.2f}){marker}"
+                )
+            if time.monotonic() >= deadline:
+                break
+    except KeyboardInterrupt:
+        print("캡처를 중단하고 지금까지의 프레임으로 분석합니다.")
+
+    diagnostics = analyze_fixation_sweep(observations, config)
+    if diagnostics.valid_frames < args.minimum_frames:
+        raise RuntimeError(
+            f"Only {diagnostics.valid_frames} valid frames captured; "
+            f"need {args.minimum_frames}."
+        )
+
+    if args.csv_output:
+        csv_path = Path(args.csv_output)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with csv_path.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(
+                [
+                    "timestamp_ms",
+                    "frame_id",
+                    "head_yaw_deg",
+                    "head_pitch_deg",
+                    "head_roll_deg",
+                    "left_iris_x",
+                    "left_iris_y",
+                    "right_iris_x",
+                    "right_iris_y",
+                    "eyes_open",
+                    "face_detected",
+                    "tracking_confidence",
+                ]
+            )
+            for item in observations:
+                writer.writerow(
+                    [
+                        item.timestamp_ms,
+                        item.frame_id,
+                        item.head_yaw_deg,
+                        item.head_pitch_deg,
+                        item.head_roll_deg,
+                        item.left_iris_relative[0],
+                        item.left_iris_relative[1],
+                        item.right_iris_relative[0],
+                        item.right_iris_relative[1],
+                        item.eyes_open,
+                        item.face_detected,
+                        min(item.eye_tracking_confidence, item.face_tracking_confidence),
+                    ]
+                )
+        print(f"frames written to {csv_path}")
+
+    print(json.dumps(asdict(diagnostics), indent=2, ensure_ascii=False))
+    for line in summarize(diagnostics):
+        print(f"- {line}")
+    return 0
+
+
 def _run_evaluate(args: argparse.Namespace) -> int:
     frames = _load_labeled_csv(Path(args.input))
     result = compute_target_selection_accuracy(frames, args.dataset_id, args.conditions)
@@ -156,6 +246,18 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--camera-index", type=int, default=0)
     inspect.add_argument("--interval-ms", type=int, default=250)
     inspect.set_defaults(handler=_run_inspect)
+
+    diagnose = subparsers.add_parser(
+        "diagnose-composition",
+        help="fixation sweep: estimate per-user head weights and iris clamp saturation",
+    )
+    diagnose.add_argument("--model", default="models/face_landmarker.task")
+    diagnose.add_argument("--camera-index", type=int, default=0)
+    diagnose.add_argument("--duration-seconds", type=float, default=20.0)
+    diagnose.add_argument("--minimum-frames", type=int, default=60)
+    diagnose.add_argument("--interval-ms", type=int, default=500)
+    diagnose.add_argument("--csv-output", help="optional per-frame CSV dump path")
+    diagnose.set_defaults(handler=_run_diagnose_composition)
 
     evaluate = subparsers.add_parser("evaluate", help="measure Target Selection Accuracy")
     evaluate.add_argument("--input", required=True)
