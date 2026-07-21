@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDockWidget,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -80,6 +81,7 @@ from jarvis.gesture_fusion.model_protocol import (
 from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
 from jarvis.gesture_fusion.pose_state import MIN_FINGER_EXTENSION
 from jarvis.monitoring.camera_worker import CameraWorker
+from jarvis.monitoring.console import ConsoleLog, StderrCapture
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
 from jarvis.monitoring.gesture_probe import (
@@ -1064,6 +1066,29 @@ class MessagePanel(QListWidget):
         self.scrollToBottom()
 
 
+class ConsolePanel(QListWidget):
+    """앱 하단 콘솔 독 — 가로챈 프로세스 stderr(네이티브 로그)를 표시한다.
+
+    터미널로 새던 C++ stderr(MediaPipe clearcut 등)를 여기로 모은다. 시스템 메시지
+    패널(:class:`MessagePanel`)과 분리해, 노이즈가 실제 INFO/WARN을 덮지 않게 한다.
+    """
+
+    def __init__(self, console: ConsoleLog) -> None:
+        super().__init__()
+        self._console = console
+        self.setStyleSheet(
+            "QListWidget{background:#0a0d12; border:none;"
+            " font-family:Consolas,monospace; font-size:11px; color:#8b949e;}"
+        )
+
+    def refresh(self) -> None:
+        self.clear()
+        for line in self._console.recent(200):
+            suffix = f"  (x{line.count})" if line.count > 1 else ""
+            self.addItem(f"{line.text}{suffix}")
+        self.scrollToBottom()
+
+
 class StageCard(QFrame):
     """One pipeline stage's availability card."""
 
@@ -1346,6 +1371,22 @@ class MainWindow(QMainWindow):
         # keyPressEvent에서 "지금 파인튜닝 탭이 보이는가"를 판정하는 데 쓴다(스페이스바
         # 녹화 단축키가 다른 탭에서 실수로 발동하지 않도록).
         self._tabs = tabs
+
+        # 하단 콘솔 독: 터미널로 새던 네이티브 stderr(MediaPipe clearcut 등)를 앱 안에
+        # 모은다. 모든 탭 아래에 걸쳐 항상 보인다. 실제 캡처(fd 2 리다이렉트)는 run()이
+        # start_console_capture()로 시작한다 — __init__에서 하면 테스트의 stderr까지 삼킨다.
+        self._console_log = ConsoleLog()
+        self._console_panel = ConsolePanel(self._console_log)
+        self._stderr_capture: StderrCapture | None = None
+        console_dock = QDockWidget("콘솔 (stderr)", self)
+        console_dock.setObjectName("console_dock")
+        console_dock.setWidget(self._console_panel)
+        console_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        console_dock.setMaximumHeight(160)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, console_dock)
 
         self._log.info("모니터 시작")
         if self._invalidated_personal_targets:
@@ -2213,9 +2254,21 @@ class MainWindow(QMainWindow):
         self._video._show_placeholder("NO CAMERA")
         self._gaze_video._show_placeholder("NO CAMERA")
 
+    def start_console_capture(self) -> None:
+        """프로세스 stderr(fd 2)를 하단 콘솔 독으로 가로챈다. run()이 창을 띄운 뒤 호출한다.
+
+        __init__이 아니라 여기서 하는 이유: __init__은 테스트가 창을 만들 때도 돌아,
+        거기서 fd 2를 리다이렉트하면 pytest의 stderr까지 삼켜버린다.
+        """
+        if self._stderr_capture is not None:
+            return
+        self._stderr_capture = StderrCapture(self._console_log.add)
+        self._stderr_capture.start()
+
     def _on_tick(self) -> None:
         # 인식 스트림은 _on_hand에서 프레임마다(12fps로 솎아) 직접 찍는다 — 여기선 안 건드림.
         self._messages.refresh()
+        self._console_panel.refresh()
         self._latency_panel.refresh()
 
     def keyPressEvent(self, event: object) -> None:  # noqa: N802 - Qt override name
@@ -2244,6 +2297,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt override name
         if self._camera is not None:
             self._camera.stop()
+        # stderr를 원래 콘솔로 복원한다 — 프로세스 종료 후에도 stderr가 깨지지 않게.
+        if self._stderr_capture is not None:
+            self._stderr_capture.stop()
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
@@ -2296,4 +2352,6 @@ def run(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(argv or [])
     window = MainWindow()
     window.show()
+    # 창을 띄운 뒤 stderr 캡처를 켠다 — 이후 네이티브 로그는 터미널이 아니라 하단 콘솔 독으로.
+    window.start_console_capture()
     return int(app.exec())
