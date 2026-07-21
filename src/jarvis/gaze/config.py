@@ -21,6 +21,14 @@ class GazeConfig:
     dwell_time_ms: int = 3000
     """CANDIDATE 상태를 TARGET_LOCKED로 승격하기 전 유지해야 하는 최소 시간."""
 
+    candidate_grace_ms: int = 600
+    """dwell 적립 중 순간 UNKNOWN/저신뢰를 허용하는 유예 시간.
+
+    깜빡임 한 번으로 3초 dwell이 0으로 리셋되면 자연 깜빡임 주기(2~5초)보다
+    dwell이 길어 확정이 영원히 안 된다(2026-07-22 실사용). blink hold(300ms) +
+    recovery(250ms)가 못 덮는 꼬리까지 포함하도록 600ms로 둔다. 유예 구간도
+    dwell 경과 시간에는 포함된다."""
+
     minimum_probability: float = 0.80
     """대상 후보로 인정하거나 Lock을 유지하기 위한 최소 top-1 확률."""
 
@@ -233,6 +241,7 @@ class GazeConfig:
             self.dwell_time_ms < 0
             or self.target_lock_ttl_ms <= 0
             or self.confirmed_unknown_timeout_ms <= 0
+            or self.candidate_grace_ms < 0
         ):
             raise ValueError("Gaze timing thresholds are invalid")
         if self.blink_hold_ms < 0 or self.blink_recovery_hold_ms < 0:

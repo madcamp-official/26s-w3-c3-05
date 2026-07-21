@@ -392,13 +392,11 @@ def _area_details(
     details = [
         AreaProfileDetail(
             device_id=device_id,
-            # classify()의 area 판정과 동일하게 pose 보정된 gaze로 계산한다 —
-            # 그러지 않으면 보정이 켜져도 디버그 패널은 계속 원시 거리를 보여줘
-            # 실동작과 어긋난다.
-            normalized_distance=profile.normalized_distance(
-                *classifier.corrected_gaze_for(device_id, sample),
-                config.registration_max_area_radius_deg,
-            ),
+            # classify()의 area 판정과 동일한 rescue 전용(min) 보정 거리 —
+            # 그러지 않으면 디버그 패널이 실동작과 어긋난다.
+            normalized_distance=classifier.area_distance_and_gaze(
+                device_id, profile, sample
+            )[0],
             tolerance=config.target_match_tolerance,
             is_selected=device_id == selected_target,
             center_yaw=profile.center_yaw,

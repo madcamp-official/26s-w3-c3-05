@@ -153,6 +153,28 @@ def test_correction_recovers_target_at_turned_head_pose() -> None:
     assert neutral.target == GazeConfig().UNKNOWN_TARGET
 
 
+def test_correction_never_pushes_raw_in_gaze_out() -> None:
+    """rescue 전용(min) 정책: 원시 gaze가 이미 area 안이면, 학습된 오프셋이
+    세션 간 요동으로 어긋나 있어도 절대 밖으로 밀어내지 않는다(2026-07-22
+    실사용 회귀 사례 — head +16.7도에서 정타가 보정 때문에 OUT)."""
+    harmful = TargetPoseCorrection(
+        points=(
+            PoseCorrectionPoint(0.0, 0.0, 0.0, 8),
+            PoseCorrectionPoint(17.0, 4.3, 4.2, 8),
+        )
+    )
+    classifier = _area_classifier(harmful)
+    sample = _sample(-1.7, 1.0, head_yaw=16.7)
+    distance, gaze_yaw, gaze_pitch = classifier.area_distance_and_gaze(
+        "monitor", classifier.area_profiles["monitor"], sample
+    )
+    # 원시 gaze가 채택되고(보정 무시), 판정도 그대로 IN이다.
+    assert (gaze_yaw, gaze_pitch) == (-1.7, 1.0)
+    assert distance <= 1.0
+    result = classifier.classify(yaw_pitch_to_direction(-1.7, 1.0), feature_sample=sample)
+    assert result.target == "monitor"
+
+
 def test_targets_without_correction_use_raw_gaze() -> None:
     classifier = _area_classifier(None)
     sample = _sample(-5.0, 9.0, head_yaw=30.0)

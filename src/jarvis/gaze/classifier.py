@@ -237,14 +237,39 @@ class TargetClassifier:
     ) -> tuple[float, float]:
         """이 기기의 pose 보정을 적용한 (gaze yaw, gaze pitch).
 
-        보정이 등록되지 않은 기기는 원시 gaze를 그대로 돌려준다. `classify()`의
-        area 판정과 모니터링 패널이 같은 값을 쓰도록 한 곳에 둔다.
+        보정이 등록되지 않은 기기는 원시 gaze를 그대로 돌려준다.
         """
         correction = self._pose_corrections.get(device_id)
         if correction is None:
             return sample.gaze_yaw, sample.gaze_pitch
         offset_yaw, offset_pitch = correction.offset_for(sample.head_yaw)
         return sample.gaze_yaw - offset_yaw, sample.gaze_pitch - offset_pitch
+
+    def area_distance_and_gaze(
+        self,
+        device_id: str,
+        profile: TargetAreaProfile,
+        sample: TargetFeatureSample,
+    ) -> tuple[float, float, float]:
+        """이 기기 area에 대한 (정규화 거리, gaze yaw, gaze pitch).
+
+        pose 보정은 rescue 전용이다: 원시 gaze와 보정 gaze 중 area 거리가 더
+        작은 쪽을 쓴다(min). 실측(2026-07-22)에서 자세별 편향이 세션·순간에
+        따라 ±4도 이상 요동해, 보정을 양방향으로 적용하면 원시 gaze로는 area
+        안이던 프레임을 밖으로 밀어내는 회귀가 실제로 발생했다. 단방향(min)
+        적용은 보정이 OUT→IN 구조만 할 수 있고 IN→OUT을 만들 수 없음을
+        보장한다. `classify()`의 area 판정과 모니터링 패널이 같은 값을 쓰도록
+        한 곳에 둔다.
+        """
+        max_radius = self._config.registration_max_area_radius_deg
+        raw_distance = profile.normalized_distance(sample.gaze_yaw, sample.gaze_pitch, max_radius)
+        corrected_yaw, corrected_pitch = self.corrected_gaze_for(device_id, sample)
+        if (corrected_yaw, corrected_pitch) == (sample.gaze_yaw, sample.gaze_pitch):
+            return raw_distance, sample.gaze_yaw, sample.gaze_pitch
+        corrected_distance = profile.normalized_distance(corrected_yaw, corrected_pitch, max_radius)
+        if corrected_distance < raw_distance:
+            return corrected_distance, corrected_yaw, corrected_pitch
+        return raw_distance, sample.gaze_yaw, sample.gaze_pitch
 
     def classify(
         self,
@@ -491,14 +516,11 @@ class TargetClassifier:
         # small. The traced area still controls eligibility.
         alignment_radius = self._config.registration_min_spread_deg
         for device_id, profile in self._area_profiles.items():
-            # 등록 1단계에서 배운 자세별 iris 포화 편향을 되돌린 gaze로 area를
-            # 판정한다. 8D Mahalanobis는 원시 샘플 그대로 쓴다 — 그 분포 자체가
-            # 편향이 포함된 원시 프레임으로 학습됐기 때문이다.
-            gaze_yaw, gaze_pitch = self.corrected_gaze_for(device_id, feature_sample)
-            normalized_distance = profile.normalized_distance(
-                gaze_yaw,
-                gaze_pitch,
-                self._config.registration_max_area_radius_deg,
+            # pose 보정은 rescue 전용(min) — area_distance_and_gaze() 참고.
+            # 8D Mahalanobis는 원시 샘플 그대로 쓴다 — 그 분포 자체가 편향이
+            # 포함된 원시 프레임으로 학습됐기 때문이다.
+            normalized_distance, gaze_yaw, gaze_pitch = self.area_distance_and_gaze(
+                device_id, profile, feature_sample
             )
             if normalized_distance > self._config.target_match_tolerance:
                 continue

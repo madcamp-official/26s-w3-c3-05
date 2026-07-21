@@ -290,6 +290,16 @@ head yaw -38°~+45°)으로 확인한 사실:
 기존 등록 target이 보정을 얻으려면 재등록해야 한다. 디버그 패널의 area 거리도
 같은 보정 거리를 쓴다.
 
+**보정은 rescue 전용이다 (2026-07-22 실측).** 재등록 검증에서 자세별 편향이
+세션·순간에 따라 -8°~+4°로 요동해(응시 캡처 두 번은 서로 일치했지만 정지 응시
+실사용과는 부호가 반대), 보정을 양방향으로 적용하면 원시 gaze로는 area 안이던
+프레임을 밖으로 밀어내는 회귀가 실제로 발생했다. 그래서 classifier는 원시
+gaze와 보정 gaze 중 **area 거리가 더 작은 쪽을 채택**한다
+(`TargetClassifier.area_distance_and_gaze`, min 정책) — 보정은 OUT→IN 구조만
+할 수 있고 IN→OUT을 만들 수 없다. |head yaw| > 30° 또는 head pitch > 25°의
+자세는 편향 변동폭이 area 반경(6°)과 같은 규모라 보정으로 구제되지 않는다 —
+데모 배치에서 그 범위의 고개 돌림이 필요 없게 하는 것이 정답이다.
+
 **1단계 데이터는 반드시 중앙 응시 스윕이어야 한다 (2026-07-22 실측).** 첫
 구현은 "테두리를 훑으며 자세를 바꾸는" 기존 1단계 데이터로 오프셋을 배웠는데,
 사람은 보는 방향으로 고개를 돌리므로 bin 중앙값이 센서 편향이 아니라 "그
@@ -309,6 +319,7 @@ head yaw -38°~+45°)으로 확인한 사실:
 | `minimum_probability` | `0.80` | Minimum probability for Gaze Lock candidate/hold. |
 | `minimum_margin` | `0.20` | Minimum top-1 vs top-2 margin for confident lock. |
 | `dwell_time_ms` | `3000` | Same target must remain the confident engine result for three continuous seconds before confirmation. |
+| `candidate_grace_ms` | `600` | Momentary UNKNOWN/low-confidence gaps (blinks) shorter than this do not reset the dwell timer; the gap still counts toward elapsed dwell. |
 | `target_lock_ttl_ms` | `1500` | Gesture-wait/input-stream validity window; replacement candidates do not clear the confirmed target. |
 | `confirmed_unknown_timeout_ms` | `2000` | Release the Gaze confirmed target after two continuous seconds of classifier `UNKNOWN`. |
 | `target_context_tolerance` | `1.35` | Soft scale for normalized 8D Mahalanobis overlap ranking. |
@@ -354,4 +365,5 @@ Profiles saved before `boundary_polygon` existed continue to use the legacy elli
 - Not looking at a target but it is still selected: check duplicate target records, `registration_max_area_radius_deg`, and the saved target profile/area.
 - Blink causes vector spikes: check `blink_hold_ms`, `blink_recovery_hold_ms`, and `iris_jump_threshold`.
 - Vector freezes too much: `iris_jump_threshold` may be too low, or blink-recovery hold may be too aggressive.
-- Target matches at neutral pose but goes `UNKNOWN` when the head turns 20°+ toward it: the target likely has no pose correction (old registration, or phase 1 never reached that head yaw). Re-register with wide head turns during phase 1 and check `pose_correction` in the saved JSON.
+- Target matches at neutral pose but goes `UNKNOWN` when the head turns 20°+ toward it: the target likely has no pose correction (old registration, or phase 1 never reached that head yaw). Re-register with wide head turns during phase 1 and check `pose_correction` in the saved JSON. Beyond ~30° head yaw the bias itself is unstable — fix the demo layout instead.
+- Dwell keeps restarting every few seconds and never confirms: blinking resets the candidate. Check `candidate_grace_ms` (momentary UNKNOWN gaps within it must not reset dwell) and the blink hold settings.
