@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from jarvis.contracts.messages import Command
 from jarvis.runtime_protocol.adapters.base import AdapterStatus
-from jarvis.runtime_protocol.adapters.windows import InputKey, WindowsAdapter
+from jarvis.runtime_protocol.adapters.windows import InputKey, Win32InputSink, WindowsAdapter
 from jarvis.runtime_protocol.protocol.capability import DeviceProfile
 
 _LAPTOP = DeviceProfile(device_id="laptop", adapter="windows", capabilities={})
@@ -127,3 +129,51 @@ def test_window_switch_rejects_invalid_count() -> None:
     result = WindowsAdapter(sink).execute(_command("window_switch", "increment", 0), _LAPTOP)
     assert result.status == AdapterStatus.FAILED
     assert sink.window_switches == []
+
+
+def test_win32_move_cursor_uses_absolute_position_not_relative() -> None:
+    """커서 이동은 현재 좌표+델타의 절대 이동(SetCursorPos)이라 포인터 가속을 우회한다.
+
+    상대 `mouse_event`(MOUSEEVENTF_MOVE)는 Windows 포인터 가속에 왜곡돼 지시한
+    픽셀 델타가 그대로 적용되지 않는다(macOS sink와 감도가 어긋남). 실제 user32
+    호출은 하드웨어 경계라 여기서는 현재 위치를 (500, 300)으로 고정하고, 절대
+    목표가 (현재+델타)로 계산돼 SetCursorPos에 넘어가는지만 검증한다.
+    """
+    sink = Win32InputSink()
+    fake_user32 = MagicMock()
+    sink._user32 = lambda: fake_user32  # type: ignore[method-assign]
+    sink._cursor_position = lambda: (500, 300)  # type: ignore[method-assign]
+
+    sink.move_cursor(30, -12)
+
+    fake_user32.SetCursorPos.assert_called_once_with(530, 288)
+    # 상대 이동(mouse_event)로는 절대 내지 않는다 — 가속 우회가 핵심.
+    fake_user32.mouse_event.assert_not_called()
+
+
+def test_win32_move_cursor_dragging_uses_same_absolute_move() -> None:
+    """드래그 중에도 이동 방식은 같다 — 눌린 버튼 + 이동이면 Windows가 알아서 드래그.
+
+    (macOS는 LeftMouseDragged로 분기하지만 Windows는 버튼 상태가 WM_MOUSEMOVE에
+    실려 별도 분기가 필요 없다.)
+    """
+    sink = Win32InputSink()
+    fake_user32 = MagicMock()
+    sink._user32 = lambda: fake_user32  # type: ignore[method-assign]
+    sink._cursor_position = lambda: (100, 100)  # type: ignore[method-assign]
+
+    sink.move_cursor(5, 5, dragging=True)
+
+    fake_user32.SetCursorPos.assert_called_once_with(105, 105)
+
+
+def test_win32_move_cursor_skips_when_position_unavailable() -> None:
+    """GetCursorPos가 실패하면(위치 None) 조용히 넘긴다 — 잘못된 좌표로 튀지 않는다."""
+    sink = Win32InputSink()
+    fake_user32 = MagicMock()
+    sink._user32 = lambda: fake_user32  # type: ignore[method-assign]
+    sink._cursor_position = lambda: None  # type: ignore[method-assign]
+
+    sink.move_cursor(10, 10)
+
+    fake_user32.SetCursorPos.assert_not_called()
