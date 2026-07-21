@@ -165,6 +165,20 @@ class HandSnapshot:
     # 통과한 자세이고(순간적인 전이는 여기 오지 않는다), 이벤트는 실행 대상이다.
     pose_state: str = ""
     pose_events: tuple[PoseEvent, ...] = ()
+    # 이번 프레임에 MediaPipe가 검출한 **모든 손**의 image-space bounding box
+    # (x_min, y_min, x_max, y_max) [0,1]. 디버깅 뷰가 인식된 손 전부를 사각형으로
+    # 그린다 — 제어권을 가진(가장 큰) 손만 landmark 스켈레톤까지 그려지는 것과 달리,
+    # 여기엔 버려지는 손도 포함돼 "무엇이 인식됐고 그중 무엇이 선택됐는지"를 드러낸다.
+    hand_boxes: tuple[tuple[float, float, float, float], ...] = ()
+    # ``hand_boxes`` 안에서 제어권을 가진 손(가장 큰 손)의 인덱스. 손이 없으면 -1.
+    primary_box_index: int = -1
+
+
+def _landmark_bbox(landmarks: object) -> tuple[float, float, float, float]:
+    """손 랜드마크 리스트의 image-space bounding box (x_min, y_min, x_max, y_max)."""
+    xs = [lm.x for lm in landmarks]
+    ys = [lm.y for lm in landmarks]
+    return (min(xs), min(ys), max(xs), max(ys))
 
 
 def _gesture_recognition_status() -> str:
@@ -343,6 +357,9 @@ class HandProbe:
             return self._lost(timestamp_ms, frame_id, inference_ms)
 
         best_index = select_largest_hand_index(result.hand_landmarks)
+        # 검출된 모든 손의 image-space bbox — 디버깅 뷰가 인식된 손 전부를 사각형으로
+        # 그린다(제어권은 best_index 하나). 좌표는 정규화 image space [0,1] 그대로 둔다.
+        hand_boxes = tuple(_landmark_bbox(lms) for lms in result.hand_landmarks)
         landmarks = result.hand_landmarks[best_index]
         # z(깊이)는 단안 웹캠 추정값이라 노이즈가 커 모델은 x·y만 쓴다(config.LANDMARK_DIMS).
         # z까지 담은 3D 배열을 만들되 모델 경로에 넘기는 ``points``는 앞 2열 슬라이스로
@@ -417,6 +434,8 @@ class HandProbe:
             pose=pose,
             pose_state=self._pose_state.state,
             pose_events=tuple(events),
+            hand_boxes=hand_boxes,
+            primary_box_index=best_index,
         )
 
     def _smooth_image_points(

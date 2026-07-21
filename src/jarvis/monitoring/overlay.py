@@ -385,6 +385,22 @@ def draw_hand_overlay(
     if not snapshot.hand_detected or snapshot.image_points is None:
         return frame
     h, w = frame.shape[:2]
+    # 인식된 모든 손을 사각형으로 그린다 — 제어권을 가진(가장 큰) 손은 초록 강조에
+    # "CTRL" 라벨을, 나머지 후보 손은 노랑으로. 랜드마크 스켈레톤은 제어 손에만
+    # 그려지므로(아래), 이 사각형이 "무엇이 인식됐고 그중 무엇이 선택됐는지"를 드러낸다.
+    for i, (bx0, by0, bx1, by1) in enumerate(snapshot.hand_boxes):
+        if mirror:
+            bx0, bx1 = 1.0 - bx1, 1.0 - bx0
+        p0 = (int(bx0 * w), int(by0 * h))
+        p1 = (int(bx1 * w), int(by1 * h))
+        primary = i == snapshot.primary_box_index
+        # 제어 손은 초록, 후보 손은 마젠타(BGR) — 손별 스켈레톤 색(파랑/주황)과 겹치지
+        # 않아 박스와 스켈레톤을 눈으로 구분하기 쉽다.
+        box_color = (80, 220, 120) if primary else (220, 40, 220)
+        cv2.rectangle(frame, p0, p1, box_color, 2, cv2.LINE_AA)
+        if primary:
+            cv2.putText(frame, "CTRL", (p0[0], max(p0[1] - 6, 12)),
+                        _FONT, 0.5, box_color, 1, cv2.LINE_AA)
     # blue for Right, orange for Left (BGR); grey if handedness unknown
     color = {"Right": (230, 180, 60), "Left": (60, 150, 230)}.get(
         snapshot.handedness, (170, 170, 170)

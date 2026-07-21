@@ -26,14 +26,15 @@ class GestureConfig:
     """
 
     # --- Landmark 소스 (README 8장 "MediaPipe Hand Landmark") ---
-    num_hands: int = 2
+    num_hands: int = 4
     """동시에 검출할 최대 손 개수(검출 슬롯 상한).
 
     주 조작 손은 이 중 bounding-box가 가장 큰(카메라에 가까운) 손 하나를
     landmarks.select_largest_hand_index로 고른다. 새로 등장한 더 큰 손으로
     전환되려면 슬롯이 최소 2개는 열려 있어야 한다 — 1이면 MediaPipe가 기존 손을
-    트래킹 관성으로 붙잡아 새 손이 검출조차 안 된다. 화면에 손이 더 많을 수 있는
-    환경이면 이 값을 올린다(손마다 landmark 추론이 돌아 프레임당 연산량은 는다)."""
+    트래킹 관성으로 붙잡아 새 손이 검출조차 안 된다. 값이 클수록 화면의 더 많은 손을
+    후보로 잡지만, MediaPipe는 검출된 손마다 landmark 추론을 돌려 전부 반환하므로
+    (가장 큰 것만 추출하지 않는다) 실제 손이 많을수록 프레임당 연산량이 는다."""
 
     min_hand_detection_confidence: float = 0.5
     """이 값 미만의 검출 신뢰도는 손 없음(추적 손실)으로 취급한다."""
