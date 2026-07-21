@@ -57,7 +57,9 @@ RELEASE_FRAMES = 3
 # 핀치를 이보다 오래 쥐고 있으면 클릭이 아니라 드래그로 본다.
 CLICK_MAX_MS = 400
 # 직전 클릭과 이 간격 안에 다음 클릭이 나오면 더블클릭으로 승격한다(마우스와 동일 UX).
-DOUBLE_CLICK_MS = 400
+# 간격은 두 핀치의 **진입** 시각으로 잰다(_leave 확정 간격이 아니라) — dwell·release
+# 확정 지연을 예산에서 빼야 사용자가 체감하는 간격과 맞는다.
+DOUBLE_CLICK_MS = 600
 # `fist → open_palm` 전이로 인정하는 최대 간격. 중간의 `none` 구간을 건너뛴다.
 TRANSITION_WINDOW_MS = 800
 # 스크롤 방향을 인정할 최소 수직성(|dy| / 길이). 손가락이 옆을 가리키면 위아래를
@@ -146,8 +148,9 @@ class PoseStateMachine:
     # `none`이 덮어쓰지 않는 "마지막 명령 자세" — 전이 판정이 빈 구간을 건너뛴다.
     _last_pose: str = ""
     _last_pose_end: int = 0
-    # 직전에 확정된 클릭 시각 — 다음 클릭이 double_click_ms 안이면 더블클릭으로 승격한다.
-    # 첫 클릭이 오인되지 않도록 "아주 오래전"으로 시작한다(0은 작은 timestamp에서 위험).
+    # 직전 클릭의 pinch **진입** 시각 — 다음 클릭의 진입이 double_click_ms 안이면
+    # 더블클릭으로 승격한다. 확정(_leave)이 아니라 진입 기준이라 dwell·release 지연이
+    # 예산에 들어가지 않는다. 첫 클릭이 오인되지 않도록 "아주 오래전"으로 시작한다.
     _last_click_ms: int = -1_000_000
     _dragging: bool = False
     # 커서 이동 참조점(이미지 좌표)과 시각 — 델타 계산용. 상태 진입 때 초기화한다.
@@ -284,14 +287,15 @@ class PoseStateMachine:
             if self._dragging:
                 events.append(PoseEvent("drag_end", timestamp_ms))
             elif held <= self.click_max_ms:
-                # 직전 클릭과 간격이 짧으면 더블클릭으로 승격한다. 첫 클릭은 이미
-                # 나갔지만(마우스와 동일) 두 번째를 double_click으로 낸다.
-                if timestamp_ms - self._last_click_ms <= self.double_click_ms:
+                # 더블클릭 간격은 두 핀치의 **진입** 시각(_state_since)으로 잰다 —
+                # dwell·release 확정 지연을 예산에서 빼야 체감 간격과 맞는다. 첫 클릭은
+                # 이미 나갔지만(마우스와 동일) 두 번째를 double_click으로 낸다.
+                if self._state_since - self._last_click_ms <= self.double_click_ms:
                     events.append(PoseEvent("double_click", timestamp_ms))
                     self._last_click_ms = -1_000_000  # 3연속 핀치가 또 더블클릭 되지 않게 초기화
                 else:
                     events.append(PoseEvent("click", timestamp_ms))
-                    self._last_click_ms = timestamp_ms
+                    self._last_click_ms = self._state_since  # 이번 클릭의 진입 시각 기록
         elif self.state == "pinch_middle" and held <= self.click_max_ms:
             events.append(PoseEvent("right_click", timestamp_ms))
         if self.state:
