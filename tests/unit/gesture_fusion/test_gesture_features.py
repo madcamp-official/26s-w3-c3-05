@@ -14,13 +14,16 @@ import pytest
 
 from jarvis.gesture_fusion.config import (
     HAND_LANDMARK_COUNT,
+    INDEX_FINGER_MCP,
     JOINT_ANGLE_TRIPLETS,
     LANDMARK_DIMS,
+    PINKY_MCP,
     GestureConfig,
 )
 from jarvis.gesture_fusion.features import (
     HandFeatureExtractor,
     compute_joint_angles,
+    compute_signed_palm_area,
     feature_dimension,
 )
 from jarvis.gesture_fusion.landmarks import HandObservation
@@ -173,6 +176,7 @@ def test_disabling_groups_shrinks_vector() -> None:
         include_joint_angles=True,
         include_velocity=False,
         include_wrist_translation=False,
+        include_palm_orientation=False,
     )
     assert feature_dimension(config) == _POSITION_DIMS + len(JOINT_ANGLE_TRIPLETS)
     extractor = HandFeatureExtractor(config)
@@ -186,6 +190,7 @@ def test_angles_only_config() -> None:
         include_joint_angles=True,
         include_velocity=False,
         include_wrist_translation=False,
+        include_palm_orientation=False,
     )
     assert feature_dimension(config) == len(JOINT_ANGLE_TRIPLETS)
 
@@ -259,13 +264,81 @@ def test_smoothing_resets_on_tracking_loss() -> None:
 _WRIST_DIMS = LANDMARK_DIMS
 
 
+# 손바닥 방향 그룹(부호 면적 + 변화율)은 기본 off이므로, 기본 구성에서 손목 그룹이
+# 벡터 맨 뒤에 온다. palm을 켠 테스트는 _palm_orientation_block으로 따로 읽는다.
+_PALM_ORIENTATION_DIMS = 2
+
+
 def _wrist_velocity_block(features: object) -> np.ndarray:
-    # 손목 그룹은 벡터 맨 뒤에 속도(2)+가속도(2) 순으로 붙는다.
+    # 손목 그룹은 벡터 맨 뒤에 속도(2)+가속도(2) 순으로 붙는다(palm 기본 off).
     return features.vector[-2 * _WRIST_DIMS:][:_WRIST_DIMS]  # type: ignore[attr-defined]
 
 
 def _wrist_acceleration_block(features: object) -> np.ndarray:
     return features.vector[-2 * _WRIST_DIMS:][_WRIST_DIMS:]  # type: ignore[attr-defined]
+
+
+# --- 손바닥 방향(부호 면적) — 회전 방향 신호 ---
+
+
+def _palm_orientation_block(features: object) -> np.ndarray:
+    return features.vector[-_PALM_ORIENTATION_DIMS:]  # type: ignore[attr-defined]
+
+
+def _palm(area_sign: float) -> np.ndarray:
+    """부호 있는 손바닥 면적의 부호가 `area_sign`이 되도록 만든 손 모양.
+
+    부호 면적 = 0.5 * cross(검지MCP-손목, 소지MCP-손목). y를 뒤집으면 부호가 반전된다.
+    """
+    lm = _zeros()
+    lm[INDEX_FINGER_MCP] = [1.0, area_sign * 1.0]
+    lm[PINKY_MCP] = [-1.0, area_sign * 1.0]
+    return lm
+
+
+def test_palm_orientation_adds_two_dims() -> None:
+    without = GestureConfig(include_palm_orientation=False)
+    with_palm = GestureConfig(include_palm_orientation=True)
+    assert feature_dimension(with_palm) - feature_dimension(without) == _PALM_ORIENTATION_DIMS
+
+
+def test_palm_orientation_is_off_by_default() -> None:
+    # A/B 학습에서 회전 판별 개선이 없어 기본 off(GestureConfig 문서 참조).
+    assert GestureConfig().include_palm_orientation is False
+
+
+def test_signed_palm_area_flips_sign_with_orientation() -> None:
+    """손바닥/손등이 뒤집히면 부호 면적의 부호도 뒤집혀야 한다(회전 방향의 근거)."""
+    pos = compute_signed_palm_area(_palm(+1.0))
+    neg = compute_signed_palm_area(_palm(-1.0))
+    assert pos * neg < 0.0  # 부호가 반대
+
+
+def test_palm_area_rate_is_causal_per_second_difference() -> None:
+    extractor = HandFeatureExtractor(
+        GestureConfig(smooth_landmarks=False, include_palm_orientation=True)
+    )
+    # 첫 프레임: 변화율 0 (직전 값 없음)
+    first = extractor.push(_obs(_palm(+1.0), timestamp_ms=1000, frame_id=1))
+    assert _palm_orientation_block(first)[1] == pytest.approx(0.0)
+    # 두 번째 프레임: 면적이 뒤집히면 변화율 부호가 회전 방향을 담는다.
+    area0 = compute_signed_palm_area(_palm(+1.0))
+    area1 = compute_signed_palm_area(_palm(-1.0))
+    second = extractor.push(_obs(_palm(-1.0), timestamp_ms=1100, frame_id=2))
+    block = _palm_orientation_block(second)
+    assert block[0] == pytest.approx(area1)
+    assert block[1] == pytest.approx((area1 - area0) / 0.1)
+
+
+def test_palm_area_rate_resets_on_tracking_loss() -> None:
+    extractor = HandFeatureExtractor(
+        GestureConfig(smooth_landmarks=False, include_palm_orientation=True)
+    )
+    extractor.push(_obs(_palm(+1.0), timestamp_ms=1000, frame_id=1))
+    extractor.push(_obs(_zeros(), timestamp_ms=1033, frame_id=2, hand_detected=False))
+    # 리셋 후 첫 유효 프레임의 변화율은 허위 점프 대신 0이어야 한다.
+    after = extractor.push(_obs(_palm(-1.0), timestamp_ms=1066, frame_id=3))
+    assert _palm_orientation_block(after)[1] == pytest.approx(0.0)
 
 
 def test_wrist_translation_adds_six_velocity_accel_dims() -> None:

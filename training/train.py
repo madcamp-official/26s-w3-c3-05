@@ -31,7 +31,11 @@ import numpy as np
 from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG, GestureConfig
 from jarvis.gesture_fusion.features import feature_dimension
 from jarvis.gesture_fusion.model import CausalTCN, ModelConfig
-from jarvis.gesture_fusion.model_protocol import DEFAULT_GESTURE_LABELS, ModelMetadata
+from jarvis.gesture_fusion.model_protocol import (
+    BACKGROUND_TIE_TOLERANCE,
+    DEFAULT_GESTURE_LABELS,
+    ModelMetadata,
+)
 from training.config import DEFAULT_TRAINING_CONFIG, TrainingConfig
 from training.dataset import GESTURE_LABEL_TO_INDEX, IGNORE_INDEX, ClipDataset, collate_fn
 from training.losses import GesturePhaseLoss, compute_class_weights
@@ -103,13 +107,17 @@ def _collapsed_predictions(gesture_logits: "torch.Tensor") -> "torch.Tensor":
     `argmax` 후에 배경 index를 0으로 접는 것과는 결과가 다르다 — 그렇게 하면 배경
     표 분산이 그대로 남아, 실제 런타임(`collapse_background_probabilities`)보다
     낙관적이거나 비관적인 엉뚱한 점수가 나온다. 지표는 배포되는 결정 규칙을 재야
-    한다. 동점 시 배경이 이기는 것도 `torch.cat`에서 배경을 앞에 두어 일치시킨다.
+    한다. 동점 시 배경이 이기는 것도 `torch.cat`에서 배경을 앞에 두어 일치시킨다 —
+    다만 배경(합산)과 전경 최댓값(단일)은 다른 부동소수점 경로를 거쳐 나오므로,
+    수학적으로 동점인 경우도 실제로는 미세하게(~1e-7) 어긋난다. `argmax`는 엄격한
+    최댓값만 보므로 그 미세한 잡음에 밀려 "동점이면 배경" 규칙이 발동하지 않는다 —
+    `BACKGROUND_TIE_TOLERANCE`만큼 배경에 여유를 줘 `collapse_background_probabilities`
+    와 같은 실질적 동작을 보장한다.
     """
     probs = torch.softmax(gesture_logits, dim=1)
     background = probs[:, _BACKGROUND_SELECTOR, :].sum(dim=1, keepdim=True)
     foreground = probs[:, _FOREGROUND_SELECTOR, :]
-    collapsed = torch.cat([background, foreground], dim=1)
-    collapsed[:, 0, :] += torch.finfo(collapsed.dtype).eps * 8
+    collapsed = torch.cat([background + BACKGROUND_TIE_TOLERANCE, foreground], dim=1)
     return collapsed.argmax(dim=1)
 
 
@@ -270,10 +278,21 @@ def train(
         mean, std = _compute_input_stats(train_dataset)
         net.set_input_normalization(mean.to(device), std.to(device))
 
+    # 클립 수가 아니라 **유효 프레임 수**로 센다 — cross-entropy가 프레임마다 걸리므로
+    # 클립 수로 세면 클립당 유효 프레임 수의 클래스별 편차가 그대로 가중치 왜곡이 된다
+    # (2026-07-20 수정, `ClipDataset.valid_frames_per_label` 참조).
     class_weights = compute_class_weights(
-        [GESTURE_LABEL_TO_INDEX[label] for label in train_dataset.gesture_labels()],
+        {
+            GESTURE_LABEL_TO_INDEX[label]: frames
+            for label, frames in train_dataset.valid_frames_per_label().items()
+        },
         num_classes=_NUM_GESTURE_CLASSES,
-    ).to(device)
+    )
+    # 배경이 여러 클래스로 나뉜 데서 따라온 암묵적 강조를 명시적 파라미터로 드러낸다
+    # (TrainingConfig.background_class_weight_scale 문서 참조). 기본 1.0은 무보정.
+    if training_config.background_class_weight_scale != 1.0:
+        class_weights[_BACKGROUND_SELECTOR] *= training_config.background_class_weight_scale
+    class_weights = class_weights.to(device)
     loss_fn = GesturePhaseLoss(class_weights, phase_loss_weight=training_config.phase_loss_weight).to(device)
 
     train_loader = DataLoader(

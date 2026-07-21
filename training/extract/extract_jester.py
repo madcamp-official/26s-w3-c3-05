@@ -38,12 +38,22 @@ import cv2
 
 from jarvis.gesture_fusion.landmarks import HandObservation
 from jarvis.gesture_fusion.mediapipe_hands import MediaPipeHandLandmarker
+from jarvis.gesture_fusion.model_protocol import DEFAULT_GESTURE_LABELS
 from training.config import DEFAULT_TRAINING_CONFIG
 from training.data.clip_cache import observations_to_cached_clip, save_clip
 from training.data.jester_manifest import JesterClipRef, Split, build_manifest
 
 _FPS = 12.0  # Jester는 12fps로 추출된 프레임 시퀀스다(공식 문서).
 _FRAME_INTERVAL_MS = 1000.0 / _FPS
+
+# 미검출 비율 제한(`max_missing_frame_fraction`)을 적용하지 않는 라벨들. 둘 다
+# "정의된 손동작이 없는" 카테고리라 애초에 손이 화면에 없거나 안 보이는 프레임이
+# 구조적으로 많다 — 다른 클래스와 같은 기준을 적용하면 클래스 자체가 거의 사라진다
+# (2026-07-20 실측: "none"은 validation 533개 중 17개=3.2%, "doing_other_things"는
+# train 9592개 중 4454개=46.4%만 생존). `drumming_fingers`처럼 정의된 정적 손
+# 모양은 손이 계속 보여야 정상이므로 포함하지 않는다 — 미검출이 많다면 그건 진짜
+# 추출 실패다.
+_MISSING_FRAME_LIMIT_EXEMPT_LABELS = frozenset({DEFAULT_GESTURE_LABELS[0], "doing_other_things"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +83,15 @@ def _extract_clip(
     다른 문제) 그 시점에서 클립 전체를 제외한다 — 검출 실패와 달리 이후 프레임을
     이어 읽을 신뢰할 수 있는 근거가 없다. 손 미검출은 다르다: 클립 끝까지 계속
     처리하고, 미검출 비율이 `max_missing_frame_fraction`을 넘을 때만 제외한다.
+
+    **`_MISSING_FRAME_LIMIT_EXEMPT_LABELS`(`none`·`doing_other_things`) 클립은 이
+    미검출 비율 제한을 적용하지 않는다.** 둘 다 정의상 손이 화면에 없거나 정의된
+    동작을 안 하는 장면이 많아 MediaPipe 검출 실패율이 다른 클래스보다 구조적으로
+    높다(2026-07-20 실측: 이 필터로 `none`은 validation 533개 중 17개=3.2%,
+    `doing_other_things`는 train 9592개 중 4454개=46.4%만 생존 — 다른 클래스는
+    25~75% 생존). 미검출 프레임은 다른 클립과 동일하게 `hand_detected=False`로
+    캐시에 남아, 학습 시 `dataset.py`의 IGNORE_INDEX 마스킹이 그대로 적용된다 —
+    배제하지 않고 신호 그대로 남길 뿐이다.
     """
     frame_files = _list_frame_files(ref.frames_dir)
     if not frame_files:
@@ -92,7 +111,10 @@ def _extract_clip(
         observations.append(observation)
 
     missing = sum(1 for o in observations if not o.hand_detected)
-    if missing / len(observations) > max_missing_frame_fraction:
+    if (
+        ref.our_label not in _MISSING_FRAME_LIMIT_EXEMPT_LABELS
+        and missing / len(observations) > max_missing_frame_fraction
+    ):
         result = ExtractionResult(
             ref.clip_id, ref.split, "too_many_missed_frames", len(frame_files), missing
         )

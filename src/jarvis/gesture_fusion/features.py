@@ -23,6 +23,7 @@ feature 벡터의 구성(위치·관절각·속도)과 각 그룹의 on/off는 G
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -31,8 +32,11 @@ import numpy.typing as npt
 from jarvis.gesture_fusion.config import (
     DEFAULT_GESTURE_CONFIG,
     HAND_LANDMARK_COUNT,
+    INDEX_FINGER_MCP,
     JOINT_ANGLE_TRIPLETS,
     LANDMARK_DIMS,
+    PINKY_MCP,
+    WRIST,
     GestureConfig,
 )
 from jarvis.gesture_fusion.landmarks import HandObservation
@@ -65,6 +69,19 @@ def compute_joint_angles(
         cos = float(np.dot(v1, v2) / (n1 * n2))
         angles[i] = math.acos(max(-1.0, min(1.0, cos)))
     return angles
+
+
+def compute_signed_palm_area(landmarks: FloatArray) -> float:
+    """손목·검지MCP·소지MCP 삼각형의 부호 있는 면적(2D 외적의 절반).
+
+    부호는 손바닥/손등 중 어느 쪽이 카메라를 향하는지에 따라 뒤집힌다 — 팔뚝축
+    회전의 방향을 2D 투영만으로 담는 관측량이다(GestureConfig.include_palm_orientation
+    참조). 랜드마크는 이미 손목 원점화·palm_scale 정규화된 좌표라 이 면적도 손
+    크기·화면 위치에 독립이다.
+    """
+    a = landmarks[INDEX_FINGER_MCP] - landmarks[WRIST]
+    b = landmarks[PINKY_MCP] - landmarks[WRIST]
+    return 0.5 * float(a[0] * b[1] - a[1] * b[0])
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +118,8 @@ def feature_dimension(config: GestureConfig = DEFAULT_GESTURE_CONFIG) -> int:
         dims += _POSITION_DIMS
     if config.include_wrist_translation:
         dims += 2 * _WRIST_DIMS  # 손목 평행이동 속도 + 가속도
+    if config.include_palm_orientation:
+        dims += 2  # 손바닥 부호 면적 + 그 변화율(회전 방향 신호)
     return dims
 
 
@@ -119,6 +138,17 @@ class HandFeatureExtractor:
         self._dimension = feature_dimension(config)
         self._prev_landmarks: FloatArray | None = None
         self._prev_timestamp_ms: int | None = None
+        # 프레임 간 단순 차분(2프레임)의 잡음을 줄이기 위한 causal 이동평균 버퍼
+        # (2026-07-20 실험, GestureConfig.velocity_smoothing_window 문서 참조).
+        # window=1이면 버퍼를 안 써서 기존 두 프레임 차분과 완전히 동일하다.
+        self._velocity_history: deque[FloatArray] | None = (
+            deque(maxlen=config.velocity_smoothing_window)
+            if config.velocity_smoothing_window > 1
+            else None
+        )
+        # 손바닥 부호 면적의 직전 값 — 회전 방향 신호의 causal 차분용
+        # (include_palm_orientation, 다른 차분 신호와 같은 dt·리셋 규칙을 따른다).
+        self._prev_palm_area: float | None = None
         # Wrist translation history — differenced with the SAME dt as the landmark
         # features so wrist velocity/acceleration share their timing and reset rules.
         self._prev_wrist_position: FloatArray | None = None
@@ -209,6 +239,9 @@ class HandFeatureExtractor:
         """속도 history와 평활화 상태를 비운다(추적 손실·시퀀스 경계에서 호출)."""
         self._prev_landmarks = None
         self._prev_timestamp_ms = None
+        if self._velocity_history is not None:
+            self._velocity_history.clear()
+        self._prev_palm_area = None
         self._prev_wrist_position = None
         self._prev_wrist_velocity = None
         self._last_landmarks = None
@@ -239,6 +272,12 @@ class HandFeatureExtractor:
         else:
             dt_s = dt_ms / 1000.0
             velocity = (flat - self._prev_landmarks) / dt_s
+        if self._velocity_history is not None:
+            # 두 프레임 차분 자체가 잡음이 커서(특히 수직 이동, GestureConfig
+            # 문서 참조) 그 인스턴트 속도를 그대로 emit하지 않고, causal window
+            # 평균을 낸다 — 미래 프레임은 안 본다.
+            self._velocity_history.append(velocity)
+            velocity = np.mean(self._velocity_history, axis=0)
 
         # 손목 평행이동도 같은 dt로 causal 차분한다. 미분 전에 (설정 시) 평활화해
         # palm_scale·손목 점의 지터가 속도로 증폭되지 않게 한다 — 랜드마크와 동일 규칙.
@@ -270,9 +309,22 @@ class HandFeatureExtractor:
             dt_s = dt_ms / 1000.0
             wrist_acceleration = (wrist_velocity - self._prev_wrist_velocity) / dt_s
 
-        vector = self._assemble(landmarks, velocity, wrist_velocity, wrist_acceleration)
+        # 손바닥 부호 면적과 그 causal 변화율(회전 방향 신호). 평활화된 landmarks에서
+        # 재므로 다른 feature와 같은 좌표를 본다. 변화율은 다른 차분과 같은 dt·리셋
+        # 규칙을 따른다 — 리셋 직후 첫 프레임의 변화율은 0.
+        palm_area = compute_signed_palm_area(landmarks)
+        if dt_ms is None or self._prev_palm_area is None:
+            palm_area_rate = 0.0
+        else:
+            palm_area_rate = (palm_area - self._prev_palm_area) / (dt_ms / 1000.0)
+        palm_orientation = np.array([palm_area, palm_area_rate], dtype=np.float64)
+
+        vector = self._assemble(
+            landmarks, velocity, wrist_velocity, wrist_acceleration, palm_orientation
+        )
 
         self._prev_landmarks = flat
+        self._prev_palm_area = palm_area
         self._prev_wrist_position = wrist_position
         self._prev_wrist_velocity = wrist_velocity
         self._prev_timestamp_ms = observation.timestamp_ms
@@ -305,6 +357,7 @@ class HandFeatureExtractor:
         velocity: FloatArray,
         wrist_velocity: FloatArray,
         wrist_acceleration: FloatArray,
+        palm_orientation: FloatArray,
     ) -> FloatArray:
         parts: list[FloatArray] = []
         if self._config.include_positions:
@@ -318,6 +371,10 @@ class HandFeatureExtractor:
         if self._config.include_wrist_translation:
             parts.append(wrist_velocity)
             parts.append(wrist_acceleration)
+        # 손바닥 방향 그룹도 항상 맨 뒤에 추가한다(부호 면적 → 변화율 순) — 같은 이유로
+        # 앞 그룹들의 오프셋을 보존한다.
+        if self._config.include_palm_orientation:
+            parts.append(palm_orientation)
         return np.concatenate(parts).astype(np.float64, copy=False)
 
     def _empty_features(self, observation: HandObservation) -> FrameFeatures:

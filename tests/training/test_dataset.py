@@ -23,6 +23,7 @@ from training.data.clip_cache import observations_to_cached_clip, save_clip  # n
 from training.dataset import (  # noqa: E402
     GESTURE_LABEL_TO_INDEX,
     IGNORE_INDEX,
+    NO_SIGNAL_LABEL,
     PHASE_TO_INDEX,
     ClipDataset,
     assemble_features,
@@ -126,6 +127,51 @@ def test_getitem_masks_missing_frames_with_ignore_index(tmp_path: Path) -> None:
     assert torch.all(phase_target[3:6] == IGNORE_INDEX)
     assert torch.all(gesture_target[:3] != IGNORE_INDEX)
     assert torch.all(gesture_target[6:] != IGNORE_INDEX)
+
+
+def test_getitem_keeps_missing_frames_for_no_signal_label(tmp_path: Path) -> None:
+    """`none`은 미검출 프레임도 학습에 남긴다 — 그게 이 클래스의 정답 신호다.
+
+    2026-07-20 발견: 다른 클래스와 똑같이 마스킹하면 `none` 클립의 89.3%(손이 한
+    프레임도 안 잡힘)가 통째로 loss 기여 0이 되어 — 유효 프레임이 전체의 4.4%뿐 —
+    클래스가 사실상 학습되지 않는다.
+    """
+    observations = [_observation(i, 1000 + i * 33) for i in range(10)]
+    clip = observations_to_cached_clip(observations, NO_SIGNAL_LABEL, "clip-none")
+    clip = replace(clip, hand_detected=np.zeros(10, dtype=np.bool_))  # 전 프레임 미검출
+    save_clip(tmp_path / "clip-none.npz", clip)
+
+    dataset = ClipDataset(tmp_path, augment=False)
+    _, gesture_target, phase_target = dataset[0]
+
+    assert torch.all(gesture_target == GESTURE_LABEL_TO_INDEX[NO_SIGNAL_LABEL])
+    assert torch.all(phase_target != IGNORE_INDEX)
+
+
+def test_valid_frames_per_label_counts_loss_contributing_frames(tmp_path: Path) -> None:
+    """가중치 계산용 집계는 `__getitem__`의 마스킹 규칙과 정확히 같아야 한다.
+
+    2026-07-20 발견: 클립 수로 세면 클립당 유효 프레임 수의 클래스별 편차가 그대로
+    가중치 왜곡이 된다(실측 loss 비중 0.87%~15.15%, 의도는 각 11.1%).
+    """
+    # 제스처 클립: 10프레임 중 4개 미검출 → 유효 6
+    observations = [_observation(i, 1000 + i * 33) for i in range(10)]
+    gesture_clip = observations_to_cached_clip(observations, "rotate_clockwise", "clip-gesture")
+    hand_detected = gesture_clip.hand_detected.copy()
+    hand_detected[:4] = False
+    save_clip(tmp_path / "clip-gesture.npz", replace(gesture_clip, hand_detected=hand_detected))
+
+    # none 클립: 10프레임 전부 미검출 → 유효 10 (마스킹 예외)
+    none_clip = observations_to_cached_clip(observations, NO_SIGNAL_LABEL, "clip-none")
+    save_clip(
+        tmp_path / "clip-none.npz",
+        replace(none_clip, hand_detected=np.zeros(10, dtype=np.bool_)),
+    )
+
+    counts = ClipDataset(tmp_path, augment=False).valid_frames_per_label()
+
+    assert counts["rotate_clockwise"] == 6
+    assert counts[NO_SIGNAL_LABEL] == 10
 
 
 def test_collate_fn_pads_variable_length_clips_with_ignore_index() -> None:
