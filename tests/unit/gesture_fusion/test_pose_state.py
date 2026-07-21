@@ -28,10 +28,18 @@ def _pose(label: str, *, trusted: bool = True) -> PosePrediction:
 
 
 def _hand(dx: float, dy: float) -> np.ndarray:
-    """검지·중지가 (dx, dy) 방향을 가리키는 랜드마크."""
+    """검지·중지가 (dx, dy) 방향을 가리키는 랜드마크.
+
+    방향은 (dx, dy)를 따르되, 손가락 길이는 편 손가락에 해당하는 현실적 값(palm_scale
+    정규화 0.7)으로 뻗어 스크롤 폄 게이트(MIN_FINGER_EXTENSION)를 통과하게 한다.
+    """
+    d = np.array([dx, dy], dtype=np.float64)
+    norm = float(np.linalg.norm(d))
+    unit = d / norm if norm > 0 else d
+    tip = unit * 0.7  # 편 손가락 길이(palm 단위)
     points = np.zeros((21, 2), dtype=np.float64)
-    points[5], points[9] = [0.0, 0.0], [0.1, 0.0]          # MCP
-    points[8], points[12] = [dx, dy], [0.1 + dx, dy]        # 끝
+    points[5], points[9] = [0.0, 0.0], [0.1, 0.0]              # MCP
+    points[8], points[12] = tip, np.array([0.1, 0.0]) + tip     # 끝
     return points
 
 
