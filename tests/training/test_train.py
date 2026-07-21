@@ -6,11 +6,97 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+
+import numpy as np
 import pytest
 
 pytest.importorskip("torch")
 
-from training.train import train  # noqa: E402
+from jarvis.gesture_fusion.config import (  # noqa: E402
+    DEFAULT_GESTURE_CONFIG,
+    HAND_LANDMARK_COUNT,
+    LANDMARK_DIMS,
+)
+from jarvis.gesture_fusion.landmarks import HandObservation  # noqa: E402
+from training.config import DEFAULT_TRAINING_CONFIG  # noqa: E402
+from training.data.clip_cache import observations_to_cached_clip, save_clip  # noqa: E402
+from training.train import _resolve_datasets, train  # noqa: E402
+
+
+def _write_webcam_clip(cache_dir: Path, person: str, label: str, idx: int) -> None:
+    obs = [
+        HandObservation(
+            timestamp_ms=1000 + i * 33,
+            frame_id=i,
+            landmarks=np.zeros((HAND_LANDMARK_COUNT, LANDMARK_DIMS), dtype=np.float64),
+            handedness="Right",
+            palm_scale=0.2,
+            detection_confidence=0.9,
+            handedness_score=0.9,
+            hand_detected=True,
+            wrist_position=np.zeros(LANDMARK_DIMS, dtype=np.float64),
+        )
+        for i in range(6)
+    ]
+    out = cache_dir / "webcam" / person
+    out.mkdir(parents=True, exist_ok=True)
+    save_clip(out / f"{person}-{label}-{idx:03d}.npz", observations_to_cached_clip(obs, label, f"{person}-{label}-{idx}"))
+
+
+def _finetune_config(tmp_path: Path, **overrides: object) -> object:
+    return replace(DEFAULT_TRAINING_CONFIG, cache_dir=tmp_path, **overrides)  # type: ignore[arg-type]
+
+
+def test_finetune_pooled_when_no_persons_given(tmp_path: Path) -> None:
+    """person 인자를 안 주면 pooled — 사람 폴더를 가로질러 클립 단위로 무작위 split."""
+    for p in ("alice", "bob"):
+        for i in range(10):
+            _write_webcam_clip(tmp_path, p, "rotate_clockwise", i)
+    cfg = _finetune_config(tmp_path, webcam_val_fraction=0.2)
+    train_ds, val_ds, dataset_id = _resolve_datasets("finetune", cfg, DEFAULT_GESTURE_CONFIG, None, None)
+    assert "pooled" in dataset_id
+    # 20개 중 20% = 4개 val, 16개 train, 겹치지 않아야 한다.
+    assert len(val_ds) == 4
+    assert len(train_ds) == 16
+    train_names = {p.name for p in train_ds._paths}  # type: ignore[attr-defined]
+    val_names = {p.name for p in val_ds._paths}  # type: ignore[attr-defined]
+    assert not (train_names & val_names)
+
+
+def test_finetune_pooled_split_is_deterministic(tmp_path: Path) -> None:
+    for i in range(10):
+        _write_webcam_clip(tmp_path, "alice", "stop_sign", i)
+    cfg = _finetune_config(tmp_path)
+    _, val_a, _ = _resolve_datasets("finetune", cfg, DEFAULT_GESTURE_CONFIG, None, None)
+    _, val_b, _ = _resolve_datasets("finetune", cfg, DEFAULT_GESTURE_CONFIG, None, None)
+    assert [p.name for p in val_a._paths] == [p.name for p in val_b._paths]  # type: ignore[attr-defined]
+
+
+def test_finetune_person_split_still_works(tmp_path: Path) -> None:
+    for i in range(5):
+        _write_webcam_clip(tmp_path, "alice", "stop_sign", i)
+        _write_webcam_clip(tmp_path, "bob", "stop_sign", i)
+    cfg = _finetune_config(tmp_path)
+    train_ds, val_ds, dataset_id = _resolve_datasets(
+        "finetune", cfg, DEFAULT_GESTURE_CONFIG, ["alice"], ["bob"]
+    )
+    assert "person-split" in dataset_id
+    assert len(train_ds) == 5 and len(val_ds) == 5
+
+
+def test_finetune_person_split_rejects_only_one_side(tmp_path: Path) -> None:
+    _write_webcam_clip(tmp_path, "alice", "stop_sign", 0)
+    cfg = _finetune_config(tmp_path)
+    with pytest.raises(ValueError, match="둘 다 요구"):
+        _resolve_datasets("finetune", cfg, DEFAULT_GESTURE_CONFIG, ["alice"], None)
+
+
+def test_finetune_pooled_empty_webcam_raises(tmp_path: Path) -> None:
+    cfg = _finetune_config(tmp_path)
+    with pytest.raises(ValueError, match="webcam 클립이 없다"):
+        _resolve_datasets("finetune", cfg, DEFAULT_GESTURE_CONFIG, None, None)
 
 
 def test_finetune_without_init_from_raises_before_touching_datasets() -> None:

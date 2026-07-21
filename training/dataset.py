@@ -93,21 +93,35 @@ class ClipDataset(Dataset):  # type: ignore[type-arg]
     같은 캐시 포맷(`clip_cache.CachedClip`)을 쓰므로 이 클래스 하나로 두 단계 모두 처리한다.
     `roots`에 여러 경로를 주면(예: 파인튜닝의 사람 단위 split — 특정 person_id 폴더들만
     골라 train/val을 나눔) 모두 합쳐 하나의 데이터셋으로 다룬다.
+
+    `clip_paths`로 npz 파일 경로 리스트를 직접 주면 glob 대신 그 목록을 그대로 쓴다
+    (pooled 파인튜닝의 **클립 단위 무작위 split**용 — 사람 폴더를 가로질러 개별 클립을
+    train/val로 나눈다, `train.py`의 finetune pooled 모드 참조). `roots`와 `clip_paths`는
+    정확히 하나만 준다.
     """
 
     def __init__(
         self,
-        roots: Path | list[Path],
+        roots: Path | list[Path] | None = None,
         *,
+        clip_paths: list[Path] | None = None,
         gesture_config: GestureConfig = DEFAULT_GESTURE_CONFIG,
         training_config: TrainingConfig = DEFAULT_TRAINING_CONFIG,
         augment: bool = False,
         seed: int = 0,
     ) -> None:
-        root_list = [roots] if isinstance(roots, Path) else list(roots)
-        self._paths = sorted(p for root in root_list for p in root.glob("**/*.npz"))
-        if not self._paths:
-            raise ValueError(f"no cached clips found under {root_list}")
+        if (roots is None) == (clip_paths is None):
+            raise ValueError("provide exactly one of `roots` or `clip_paths`")
+        if clip_paths is not None:
+            self._paths = sorted(clip_paths)
+            if not self._paths:
+                raise ValueError("clip_paths is empty")
+        else:
+            assert roots is not None
+            root_list = [roots] if isinstance(roots, Path) else list(roots)
+            self._paths = sorted(p for root in root_list for p in root.glob("**/*.npz"))
+            if not self._paths:
+                raise ValueError(f"no cached clips found under {root_list}")
         self._gesture_config = gesture_config
         self._training_config = training_config
         self._augment = augment

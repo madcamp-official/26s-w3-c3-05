@@ -1,5 +1,8 @@
-"""Gesture TCN 학습 루프 — `--stage pretrain`(Jester)과 `--stage finetune`(웹캠, 사람 단위
-split)을 전환한다.
+"""Gesture TCN 학습 루프 — `--stage pretrain`(Jester)과 `--stage finetune`(웹캠)을 전환한다.
+
+파인튜닝은 두 방식이다: `--train-persons`/`--val-persons`를 주면 **person-split**(사람
+단위 분리, 새 사용자 일반화 측정), 생략하면 **pooled**(전체 webcam 클립을 사람 구분
+없이 합쳐 클립 단위 무작위 split — 고정 사용자 데모용, val이 낙관 편향). `_resolve_datasets` 참조.
 
 `jarvis.gesture_fusion.model.CausalTCN`(전체 시퀀스 dense 출력 클래스, streaming용
 `CausalTCNGestureModel`이 아님 — model.py docstring이 "테스트·학습용"으로 명시)을
@@ -215,27 +218,58 @@ def _resolve_datasets(
         val_root = training_config.cache_dir / "jester" / "validation"
         dataset_id = "jester-v1 (공식 train/validation split)"
     elif stage == "finetune":
-        if not train_persons or not val_persons:
-            raise ValueError(
-                "--stage finetune requires --train-persons and --val-persons "
-                "(사람 단위 split — record_webcam_clips.py가 person_id별 하위 폴더로 저장)"
-            )
-        if set(train_persons) & set(val_persons):
-            raise ValueError("--train-persons and --val-persons must not overlap (사람 단위 분리 원칙)")
         webcam_root = training_config.cache_dir / "webcam"
-        train_root = [webcam_root / p for p in train_persons]
-        val_root = [webcam_root / p for p in val_persons]
-        dataset_id = f"webcam-finetune (train={train_persons}, val={val_persons})"
+        if train_persons or val_persons:
+            # person-split: 지정한 사람 폴더로 train/val을 나눈다. 학습에 없던 사람에게도
+            # 동작하는지를 정직하게 측정한다(둘 중 하나만 주면 실수이므로 막는다).
+            if not train_persons or not val_persons:
+                raise ValueError(
+                    "person-split 파인튜닝은 --train-persons와 --val-persons를 둘 다 요구한다 "
+                    "(한쪽만 주면 pooled로 오인될 수 있어 명시적으로 막는다)"
+                )
+            if set(train_persons) & set(val_persons):
+                raise ValueError("--train-persons와 --val-persons는 겹칠 수 없다 (사람 단위 분리 원칙)")
+            train_dataset = ClipDataset(
+                [webcam_root / p for p in train_persons],
+                gesture_config=gesture_config, training_config=training_config, augment=True, seed=0,
+            )
+            val_dataset = ClipDataset(
+                [webcam_root / p for p in val_persons],
+                gesture_config=gesture_config, training_config=training_config, augment=False, seed=1,
+            )
+            return train_dataset, val_dataset, f"webcam-finetune person-split (train={train_persons}, val={val_persons})"
+
+        # pooled: 사람 구분 없이 모든 webcam 클립을 합쳐 **클립 단위 무작위** split.
+        # 같은 사람이 train·val 양쪽에 들어갈 수 있어 val이 낙관적으로 편향된다 —
+        # 고정 사용자 데모용, early-stopping·상대비교로만 해석한다(config 문서 참조).
+        all_paths = sorted(webcam_root.glob("**/*.npz"))
+        if not all_paths:
+            raise ValueError(
+                f"pooled 파인튜닝: {webcam_root} 아래에 webcam 클립이 없다 "
+                "(record_webcam_clips.py로 먼저 녹화). 사람 폴더는 그대로 두고 전부 합쳐 나눈다."
+            )
+        rng = np.random.default_rng(training_config.webcam_split_seed)
+        perm = rng.permutation(len(all_paths))
+        n_val = max(1, int(len(all_paths) * training_config.webcam_val_fraction))
+        val_indices = set(int(i) for i in perm[:n_val])
+        val_paths = [all_paths[i] for i in range(len(all_paths)) if i in val_indices]
+        train_paths = [all_paths[i] for i in range(len(all_paths)) if i not in val_indices]
+        train_dataset = ClipDataset(
+            clip_paths=train_paths,
+            gesture_config=gesture_config, training_config=training_config, augment=True, seed=0,
+        )
+        val_dataset = ClipDataset(
+            clip_paths=val_paths,
+            gesture_config=gesture_config, training_config=training_config, augment=False, seed=1,
+        )
+        return (
+            train_dataset,
+            val_dataset,
+            f"webcam-finetune pooled (클립단위 무작위 split, val_fraction={training_config.webcam_val_fraction}, "
+            f"n_train={len(train_paths)}, n_val={len(val_paths)})",
+        )
     else:
         raise ValueError(f"unknown stage: {stage!r}, expected 'pretrain' or 'finetune'")
-
-    train_dataset = ClipDataset(
-        train_root, gesture_config=gesture_config, training_config=training_config, augment=True, seed=0
-    )
-    val_dataset = ClipDataset(
-        val_root, gesture_config=gesture_config, training_config=training_config, augment=False, seed=1
-    )
-    return train_dataset, val_dataset, dataset_id
 
 
 def train(
@@ -386,8 +420,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=["pretrain", "finetune"], required=True)
     parser.add_argument("--init-from", type=Path, default=None)
-    parser.add_argument("--train-persons", nargs="+", default=None, help="--stage finetune 전용")
-    parser.add_argument("--val-persons", nargs="+", default=None, help="--stage finetune 전용")
+    parser.add_argument(
+        "--train-persons", nargs="+", default=None,
+        help="--stage finetune person-split 전용. 생략하면 pooled(전체 webcam 클립 무작위 클립-split).",
+    )
+    parser.add_argument(
+        "--val-persons", nargs="+", default=None,
+        help="--stage finetune person-split 전용. --train-persons와 함께 준다(생략 시 pooled).",
+    )
     parser.add_argument("--epochs", type=int, default=None, help="드라이런용 epoch 수 상한")
     parser.add_argument(
         "--num-workers",
