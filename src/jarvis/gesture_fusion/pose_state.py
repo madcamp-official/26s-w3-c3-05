@@ -75,6 +75,15 @@ CURSOR_MAX_STEP_PX = 220      # 한 프레임 최대 이동(검출 튐이 커서
 CURSOR_INVERT_X = True        # 거울 뷰가 아닌 실제 손 기준 — 왼손 이동 = 커서 왼쪽
 CURSOR_Y_GAIN_SCALE = 0.5     # y축 이동 감도 배율. x 대비 세로가 과민해 절반으로 낮춘다
 
+# 위 gain은 "이 해상도의 화면에서" px가 되도록 튜닝됐다(기준 디스플레이). _cursor_move가
+# 내는 delta는 이 기준 화면 기준의 px이며, 실제 방출 직전 pose_control이 실기기 해상도
+# 비율(actual/reference)로 스케일해 **화면 대비 이동 비율**을 기기 무관하게 맞춘다. 그래야
+# 해상도가 다른 노트북에서도 같은 손 이동이 화면의 같은 비율을 가로질러 체감 속도가 같다.
+# 값은 이 gain을 튜닝한 기기(1440×900 macOS 논리 해상도, CGEvent 좌표계)다. 이 기기에서는
+# actual==reference라 스케일이 1.0 → 이동량이 종전과 완전히 동일하다.
+CURSOR_REFERENCE_WIDTH = 1440
+CURSOR_REFERENCE_HEIGHT = 900
+
 # soft deadzone: 데드존을 하드컷(distance<dz면 0)하지 않고, 넘는 순간 이동량이 0부터
 # 연속으로 살아나게 한다 — `distance - deadzone`만큼만 이동에 반영해 경계의 급점프를 없앤다.
 # palm_scale 평활: 커서 speed 분모(raw palm_scale)의 프레임 지터를 One-Euro로 줄인다

@@ -74,8 +74,15 @@ class InputSink(Protocol):
         """Press and release a single system key."""
         ...
 
-    def move_cursor(self, dx: int, dy: int) -> None:
-        """Move the cursor by a relative delta (used by the future pointer path)."""
+    def move_cursor(self, dx: int, dy: int, *, dragging: bool = False) -> None:
+        """Move the cursor by a relative delta. ``dragging``이면 드래그로 이동한다."""
+        ...
+
+    def screen_size(self) -> tuple[int, int]:
+        """주 디스플레이의 (너비, 높이). 커서 이동을 화면 대비 비율로 정규화하는 데 쓴다.
+
+        move_cursor가 쓰는 좌표계와 같은 단위여야 한다(Windows=픽셀, macOS=points).
+        """
         ...
 
     def switch_window(self, forward: bool, repeat: int) -> None:
@@ -204,6 +211,8 @@ _WHEEL_DELTA = 120
 _VK_TAB = 0x09
 _VK_MENU = 0x12  # ALT
 _VK_SHIFT = 0x10
+_SM_CXSCREEN = 0  # GetSystemMetrics: 주 디스플레이 너비(px)
+_SM_CYSCREEN = 1  # 〃 높이(px)
 
 
 class Win32InputSink:
@@ -255,9 +264,24 @@ class Win32InputSink:
         user32.keybd_event(vk, 0, _KEYEVENTF_KEYUP, 0)
 
     def move_cursor(self, dx: int, dy: int, *, dragging: bool = False) -> None:
-        # MOUSEEVENTF_MOVE (0x0001)는 버튼이 눌린 채면 OS가 드래그로 해석하므로,
-        # Windows에서는 드래그 여부와 무관하게 같은 상대 이동으로 충분하다.
-        self._user32().mouse_event(0x0001, dx, dy, 0, 0)
+        # 절대좌표 warp로 이동한다(상대 mouse_event가 아니라). MOUSEEVENTF_MOVE 상대
+        # 이동은 Windows 포인터 가속("포인터 정확도 향상", 기본 ON) 곡선을 타서, 앱이
+        # 이미 준 가속 위에 OS가 2차 가속을 또 겹친다 — 이게 macOS 대비 커서가 훨씬
+        # 빠르고 튀는 주원인이다. 현재 위치를 읽어 델타를 더한 절대좌표로 SetCursorPos를
+        # 부르면 탄도(ballistics)를 우회해 macOS(절대 warp)와 동일하게 동작한다.
+        # 버튼이 눌린 채 SetCursorPos로 옮기면 드래그는 그대로 따라오므로 dragging은
+        # 경로에 영향을 주지 않는다.
+        import ctypes
+        import ctypes.wintypes
+
+        user32 = self._user32()
+        point = ctypes.wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(point))
+        user32.SetCursorPos(int(point.x + dx), int(point.y + dy))
+
+    def screen_size(self) -> tuple[int, int]:
+        user32 = self._user32()
+        return user32.GetSystemMetrics(_SM_CXSCREEN), user32.GetSystemMetrics(_SM_CYSCREEN)
 
     def switch_window(self, forward: bool, repeat: int) -> None:
         # Alt+Tab (forward) / Alt+Shift+Tab (backward). Hold Alt for the whole
