@@ -18,7 +18,7 @@ class GazeConfig:
     """
 
     # Gaze Lock state machine (README 7장 "초기 기준")
-    dwell_time_ms: int = 500
+    dwell_time_ms: int = 3000
     """CANDIDATE 상태를 TARGET_LOCKED로 승격하기 전 유지해야 하는 최소 시간."""
 
     minimum_probability: float = 0.80
@@ -29,6 +29,9 @@ class GazeConfig:
 
     target_lock_ttl_ms: int = 1500
     """TARGET_LOCKED/GESTURE_WAIT 상태가 만료되기까지의 유예 시간."""
+
+    confirmed_unknown_timeout_ms: int = 2000
+    """Release the confirmed target after this much continuous UNKNOWN time."""
 
     # Target classifier (README 7장 "Target 추정")
     unknown_probability_threshold: float = 0.80
@@ -44,6 +47,15 @@ class GazeConfig:
     기기 간 상대 확률만 사용하면 등록 기기가 하나일 때 모든 방향의 확률이 1.0이
     되는 문제를 막는 절대 거리 안전 기준이다.
     """
+
+    personal_gaze_feature_weight: float = 2.0
+    """Priority multiplier for gaze yaw/pitch in the personal target classifier."""
+
+    personal_head_feature_weight: float = 0.4
+    """Context multiplier for head yaw/pitch/roll in the personal classifier."""
+
+    personal_face_scale_feature_weight: float = 0.6
+    """Context multiplier for camera-distance/face-scale evidence."""
 
     # Gaze vector composition (README 7장 "시선 방향 벡터 합성")
     max_eye_offset_deg: float = 45.0
@@ -77,8 +89,20 @@ class GazeConfig:
     blink_hold_ms: int = 300
     """Short eye-closed intervals keep the last stable gaze instead of jumping."""
 
-    blink_recovery_hold_ms: int = 150
+    blink_recovery_hold_ms: int = 250
     """Keep holding briefly after reopening eyes so unstable iris landmarks settle."""
+
+    eye_closed_ratio_threshold: float = 0.12
+    """Absolute eyelid-height/eye-width floor used by adaptive blink detection."""
+
+    blink_close_ratio: float = 0.68
+    """Close when eye openness falls below this fraction of the personal baseline."""
+
+    blink_reopen_ratio: float = 0.82
+    """Reopen only above this baseline fraction to avoid rapid open/closed chatter."""
+
+    eye_openness_baseline_decay: float = 0.01
+    """Per-frame downward adaptation rate of the personal open-eye baseline."""
 
     max_valid_eye_offset: float = 0.55
     """Reject iris offsets that jump to implausible eye-edge positions."""
@@ -168,14 +192,30 @@ class GazeConfig:
     """Allowed fractional target-area radius change from face-scale distance changes."""
 
     target_motion_alignment_weight: float = 0.35
-    """Bonus weight for targets in the same direction as recent gaze motion."""
+    """Velocity-direction bonus for targets in the direction of recent gaze motion."""
+
+    target_acceleration_alignment_weight: float = 0.15
+    """Acceleration-direction bonus used after the velocity direction bonus."""
+
+    gaze_motion_min_speed_deg_s: float = 6.0
+    """Ignore slower gaze motion when applying a target-direction bonus."""
+
+    gaze_motion_min_acceleration_deg_s2: float = 80.0
+    """Ignore smaller acceleration as likely landmark/smoothing noise."""
+
+    gaze_motion_max_interval_ms: int = 250
+    """Reset motion derivatives after a long gap, blink, or tracking hold."""
 
     target_match_tolerance: float = 1.10
     """Accept near-boundary target matches up to this normalized distance."""
 
     def __post_init__(self) -> None:
-        if self.dwell_time_ms < 0 or self.target_lock_ttl_ms <= 0:
-            raise ValueError("Gaze timing thresholds must be non-negative and TTL must be positive")
+        if (
+            self.dwell_time_ms < 0
+            or self.target_lock_ttl_ms <= 0
+            or self.confirmed_unknown_timeout_ms <= 0
+        ):
+            raise ValueError("Gaze timing thresholds are invalid")
         if self.blink_hold_ms < 0 or self.blink_recovery_hold_ms < 0:
             raise ValueError("blink hold thresholds must be non-negative")
         if self.tracking_loss_hold_ms < 0:
@@ -196,6 +236,20 @@ class GazeConfig:
                 raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
         if self.ema_min_alpha > self.ema_max_alpha:
             raise ValueError("ema_min_alpha must not exceed ema_max_alpha")
+        if (
+            not math.isfinite(self.eye_closed_ratio_threshold)
+            or self.eye_closed_ratio_threshold <= 0.0
+        ):
+            raise ValueError("eye_closed_ratio_threshold must be finite and positive")
+        if not (
+            0.0 < self.blink_close_ratio < self.blink_reopen_ratio <= 1.0
+        ):
+            raise ValueError("blink ratios must satisfy 0 < close < reopen <= 1")
+        if not (
+            math.isfinite(self.eye_openness_baseline_decay)
+            and 0.0 <= self.eye_openness_baseline_decay <= 1.0
+        ):
+            raise ValueError("eye_openness_baseline_decay must be within [0, 1]")
         if not math.isfinite(self.max_eye_offset_deg) or self.max_eye_offset_deg <= 0.0:
             raise ValueError("max_eye_offset_deg must be finite and positive")
         for name, value in {
@@ -210,6 +264,13 @@ class GazeConfig:
         }.items():
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
+        for name, value in {
+            "personal_gaze_feature_weight": self.personal_gaze_feature_weight,
+            "personal_head_feature_weight": self.personal_head_feature_weight,
+            "personal_face_scale_feature_weight": self.personal_face_scale_feature_weight,
+        }.items():
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
         if self.horizontal_axis_sign not in (-1.0, 1.0):
             raise ValueError("horizontal_axis_sign must be either -1.0 or 1.0")
         if not math.isfinite(self.unknown_max_angle_deg) or not 0.0 < self.unknown_max_angle_deg <= 180.0:
@@ -263,11 +324,32 @@ class GazeConfig:
         for name, value in {
             "target_area_scale_flex": self.target_area_scale_flex,
             "target_motion_alignment_weight": self.target_motion_alignment_weight,
+            "target_acceleration_alignment_weight": self.target_acceleration_alignment_weight,
         }.items():
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and within [0, 1]")
+        for name, value in {
+            "gaze_motion_min_speed_deg_s": self.gaze_motion_min_speed_deg_s,
+            "gaze_motion_min_acceleration_deg_s2": self.gaze_motion_min_acceleration_deg_s2,
+        }.items():
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
+        if self.gaze_motion_max_interval_ms <= 0:
+            raise ValueError("gaze_motion_max_interval_ms must be positive")
         if not math.isfinite(self.target_match_tolerance) or not 1.0 <= self.target_match_tolerance <= 2.0:
             raise ValueError("target_match_tolerance must be finite and within [1, 2]")
+
+    @property
+    def personal_feature_weights(self) -> tuple[float, ...]:
+        """Feature scaling used by the standardized personal softmax classifier."""
+        return (
+            self.personal_gaze_feature_weight,
+            self.personal_gaze_feature_weight,
+            self.personal_head_feature_weight,
+            self.personal_head_feature_weight,
+            self.personal_head_feature_weight,
+            self.personal_face_scale_feature_weight,
+        )
 
 
 DEFAULT_GAZE_CONFIG = GazeConfig()

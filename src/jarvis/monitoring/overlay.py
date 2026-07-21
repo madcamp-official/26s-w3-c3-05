@@ -208,30 +208,59 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
     state = str(snapshot.lock_state)
     ray_color = _LOCK_BGR.get(state, grey)
     looking_unknown = snapshot.target == "UNKNOWN"
-    looking_color = (90, 90, 240) if looking_unknown else ray_color
-    looking_text = f"LOOKING AT: {snapshot.target_label}"
-    (text_w, text_h), _ = cv2.getTextSize(looking_text, _FONT, 0.9, 2)
+    looking_color = (90, 90, 240) if looking_unknown else (230, 180, 80)
+    engine_text = f"ENGINE NOW: {snapshot.target_label}  P={snapshot.probability:.0%}"
+    if snapshot.candidate_label is not None:
+        dwell_text = (
+            f"HOLD 3S: {snapshot.candidate_label}  "
+            f"{snapshot.dwell_elapsed_ms / 1000.0:.1f}/"
+            f"{snapshot.dwell_required_ms / 1000.0:.1f}s"
+        )
+        dwell_color = (230, 180, 80)
+    else:
+        dwell_text = "HOLD 3S: --"
+        dwell_color = grey
+    if snapshot.locked_device is not None and snapshot.unknown_elapsed_ms > 0:
+        confirmed_text = (
+            f"CONFIRMED: {snapshot.locked_target_label} | UNKNOWN "
+            f"{snapshot.unknown_elapsed_ms / 1000.0:.1f}/"
+            f"{snapshot.unknown_required_ms / 1000.0:.1f}s"
+        )
+        confirmed_color = (80, 190, 230)
+    else:
+        confirmed_text = f"CONFIRMED: {snapshot.locked_target_label or '--'}"
+        confirmed_color = (80, 200, 80) if snapshot.locked_device is not None else grey
+    headline_lines = (
+        (engine_text, looking_color),
+        (dwell_text, dwell_color),
+        (confirmed_text, confirmed_color),
+    )
+    text_sizes = [cv2.getTextSize(text, _FONT, 0.68, 2)[0] for text, _ in headline_lines]
+    text_w = max(size[0] for size in text_sizes)
+    text_h = max(size[1] for size in text_sizes)
+    line_height = text_h + 10
     box_x = max(8, (w - text_w) // 2 - 14)
-    box_y = 44
+    box_y = 6
     overlay = frame.copy()
     cv2.rectangle(
         overlay,
         (box_x, box_y),
-        (min(w - 8, box_x + text_w + 28), box_y + text_h + 22),
+        (min(w - 8, box_x + text_w + 28), box_y + line_height * len(headline_lines) + 10),
         (0, 0, 0),
         thickness=-1,
     )
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
-    cv2.putText(
-        frame,
-        looking_text,
-        (box_x + 14, box_y + text_h + 9),
-        _FONT,
-        0.9,
-        looking_color,
-        2,
-        cv2.LINE_AA,
-    )
+    for index, (text, color) in enumerate(headline_lines):
+        cv2.putText(
+            frame,
+            text,
+            (box_x + 14, box_y + text_h + 7 + index * line_height),
+            _FONT,
+            0.68,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
 
     # Gaze ray: use the same smoothed direction that the classifier consumes.
     left_eye = snapshot.left_eye_center_normalized
@@ -266,7 +295,7 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
         range_color = (80, 200, 80) if nearest.within_profile_radius else (90, 90, 240)
     lines: list[tuple[str, tuple[int, int, int]]] = [
         (f"LOCK  {state}", ray_color),
-        (f"TARGET  {snapshot.target_label}  {snapshot.probability:.0%}", white),
+        (f"ENGINE  {snapshot.target_label}  {snapshot.probability:.0%}", white),
         (range_line, range_color),
         (
             f"yaw {snapshot.head_yaw_deg:+5.0f}  pitch {snapshot.head_pitch_deg:+5.0f}"
@@ -275,7 +304,61 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
         ),
         (f"stability  {stability:.2f}" if stability is not None else "stability  --", grey),
     ]
+    if snapshot.camera_pose_warning:
+        lines.append(("CAMERA POSE CHANGED / re-register", (60, 180, 255)))
     _text_block(frame, lines, (8, h - 6 - 20 * len(lines) - 6))
+    return frame
+
+
+def draw_registration_guidance(
+    frame: Frame,
+    *,
+    title: str,
+    instruction: str,
+    progress: float,
+) -> Frame:
+    """Draw a high-visibility two-phase registration guide over the camera view."""
+    h, w = frame.shape[:2]
+    progress = float(np.clip(progress, 0.0, 1.0))
+    margin = max(12, int(w * 0.04))
+    box_top = max(92, int(h * 0.22))
+    box_bottom = min(h - 12, box_top + 104)
+    overlay = frame.copy()
+    cv2.rectangle(
+        overlay,
+        (margin, box_top),
+        (w - margin, box_bottom),
+        (8, 12, 18),
+        thickness=-1,
+    )
+    cv2.addWeighted(overlay, 0.76, frame, 0.24, 0, dst=frame)
+    cv2.rectangle(frame, (margin, box_top), (w - margin, box_bottom), (40, 170, 245), 2)
+    cv2.putText(
+        frame,
+        title,
+        (margin + 14, box_top + 30),
+        _FONT,
+        0.68,
+        (80, 220, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        instruction,
+        (margin + 14, box_top + 60),
+        _FONT,
+        0.52,
+        (235, 235, 235),
+        1,
+        cv2.LINE_AA,
+    )
+    bar_left, bar_right = margin + 14, w - margin - 14
+    bar_top, bar_bottom = box_bottom - 20, box_bottom - 10
+    cv2.rectangle(frame, (bar_left, bar_top), (bar_right, bar_bottom), (60, 65, 75), -1)
+    fill_right = bar_left + int((bar_right - bar_left) * progress)
+    if fill_right > bar_left:
+        cv2.rectangle(frame, (bar_left, bar_top), (fill_right, bar_bottom), (80, 200, 120), -1)
     return frame
 
 

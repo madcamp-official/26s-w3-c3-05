@@ -147,27 +147,36 @@ JARVIS가 해결하려는 문제는 다음과 같다.
 JARVIS 실행
 → 카메라 위치 고정
 → 기기 추가
-→ 해당 기기를 10초 동안 바라봄 (고개를 좌우·상하로 크게 움직이며 다양한 각도·자세로)
-→ 머리 이동(parallax)으로 물체의 3D 위치·유효 반경 삼각측량 시도
+→ 1/2 중앙점 보정(20초)
+   → 물체 중앙의 한 점만 계속 응시
+   → 시선은 고정한 채 얼굴·몸을 대각선과 앞뒤로 이동
+   → 중앙 방향·MLP 정답·3D 시선 광선 수집
+→ 2/2 물체 영역 확정(16초)
+   → 고개·몸은 고정
+   → 눈으로 왼쪽 위 모서리부터 네 변을 한 바퀴 순서대로 추적
+   → 물체의 각도 영역·spread 수집
+→ 중앙점 단계의 머리 이동(parallax)으로 물체의 3D 위치·유효 반경 삼각측량 시도
    → 성공: 위치+반경 저장
    → 실패(머리 이동 부족 등): 시선 방향 벡터 + 각도 분산으로 대체 저장
 → 제어 capability 등록
 ```
 
-2~3초·눈짓 위주로 보는 것만으로는 방향 하나만 나오고 실제 위치·거리를 알 수
-없다. 10초 동안 고개를 크게 움직이며 같은 물체를 봐야 서로 다른 위치에서 나온
+중앙과 경계를 한 번에 수집하면 테두리 시선까지 모두 중앙점 MLP 정답으로 붙어
+보정 모델이 오염된다. 따라서 중앙점 단계와 경계 단계를 분리한다. 중앙점 단계에서
+고개를 크게 움직이며 같은 한 점을 봐야 서로 다른 위치에서 나온
 시선 광선들이 한 점(물체의 3D 위치)에서 수렴해 삼각측량이 가능해진다. 머리
 움직임이 부족하거나 광선이 잘 수렴하지 않으면(물체가 너무 멀어 광선이 거의
 평행한 경우 등) 항상 검증된 방향+분산 방식으로 조용히 대체된다 — 실패를 성공
-으로 포장하지 않는다.
+으로 포장하지 않는다. 각 단계는 최소 30개 유효 프레임도 함께 요구하므로 눈 감김·
+추적 손실이 많으면 타이머가 끝난 뒤에도 필요한 프레임을 채울 때까지 연장된다.
 
 예:
 
 ```
 [전구 등록 시작]
-전구를 바라보며 고개를 천천히 좌우로 움직이세요
-10 · 9 · 8 · … · 1
-전구 위치 정보 등록 완료 (3D 위치 추정 성공)
+1/2 중앙점 보정: 중앙의 한 점을 보며 얼굴을 왼쪽 위로 이동하세요
+2/2 영역 확정: 고개를 고정하고 윗변을 왼쪽→오른쪽으로 따라 보세요
+전구 2단계 등록 완료 (중앙 420 frames, 경계 335 frames)
 ```
 
 ## 5.2 기기 선택
@@ -278,7 +287,7 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 시선 방향 벡터 = 머리 회전(yaw, pitch) ⊕ 눈-머리 상대 오프셋
 ```
 
-이렇게 합성하면 고개를 많이 돌리고 눈은 거의 안 움직여서 만든 방향이든, 고개는 그대로 두고 눈만 움직여서 만든 방향이든, 물리적으로 같은 곳을 본 것이라면 거의 같은 벡터가 나온다. 이 성질 덕분에 등록 단계에서 고개를 크게 움직여도(5.1절의 10초 3D 등록) 방향 자체는 실사용(눈짓 위주)과 여전히 일치한다 — 오히려 등록 중 머리를 크게 움직여야 서로 다른 위치에서 나온 시선 광선들이 물체의 실제 3D 위치로 수렴하는 삼각측량이 가능해진다(7장 "기기 등록 방식" 참고).
+이렇게 합성하면 고개를 많이 돌리고 눈은 거의 안 움직여서 만든 방향이든, 고개는 그대로 두고 눈만 움직여서 만든 방향이든, 물리적으로 같은 곳을 본 것이라면 거의 같은 벡터가 나온다. 이 성질 덕분에 등록 1단계에서 고개를 크게 움직여도(5.1절의 중앙점 3D 등록) 방향 자체는 실사용(눈짓 위주)과 여전히 일치한다 — 오히려 등록 중 머리를 크게 움직여야 서로 다른 위치에서 나온 시선 광선들이 물체의 실제 3D 위치로 수렴하는 삼각측량이 가능해진다(7장 "기기 등록 방식" 참고).
 
 ## 입력 신호 → 시선 방향 벡터
 
@@ -308,10 +317,19 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 | `smoothing_window_frames` | `8` | confidence 가중 이동 평균에 쓰는 최근 프레임 수 |
 | `ema_min_alpha` / `ema_max_alpha` | `0.15` / `0.65` | 낮은/높은 confidence 프레임의 EMA 반영률 |
 | `blink_hold_ms` | `300` | 짧은 눈 감김 동안 마지막 안정 gaze 유지 시간 |
-| `blink_recovery_hold_ms` | `150` | 눈을 다시 뜬 직후 홍채 landmark 안정화 hold 시간 |
+| `blink_recovery_hold_ms` | `250` | 눈을 다시 뜬 직후 홍채 landmark 안정화 hold 시간 |
+| `eye_closed_ratio_threshold` | `0.12` | 눈꺼풀 높이/눈 너비의 절대 눈 감김 하한 |
+| `blink_close_ratio` / `blink_reopen_ratio` | `0.68` / `0.82` | 사용자별 평소 눈 뜬 높이에 대한 감김/재개방 hysteresis 비율 |
+| `eye_openness_baseline_decay` | `0.01` | 자세 변화에 맞춰 평소 눈 뜬 높이를 천천히 낮추는 프레임당 비율 |
 | `iris_jump_threshold` | `0.18` | 프레임 간 홍채 offset jump 감지 기준 |
 | `max_valid_eye_offset` | `0.55` | 비현실적인 눈 가장자리 홍채 offset reject 기준 |
 | `small_motion_deadzone_deg` | `5.0` | 미세한 smoothed gaze 흔들림 흡수 각도 |
+| `personal_gaze_feature_weight` | `2.0` | 개인 target classifier에서 gaze yaw/pitch 우선도 |
+| `personal_head_feature_weight` | `0.4` | 개인 target classifier에서 head yaw/pitch/roll 보조 비중 |
+| `personal_face_scale_feature_weight` | `0.6` | 사용자-카메라 거리 문맥 비중 |
+| `target_motion_alignment_weight` | `0.35` | target 중심 방향과 같은 gaze 속도에 주는 최대 보너스 |
+| `target_acceleration_alignment_weight` | `0.15` | 같은 방향 gaze 가속도에 주는 추가 최대 보너스 |
+| `gaze_motion_max_interval_ms` | `250` | blink/추적 공백 뒤 잘못된 속도·가속도를 막는 최대 차분 간격 |
 | `unknown_probability_threshold` | `0.80` | target top-1 확률이 낮을 때 `UNKNOWN` reject |
 | `unknown_max_angle_deg` | `25.0` | 가장 가까운 등록 방향과도 너무 멀 때 `UNKNOWN` reject |
 | `target_match_tolerance` | `1.10` | 등록 반경 경계값을 살짝 넘는 gaze를 허용하는 정규화 거리 상한 |
@@ -335,9 +353,12 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 
 ## 기기 등록 방식
 
-기기마다 사용자가 10초간 다양한 각도·자세로 바라봤을 때의 시선 방향 벡터(과
-그 원점이 되는 머리의 카메라 기준 3D 위치)를 여러 프레임에 걸쳐 모은다. 등록
-중 머리가 충분히 움직였다면(parallax) 그 광선들을 삼각측량해 물체의 실제
+기기 등록은 중앙점 20초와 경계 16초의 두 단계로 나뉜다. 중앙점 단계에서는 한 점을
+계속 바라보며 자세를 바꿔 시선 방향 벡터와 그 원점이 되는 머리의 카메라 기준 3D
+위치를 모은다. 이 프레임만 residual MLP 학습 정답과 3D 삼각측량에 사용한다. 경계
+단계에서는 고개를 고정한 채 눈으로 네 변을 순서대로 훑고, 이 프레임만 물체의
+각도 영역과 spread 계산에 사용한다. 두 단계의 feature는 target classifier 분포에는
+함께 들어간다. 중앙점 등록 중 머리가 충분히 움직였다면(parallax) 그 광선들을 삼각측량해 물체의 실제
 3D 위치와 유효 반경을 추정하고, 그렇지 않으면(머리 이동 부족, 광선이 거의
 평행, 잔차 과다) 기존의 평균 방향 + 각도 분산 방식으로 조용히 대체한다(raw
 프레임은 두 경우 모두 계산 후 버림).
@@ -356,7 +377,10 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 }
 ```
 
-`mean_direction`은 단위 벡터(크기 1)이므로 분산은 방향 벡터 하나의 흔들림 정도(각도 분산)로 축약된다. `position_3d`는 삼각측량이 품질 기준을 만족했을 때만 채워지며, `radius_mm`은 물체의 실측 크기가 아니라 삼각측량 잔차에서 유도한 판정 허용 오차다 — 실제로 측정한 값이 아님을 감추지 않는다.
+`mean_direction`은 중앙점 단계의 단위 벡터 중앙값이다. 각도 `spread`/area는 경계
+단계에서 얻지만, `position_3d.radius_mm`은 여전히 물체의 실측 크기가 아니라 중앙점
+광선의 삼각측량 잔차에서 유도한 판정 허용 오차다 — 단안 웹캠으로 실측한 물리 크기인
+것처럼 표시하지 않는다.
 
 ## Target 추정
 
@@ -397,6 +421,22 @@ Baseline:
 }
 ```
 
+개인별 벡터 보정은 raw head+iris 기하 벡터에 residual MLP
+`12 → 24 → 12 → 2(delta_yaw, delta_pitch)`를 적용한다. 최소 3개 target 방향과
+60개 유효 샘플이 필요하며, held-out 오차가 raw vector보다 좋아진 경우에만 기본
+보정기로 활성화한다. 새 물체 등록 또는 위치 재등록이 끝나면 저장된 target별
+샘플 전체로 재학습하고, 실시간 추론 중에는 학습하지 않는다. 데이터와 모델은
+`data/calibration/gaze_regressor.json`에 함께 저장한다.
+
+별도의 개인 target Linear-softmax classifier는 표준화된
+`[gaze_yaw, gaze_pitch, head_yaw, head_pitch, head_roll, face_scale]`을 사용한다.
+현재 기본 우선도는 gaze `2.0`, head `0.4`, face scale `0.6`이며, 학습 후에도 각
+class의 head 유효 가중치가 gaze의 20%를 넘지 못하게 제한한다. 저장된 과거 샘플도
+실행 시 이 정책으로 메모리에서 다시 학습한다. gaze 속도·가속도가 등록 target 중심을
+향하면 각각 최대 `+0.35`, `+0.15`의 배율 보너스를 Linear classifier와 area matcher에
+동일하게 적용한다. 눈을 감거나 blink recovery/추적 hold 중에는 derivative history를
+갱신하지 않으며 250ms보다 긴 공백 뒤에는 속도·가속도를 초기화한다.
+
 ## Gaze Lock 상태 머신
 
 ```
@@ -410,13 +450,20 @@ SEARCHING
 초기 기준:
 
 ```
-dwell_time_ms: 500
+dwell_time_ms: 3000
 minimum_probability: 0.80
 minimum_margin: 0.20
 target_lock_ttl_ms: 1500
+confirmed_unknown_timeout_ms: 2000
 ```
 
-기기가 Lock되면 사용자가 손을 보기 위해 시선을 잠깐 이동해도 선택을 일정 시간 유지한다.
+기기가 Lock되면 마지막 확정 선택을 유지한다. 다른 기기를 보기 시작해도 기존 기기를
+즉시 해제하지 않고 새 기기의 3초 dwell을 별도 후보로 누적하며, 3초를 모두 채운 한
+프레임에서만 선택을 원자적으로 교체한다. 후보가 도중에 `UNKNOWN` 또는 저신뢰로
+취소되면 이전 확정 기기를 즉시 버리지 않는다. 다만 Gaze 엔진 결과가 2초 동안
+연속으로 `UNKNOWN`이면 사용자가 등록 영역을 벗어난 것으로 보고 확정 기기도
+`UNKNOWN`으로 해제한다. 2초 안에 알려진 target이 다시 나오면 타이머는 초기화된다.
+확정 기기 삭제·명시적 reset과 `GESTURE_WAIT`의 TTL 만료도 별도로 처리한다.
 
 ---
 

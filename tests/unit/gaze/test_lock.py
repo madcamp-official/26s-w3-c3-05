@@ -21,6 +21,8 @@ def _unknown() -> ClassificationResult:
 def test_starts_in_searching() -> None:
     lock = GazeLockStateMachine()
     assert lock.state == GazeLockState.SEARCHING
+    assert GazeConfig().dwell_time_ms == 3000
+    assert lock.dwell_progress == 0.0
 
 
 def test_unknown_keeps_searching() -> None:
@@ -33,6 +35,19 @@ def test_confident_target_becomes_candidate() -> None:
     lock = GazeLockStateMachine()
     state = lock.update(0, _confident("laptop"))
     assert state == GazeLockState.CANDIDATE
+    assert lock.candidate_device == "laptop"
+    assert lock.candidate_elapsed_ms == 0
+
+
+def test_candidate_exposes_three_second_progress() -> None:
+    lock = GazeLockStateMachine(GazeConfig(dwell_time_ms=3000))
+    lock.update(1_000, _confident("laptop"))
+
+    lock.update(2_500, _confident("laptop"))
+
+    assert lock.candidate_device == "laptop"
+    assert lock.candidate_elapsed_ms == 1_500
+    assert lock.dwell_progress == 0.5
 
 
 def test_low_margin_does_not_promote_to_candidate() -> None:
@@ -55,6 +70,8 @@ def test_dwell_promotes_candidate_to_target_locked() -> None:
     assert state == GazeLockState.TARGET_LOCKED
     assert lock.locked_device == "laptop"
     assert lock.is_locked_to("laptop")
+    assert lock.candidate_device is None
+    assert lock.dwell_progress == 1.0
 
 
 def test_switching_candidate_device_resets_dwell_timer() -> None:
@@ -90,20 +107,92 @@ def test_locked_persists_through_brief_look_away_within_ttl() -> None:
     assert lock.locked_device == "laptop"
 
 
-def test_locked_expires_after_ttl_without_reconfirmation() -> None:
-    config = GazeConfig(dwell_time_ms=100, target_lock_ttl_ms=1000)
+def test_locked_selection_releases_after_two_continuous_unknown_seconds() -> None:
+    config = GazeConfig(
+        dwell_time_ms=100,
+        target_lock_ttl_ms=1000,
+        confirmed_unknown_timeout_ms=2000,
+    )
     lock = GazeLockStateMachine(config)
     lock.update(0, _confident("laptop"))
     lock.update(100, _confident("laptop"))
     assert lock.state == GazeLockState.TARGET_LOCKED
 
-    state = lock.update(100 + 1000, _unknown())
-    assert state == GazeLockState.EXPIRED
-    assert lock.locked_device is None
+    state = lock.update(200, _unknown())
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "laptop"
+    assert lock.unknown_elapsed_ms == 0
 
-    # EXPIRED는 한 프레임짜리 이벤트 — 다음 프레임부터 새로 탐색을 시작한다.
-    state = lock.update(100 + 1001, _unknown())
+    state = lock.update(2199, _unknown())
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "laptop"
+    assert lock.unknown_elapsed_ms == 1999
+
+    state = lock.update(2200, _unknown())
     assert state == GazeLockState.SEARCHING
+    assert lock.locked_device is None
+    assert lock.unknown_elapsed_ms == 0
+
+
+def test_known_target_interrupts_unknown_release_timer() -> None:
+    config = GazeConfig(dwell_time_ms=100, confirmed_unknown_timeout_ms=2000)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("monitor"))
+    lock.update(100, _confident("monitor"))
+
+    lock.update(200, _unknown())
+    lock.update(1900, _unknown())
+    assert lock.unknown_elapsed_ms == 1700
+    lock.update(1950, _confident("monitor"))
+    assert lock.unknown_elapsed_ms == 0
+
+    lock.update(2000, _unknown())
+    state = lock.update(3999, _unknown())
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "monitor"
+
+
+def test_replacement_candidate_keeps_confirmed_target_until_dwell() -> None:
+    config = GazeConfig(dwell_time_ms=3000, target_lock_ttl_ms=1000)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("monitor"))
+    lock.update(3000, _confident("monitor"))
+
+    state = lock.update(3100, _confident("speaker"))
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "monitor"
+    assert lock.candidate_device == "speaker"
+
+    lock.update(5000, _confident("speaker"))
+    assert lock.locked_device == "monitor"
+    assert lock.candidate_device == "speaker"
+    assert lock.candidate_elapsed_ms == 1900
+
+
+def test_cancelled_replacement_keeps_previous_confirmed_target() -> None:
+    config = GazeConfig(dwell_time_ms=3000)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("monitor"))
+    lock.update(3000, _confident("monitor"))
+    lock.update(3100, _confident("speaker"))
+
+    state = lock.update(4000, _unknown())
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "monitor"
+    assert lock.candidate_device is None
+
+
+def test_replacement_handoff_is_atomic_after_dwell() -> None:
+    config = GazeConfig(dwell_time_ms=3000)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("monitor"))
+    lock.update(3000, _confident("monitor"))
+    lock.update(3100, _confident("speaker"))
+
+    state = lock.update(6100, _confident("speaker"))
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "speaker"
+    assert lock.candidate_device is None
 
 
 def test_reconfirming_locked_target_refreshes_ttl() -> None:
@@ -132,18 +221,18 @@ def test_gesture_started_only_from_target_locked() -> None:
     assert lock.locked_device == "laptop"
 
 
-def test_gesture_started_after_lock_ttl_is_rejected() -> None:
+def test_gesture_start_refreshes_sticky_selection_ttl() -> None:
     config = GazeConfig(dwell_time_ms=0, target_lock_ttl_ms=1000)
     lock = GazeLockStateMachine(config)
     lock.update(100, _confident("laptop"))
 
     state = lock.notify_gesture_started(1100)
 
-    assert state == GazeLockState.EXPIRED
-    assert lock.locked_device is None
+    assert state == GazeLockState.GESTURE_WAIT
+    assert lock.locked_device == "laptop"
 
 
-def test_committed_only_from_gesture_wait_and_resets_next_tick() -> None:
+def test_committed_only_from_gesture_wait_and_restores_selection_next_tick() -> None:
     config = GazeConfig(dwell_time_ms=0)
     lock = GazeLockStateMachine(config)
     lock.update(0, _confident("laptop"))
@@ -153,18 +242,20 @@ def test_committed_only_from_gesture_wait_and_resets_next_tick() -> None:
     assert state == GazeLockState.COMMITTED
 
     state = lock.update(21, _unknown())
-    assert state == GazeLockState.SEARCHING
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "laptop"
 
 
-def test_commit_after_original_lock_ttl_is_rejected() -> None:
+def test_commit_after_gesture_wait_ttl_is_rejected_but_selection_is_retained() -> None:
     config = GazeConfig(dwell_time_ms=0, target_lock_ttl_ms=1000)
     lock = GazeLockStateMachine(config)
     lock.update(100, _confident("laptop"))
     lock.notify_gesture_started(500)
 
-    state = lock.notify_committed(1100)
+    state = lock.notify_committed(1500)
 
     assert state == GazeLockState.EXPIRED
+    assert lock.locked_device == "laptop"
 
 
 def test_reset_clears_candidate_and_lock() -> None:

@@ -93,6 +93,7 @@ class GazeSampleStore:
                 raw_yaw_deg, raw_pitch_deg = direction_to_yaw_pitch(raw_mean_direction)
                 raw_gaze_yaw_pitch = {"yaw": raw_yaw_deg, "pitch": raw_pitch_deg}
         nearest = latest.device_details[0] if latest.device_details else None
+        raw_nearest = latest.raw_device_details[0] if latest.raw_device_details else None
         nearest_feature = latest.feature_details[0] if latest.feature_details else None
 
         def mean(values: Sequence[float]) -> float:
@@ -141,6 +142,11 @@ class GazeSampleStore:
             },
             "raw_gaze_yaw_pitch_deg": raw_gaze_yaw_pitch,
             "calibration_applied": any(item.calibration_applied for item in valid),
+            "calibration_model_kind": latest.calibration_model_kind,
+            "gaze_velocity_deg_s": latest.gaze_motion_velocity_deg_s,
+            "gaze_acceleration_deg_s2": latest.gaze_motion_acceleration_deg_s2,
+            "gaze_motion_history_valid": latest.gaze_motion_history_valid,
+            "personal_feature_weights": latest.personal_feature_weights,
             "gaze_confidence": mean(eye_confidences),
             "head_pose_deg": {
                 "yaw": mean([item.head_yaw_deg for item in valid]),
@@ -176,6 +182,15 @@ class GazeSampleStore:
             "target_label": latest.target_label,
             "probability": latest.probability,
             "second_best_probability": latest.second_best_probability,
+            "candidate_target": latest.candidate_device,
+            "candidate_target_label": latest.candidate_label,
+            "dwell_elapsed_ms": latest.dwell_elapsed_ms,
+            "dwell_required_ms": latest.dwell_required_ms,
+            "dwell_progress": latest.dwell_progress,
+            "confirmed_target": latest.locked_device,
+            "confirmed_target_label": latest.locked_target_label,
+            "unknown_elapsed_ms": latest.unknown_elapsed_ms,
+            "unknown_required_ms": latest.unknown_required_ms,
             "reject_reason": latest.reject_reason,
             "nearest_target_range": (
                 {
@@ -186,6 +201,17 @@ class GazeSampleStore:
                     "status": nearest.range_status,
                 }
                 if nearest is not None
+                else None
+            ),
+            "raw_nearest_target_range": (
+                {
+                    "device_id": raw_nearest.device_id,
+                    "angular_distance_deg": raw_nearest.angular_distance_deg,
+                    "allowed_radius_deg": raw_nearest.allowed_radius_deg,
+                    "normalized_distance": raw_nearest.normalized_distance,
+                    "status": raw_nearest.range_status,
+                }
+                if raw_nearest is not None
                 else None
             ),
             "nearest_feature_profile": (
@@ -236,12 +262,14 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
     gaze_angles = sample.get("gaze_yaw_pitch_deg")
     raw_gaze_angles = sample.get("raw_gaze_yaw_pitch_deg")
     nearest_range = sample.get("nearest_target_range")
+    raw_nearest_range = sample.get("raw_nearest_target_range")
     nearest_feature = sample.get("nearest_feature_profile")
     vector = direction if isinstance(direction, list) else []
     head = head_pose if isinstance(head_pose, dict) else {}
     gaze_yaw_pitch = gaze_angles if isinstance(gaze_angles, dict) else {}
     raw_gaze_yaw_pitch = raw_gaze_angles if isinstance(raw_gaze_angles, dict) else {}
     range_detail = nearest_range if isinstance(nearest_range, dict) else None
+    raw_range_detail = raw_nearest_range if isinstance(raw_nearest_range, dict) else None
     feature_detail = nearest_feature if isinstance(nearest_feature, dict) else None
 
     def number(value: object) -> float:
@@ -260,6 +288,8 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
     index = sample.get("sample_index", "?")
     target = sample.get("target", "UNKNOWN")
     target_label = sample.get("target_label", target)
+    confirmed_target = sample.get("confirmed_target")
+    confirmed_target_label = sample.get("confirmed_target_label", confirmed_target)
     probability = number(sample.get("probability"))
     frame_count = sample.get("window_frame_count", 1)
     if target == "UNKNOWN":
@@ -268,12 +298,21 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
         judged = f"{target_label}[{target}]"
     else:
         judged = str(target)
+    if confirmed_target is None:
+        confirmed = "없음"
+    elif isinstance(confirmed_target_label, str) and confirmed_target_label != confirmed_target:
+        confirmed = f"{confirmed_target_label}[{confirmed_target}]"
+    else:
+        confirmed = str(confirmed_target)
+    dwell_elapsed_ms = number(sample.get("dwell_elapsed_ms"))
+    dwell_required_ms = number(sample.get("dwell_required_ms"))
     row = (
         f"#{index} [{frame_count}f] gaze=({x:+.3f}, {y:+.3f}, {z:+.3f})  "
         f"raw_y/p=({raw_gaze_yaw:+.1f}, {raw_gaze_pitch:+.1f})  "
         f"final_y/p=({gaze_yaw:+.1f}, {gaze_pitch:+.1f})  "
         f"head=({yaw:+.1f}, {pitch:+.1f}, {roll:+.1f})  "
-        f"판단={judged} P={probability:.2f}"
+        f"실시간={judged} P={probability:.2f}  확정={confirmed} "
+        f"dwell={dwell_elapsed_ms / 1000.0:.1f}/{dwell_required_ms / 1000.0:.1f}s"
     )
     if sample.get("calibration_applied"):
         row += " CAL"
@@ -284,6 +323,13 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
         ratio = number(range_detail.get("normalized_distance"))
         status = range_detail.get("status", "--")
         row += f"  nearest={device_id} {distance:.1f}/{radius:.1f}deg x{ratio:.2f} {status}"
+    if raw_range_detail is not None:
+        device_id = raw_range_detail.get("device_id", "--")
+        distance = number(raw_range_detail.get("angular_distance_deg"))
+        radius = number(raw_range_detail.get("allowed_radius_deg"))
+        ratio = number(raw_range_detail.get("normalized_distance"))
+        status = raw_range_detail.get("status", "--")
+        row += f"  raw_nearest={device_id} {distance:.1f}/{radius:.1f}deg x{ratio:.2f} {status}"
     if feature_detail is not None:
         device_id = feature_detail.get("device_id", "--")
         distance = number(feature_detail.get("distance"))

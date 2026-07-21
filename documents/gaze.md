@@ -40,9 +40,13 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
 - `UNKNOWN`은 기기 간 상대 확률(`unknown_probability_threshold`)뿐 아니라 가장 가까운
   등록 방향과의 절대 각도(`unknown_max_angle_deg`, 기본 25도)도 함께 검사한다. 등록
   기기가 하나일 때 상대 확률이 항상 1.0이 되는 경우에도 먼 시선을 거부하기 위해서다.
-- Gaze Lock TTL은 마지막으로 같은 대상을 확신 있게 본 시각을 기준으로 한다. Gesture
-  시작은 기존 TTL을 연장하지 않으며, gesture 시작과 commit 이벤트 모두 자신의
-  `timestamp_ms`가 만료 시각에 도달했으면 `EXPIRED`로 거부한다.
+- 3초 확정 대상은 새 후보가 dwell을 모두 채울 때까지 sticky하게 유지한다. 새 후보가
+  잠깐 `UNKNOWN`/저신뢰로 취소돼도 이전 대상은 유지되고, 새 후보가 3초를 채운 프레임에서
+  공백 없이 원자적으로 교체된다. 단, Gaze classifier가 2초 연속 `UNKNOWN`이면 확정
+  target을 해제한다. 그 전에 알려진 target이 나오면 UNKNOWN 타이머는 초기화된다.
+  이 규칙은 Gaze 모듈에만 적용하며 Gesture/Fusion 로직은 변경하지 않는다.
+- `target_lock_ttl_ms`는 확정 선택 자체를 1.5초마다 지우는 타이머가 아니라, gesture
+  wait와 Fusion 입력 스트림 중단 시 안전하게 intent를 거부하는 유효 시간이다.
 - `jarvis-gaze calibrate`는 카메라 관측을 기기 프로필로 축약해 저장하고,
   `inspect-head-pose`는 실카메라 축/부호 점검값을 출력한다. `evaluate`는 정답 CSV에서
   dataset_id·환경 조건을 포함한 재현 가능한 정확도 JSON을 만든다(`tools/README.md`).
@@ -63,7 +67,8 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
   화면 위쪽이 양수가 되도록 수정 완료, yaw·roll 최종 확인 필요)
 - [ ] Gesture·Fusion·Runtime과의 실제 통합(코드 조립은 Runtime composition root 몫)
 - [ ] 환경 변화(조명/안경/거리) 조건에서 실측 Target Selection Accuracy 수집
-- [x] 10초·다양한 자세 물체 등록 + 머리 이동 삼각측량 3D 위치·유효 반경 추정
+- [x] 2단계 물체 등록(중앙점 20초 + 경계 16초) + 중앙점 머리 이동 삼각측량
+  3D 위치·유효 반경 추정
   (`calibration/triangulation.py`, `target_registration.py`)
 - [x] 3D geometry ↔ 각도 모드 통합 classifier(`effective_distance_and_variance`) —
   origin 없거나 깊이 퇴화 시 프레임 단위 폴백
@@ -77,22 +82,23 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
   테스트에서 확인되면 여기와 models/README.md를 갱신할 것(있으면 [decisions.md](decisions.md)로 옮기기).
 ## Device registration update (2026-07-19)
 
-Demo target registration follows README section 7: the user looks at a real object for about two seconds, and the
-system stores a camera-relative gaze direction profile as `mean_direction + variance`.
+Demo target registration follows README section 7 as two strictly separated phases:
+20 seconds on one center point for MLP/center/3D, followed by 16 seconds tracing
+the four edges with the head still for the angular target area.
 
 Implemented files:
 
 - `src/jarvis/gaze/direction.py`: vector/yaw-pitch conversion used only at the registration/debug boundary.
 - `src/jarvis/calibration/registry.py`: target add/update/rename/delete persistence, JSON auto-load, legacy profile migration,
   and conversion back to README-style `DeviceGazeProfile`.
-- `src/jarvis/calibration/target_registration.py`: two-second robust sample collection with minimum frame count,
-  confidence filtering, closed-eye filtering, jump filtering, median center, and robust angular variance.
+- `src/jarvis/calibration/target_registration.py`: phase-separated center/boundary samples,
+  minimum frame count, confidence/closed-eye/jump filtering, center median, and edge area.
 - `src/jarvis/gaze/classifier.py`: registered target matching uses cosine similarity normalized by stored variance,
   then rejects `UNKNOWN` when the nearest registered direction is too far or the first/second target margin is too small.
 - `src/jarvis/gaze/smoothing.py`: confidence-aware EMA smoothing is enabled before classification.
 - `src/jarvis/gaze/smoothing.py`: short blinks hold the last stable gaze briefly, and tiny gaze changes are absorbed by a
   small angular deadzone to reduce jitter.
-- `src/jarvis/gaze/lock.py`: 300-500 ms dwell-based lock and hysteresis are handled by the existing state machine.
+- `src/jarvis/gaze/lock.py`: three-second dwell confirmation and hysteresis are handled by the existing state machine.
 - `src/jarvis/monitoring/`: debug UI can register/reregister/rename/delete targets and show the live gaze ray,
   candidate/lock state, and pipeline diagnostics without drawing artificial target-area circles.
 
@@ -102,14 +108,36 @@ MVP operating assumptions:
 - User changes are announced manually, so automatic face identity/profile switching is out of MVP scope.
 - Objects are registered every time they are newly added or moved.
 - Real-camera yaw/pitch sign and scale still need one final fixed-camera sanity check before demo.
-- The current `CalibratedGaze` is geometric yaw/pitch from the smoothed gaze vector. A learned Ridge/MLP personal correction
-  can be added later when labeled calibration samples are available.
+- `CalibratedGaze` uses a validated residual MLP by default when at least three labeled target directions are available;
+  otherwise it falls back to Ridge or the raw geometric vector.
+
+## Residual MLP vector calibration (2026-07-21)
+
+`src/jarvis/gaze/mlp_calibration.py` implements a NumPy-only `12 → 24 → 12 → 2`
+network. Input is raw yaw/pitch, both iris offsets, head yaw/pitch/roll, face center,
+and face scale. Output is not an absolute direction but `(delta_yaw, delta_pitch)`;
+the geometric vector therefore remains the safe baseline. Corrections are capped at
+35 degrees.
+
+Training data remains in `data/calibration/gaze_regressor.json`. Each sample stores
+the 13-value Ridge-compatible feature vector, target yaw/pitch pseudo-label, and (for
+new records) `target_id`. At registration completion the current target's identified
+samples replace its previous identified samples, all targets are replayed, and both
+Ridge and MLP are retrained. Validation is split within each target direction. A new
+MLP is activated only when it improves held-out angular error over the raw vector.
+Training runs only after registration; live inference is three matrix multiplies.
+Only phase-1 center-point frames become MLP rows. Phase-2 edge frames are deliberately
+excluded so distinct boundary directions are never mislabeled as the center.
+
+The debug panel exposes `vector model: mlp/ridge/geometric`, raw yaw/pitch, final
+yaw/pitch, and whether correction was applied. The checkbox disables correction for
+an immediate A/B comparison without changing or deleting the dataset.
 
 ## 3D object position update (2026-07-20)
 
-사용자 요청: 등록을 10초로 늘리고 다양한 각도·자세로 물체를 바라보게 해, 방향+각도
-분산이 아니라 물체의 실제 좌표와 크기를 예측한 뒤 그것으로 시선 대상을 판정한다.
-머리 이동(parallax)으로 3D 위치를 삼각측량 시도하고, 신뢰도가 낮으면(baseline 부족,
+현재 등록 1단계는 중앙의 한 점을 20초 동안 보며 다양한 자세·거리에서 머리
+이동(parallax) 광선을 모아 3D 위치를 삼각측량한다. 2단계 경계 프레임은 서로 다른
+실제 표면점을 향하므로 삼각측량과 MLP 중앙점 정답에서 제외한다. 3D 신뢰도가 낮으면(baseline 부족,
 광선이 거의 평행, 잔차 과다) 2026-07-19의 각도 기반 등록으로 조용히 대체한다
 (documents/decisions.md 2026-07-20 항목들).
 
@@ -190,13 +218,43 @@ final_pitch_deg =  head_pitch_deg * head_pitch_weight + eye_pitch_offset_deg
 | `smoothing_window_frames` | `8` | Confidence-weighted moving average window. |
 | `ema_min_alpha` / `ema_max_alpha` | `0.15` / `0.65` | Low-confidence frames move slowly; high-confidence frames move faster. |
 | `blink_hold_ms` | `300` | Short eye-closed intervals hold the last stable gaze. |
-| `blink_recovery_hold_ms` | `150` | Brief hold after reopening eyes so iris landmarks can settle. |
+| `blink_recovery_hold_ms` | `250` | Brief hold after reopening eyes so iris landmarks can settle. |
+| `eye_closed_ratio_threshold` | `0.12` | Absolute eyelid-height/eye-width floor for eye-closed detection. |
+| `blink_close_ratio` / `blink_reopen_ratio` | `0.68` / `0.82` | Adaptive close/reopen ratios relative to the user's open-eye baseline. |
+| `eye_openness_baseline_decay` | `0.01` | Slow per-frame downward adaptation of the open-eye baseline. |
 | `iris_jump_threshold` | `0.18` | Frame-to-frame iris-offset jump threshold. |
 | `max_valid_eye_offset` | `0.55` | Reject implausible eye-edge iris offsets. |
 | `tracking_loss_hold_ms` | `800` | Keep last gaze briefly during full face-landmarker dropouts. |
 | `small_motion_deadzone_deg` | `5.0` | Absorb tiny smoothed-gaze changes to reduce jitter. |
 
-Debug monitor policy: simple `iris jump` no longer freezes the vector completely; it lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames still hold the previous stable gaze.
+Debug monitor policy: simple `iris jump` no longer freezes the vector completely; it lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames hold both the previous gaze direction and the complete classifier feature, so head/scale changes during a blink cannot switch the ML target. Eye closure uses an adaptive personal open-eye baseline with reopen hysteresis, not only one absolute threshold.
+
+### Gaze-first personal target scoring
+
+The per-user Linear-softmax classifier standardizes all six target features, then
+applies explicit priority multipliers before training and inference:
+
+| Feature group | Weight | Role |
+| --- | ---: | --- |
+| gaze yaw/pitch | `2.0` | Primary target evidence. |
+| head yaw/pitch/roll | `0.4` | Pose context; it must not overpower matching gaze. |
+| face scale | `0.6` | Camera-distance context. |
+
+Scaling alone does not guarantee the learned model will obey the priority because it
+can compensate with larger head coefficients. After fitting, each class therefore
+caps the effective head coefficient norm at 20% of its gaze coefficient norm. If gaze
+contains too little evidence, confidence falls through to the gaze-area matcher rather
+than allowing head pose to decide alone. Legacy model weights are not mixed with the
+new scale. Existing stored registration
+samples are retrained in memory with the current feature weights when the monitor
+loads. A later registration persists the migrated model.
+
+The old per-frame gaze delta remains available for diagnostics and compatibility,
+but live scoring now derives real time-normalized velocity (deg/s) and acceleration
+(deg/s²). Motion toward a registered target center can multiply both the personal
+classifier score and the area score by up to `1 + 0.35 + 0.15 = 1.50`. Opposite
+motion is not rewarded. Blink, recovery, and tracking-hold frames freeze the motion
+history; intervals over 250ms reset derivatives instead of producing a false spike.
 
 ### Target matching / UNKNOWN rejection
 
@@ -207,8 +265,17 @@ Debug monitor policy: simple `iris jump` no longer freezes the vector completely
 | `target_match_tolerance` | `1.10` | Near-boundary tolerance in normalized distance. Example: `8.5/8.0deg x1.06` is accepted; `26.1/8.0deg x3.26` is rejected. |
 | `minimum_probability` | `0.80` | Minimum probability for Gaze Lock candidate/hold. |
 | `minimum_margin` | `0.20` | Minimum top-1 vs top-2 margin for confident lock. |
-| `dwell_time_ms` | `500` | Required stable duration before lock. |
-| `target_lock_ttl_ms` | `1500` | Lock validity window while waiting for gesture. |
+| `dwell_time_ms` | `3000` | Same target must remain the confident engine result for three continuous seconds before confirmation. |
+| `target_lock_ttl_ms` | `1500` | Gesture-wait/input-stream validity window; replacement candidates do not clear the confirmed target. |
+| `confirmed_unknown_timeout_ms` | `2000` | Release the Gaze confirmed target after two continuous seconds of classifier `UNKNOWN`. |
+| `personal_gaze_feature_weight` | `2.0` | Primary gaze contribution to the personal classifier. |
+| `personal_head_feature_weight` | `0.4` | Secondary head-pose context contribution. |
+| `personal_face_scale_feature_weight` | `0.6` | Camera-distance context contribution. |
+| `target_motion_alignment_weight` | `0.35` | Maximum velocity-direction target bonus. |
+| `target_acceleration_alignment_weight` | `0.15` | Maximum acceleration-direction target bonus. |
+| `gaze_motion_min_speed_deg_s` | `6.0` | Ignore slower motion as jitter. |
+| `gaze_motion_min_acceleration_deg_s2` | `80.0` | Ignore smaller acceleration as jitter. |
+| `gaze_motion_max_interval_ms` | `250` | Reset derivatives after longer gaps. |
 
 ### Registration / target profile
 
