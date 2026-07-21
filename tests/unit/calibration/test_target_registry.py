@@ -91,6 +91,7 @@ def test_registration_builds_feature_profile() -> None:
     assert record.feature_profile.sample_count == 6
     assert record.area_profile is not None
     assert record.area_profile.contains(10.0, 0.0)
+    assert len(record.area_profile.boundary_polygon) >= 3
     assert record.reference_face_scale == pytest.approx(0.11)
 
 
@@ -199,6 +200,7 @@ def test_registry_round_trip_and_nearby_warning_data(tmp_path: Path) -> None:
             radius_yaw=6.0,
             radius_pitch=5.0,
             sample_count=24,
+            boundary_polygon=((4.0, -1.0), (16.0, -1.0), (16.0, 9.0), (4.0, 9.0)),
         ),
     )
     registry.upsert(record)

@@ -360,7 +360,9 @@ face scale/face center가 함께 변하는 분포를 수집한다. 2단계에서
 채 눈으로 네 변을 순서대로 훑어 최종 yaw/pitch 영역을 확정한다. 두 단계의 유효
 프레임은 8차원 target feature profile에 함께 들어가며, 2단계 경계의 중앙값이
 target 중심이 된다. 프레임 이미지는 저장하지 않고 숫자 feature의 평균·공분산만
-JSON에 저장한다.
+JSON에 저장한다. 2단계 경계 샘플은 95퍼센타일 밖의 jump/outlier를 제외한 뒤
+convex hull로 축약한다. 따라서 사각 물체의 모서리를 타원처럼 잘라내지 않고,
+hull 내부 전체를 물체 영역으로 판정한다.
 
 ```
 {
@@ -373,6 +375,13 @@ JSON에 저장한다.
     "mean": [1.2, 4.0, -3.0, 6.0, 0.5, 0.09, 0.51, 0.43],
     "covariance": [["8 x 8 covariance"]],
     "threshold": 2.5
+  },
+  "area_profile": {
+    "center_yaw": -2.8,
+    "center_pitch": 7.4,
+    "radius_yaw": 6.0,
+    "radius_pitch": 4.0,
+    "boundary_polygon": [[-8.8,3.4],[3.2,3.4],[3.2,11.4],[-8.8,11.4]]
   }
 }
 ```
@@ -395,11 +404,16 @@ Baseline:
 ```
 최근 시선 방향 시퀀스
 → Temporal smoothing
-→ 정밀 테두리 area 안 target만 후보 생성
+→ 정밀 테두리 convex hull 안 target만 후보 생성
 → 8D Mahalanobis 문맥(gaze/head/scale/face center)으로 후보 순위·신뢰도 조정
 → 겹친 후보는 gaze 중심 점수 + 홍채 settle 방향으로 결정
 → area 밖이면 UNKNOWN
 ```
+
+polygon 정규화 거리는 target 중심에서 현재 gaze 방향으로 ray를 뻗어 hull 경계와
+만나는 지점을 `1.0`으로 둔다. `target_match_tolerance=1.10`은 이 경계를 방사형으로
+10% 넘는 작은 측정 오차까지만 허용한다. `boundary_polygon`이 없는 과거 JSON은
+하위 호환을 위해 기존 타원 거리로 읽으며, 실제 hull을 사용하려면 위치를 다시 등록한다.
 
 `position_3d`가 등록된 기기는 Device classifier 단계에서 "유사도"를 다르게
 얻는다 — 등록 시 저장한 고정 방향과 비교하는 대신, 현재 머리 위치에서 그

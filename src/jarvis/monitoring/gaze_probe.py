@@ -102,6 +102,11 @@ class AreaProfileDetail:
     normalized_distance: float
     tolerance: float
     is_selected: bool
+    center_yaw: float
+    center_pitch: float
+    radius_yaw: float
+    radius_pitch: float
+    boundary_polygon: tuple[tuple[float, float], ...]
 
     @property
     def range_status(self) -> str:
@@ -379,6 +384,11 @@ def _area_details(
             ),
             tolerance=config.target_match_tolerance,
             is_selected=device_id == selected_target,
+            center_yaw=profile.center_yaw,
+            center_pitch=profile.center_pitch,
+            radius_yaw=profile.radius_yaw,
+            radius_pitch=profile.radius_pitch,
+            boundary_polygon=profile.boundary_polygon,
         )
         for device_id, profile in classifier.area_profiles.items()
     ]

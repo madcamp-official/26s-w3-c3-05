@@ -99,13 +99,25 @@ def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
     area by the nearest registered direction, dimming pixels outside the
     registered radius.
     """
+    polygon_details = tuple(
+        sorted(
+            (detail for detail in snapshot.area_details if detail.boundary_polygon),
+            key=lambda detail: detail.device_id,
+        )
+    )
+    polygon_ids = {detail.device_id for detail in polygon_details}
     details = tuple(
         sorted(
-            (d for d in snapshot.device_details if not np.isnan(d.angular_distance_deg)),
+            (
+                detail
+                for detail in snapshot.device_details
+                if not np.isnan(detail.angular_distance_deg)
+                and detail.device_id not in polygon_ids
+            ),
             key=lambda d: d.device_id,
         )
     )
-    if not details:
+    if not details and not polygon_details:
         return frame
 
     h, w = frame.shape[:2]
@@ -116,33 +128,61 @@ def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
     xs = np.linspace(-yaw_span * 0.5, yaw_span * 0.5, grid_w, dtype=np.float64)
     ys = np.linspace(pitch_span * 0.5, -pitch_span * 0.5, grid_h, dtype=np.float64)
     yaw_grid, pitch_grid = np.meshgrid(xs, ys)
+    device_ids = sorted({detail.device_id for detail in (*polygon_details, *details)})
+    color_index = {device_id: index for index, device_id in enumerate(device_ids)}
 
-    heat = np.zeros((grid_h, grid_w, 3), dtype=np.float32)
-    alpha = np.zeros((grid_h, grid_w), dtype=np.float32)
-    for index, detail in enumerate(details[: len(_TARGET_COLORS)]):
-        if np.isnan(detail.target_yaw_deg) or np.isnan(detail.target_pitch_deg):
-            continue
-        center_yaw = detail.target_yaw_deg
-        center_pitch = detail.target_pitch_deg
-        radius = max(detail.allowed_radius_deg, 1.0)
-        distance = np.hypot((yaw_grid - center_yaw) / radius, (pitch_grid - center_pitch) / radius)
-        influence = np.exp(-(distance**2) * 1.4)
-        mask = influence > alpha
-        color_bgr = _TARGET_COLORS[index % len(_TARGET_COLORS)]
-        heat[mask] = np.asarray(color_bgr, dtype=np.float32)
-        alpha[mask] = influence[mask]
+    if details:
+        heat = np.zeros((grid_h, grid_w, 3), dtype=np.float32)
+        alpha = np.zeros((grid_h, grid_w), dtype=np.float32)
+        for detail in details[: len(_TARGET_COLORS)]:
+            if np.isnan(detail.target_yaw_deg) or np.isnan(detail.target_pitch_deg):
+                continue
+            center_yaw = detail.target_yaw_deg
+            center_pitch = detail.target_pitch_deg
+            radius = max(detail.allowed_radius_deg, 1.0)
+            distance = np.hypot(
+                (yaw_grid - center_yaw) / radius,
+                (pitch_grid - center_pitch) / radius,
+            )
+            influence = np.exp(-(distance**2) * 1.4)
+            mask = influence > alpha
+            color_bgr = _TARGET_COLORS[color_index[detail.device_id] % len(_TARGET_COLORS)]
+            heat[mask] = np.asarray(color_bgr, dtype=np.float32)
+            alpha[mask] = influence[mask]
 
-    heat_bgr = cv2.resize(heat.astype(np.uint8), (w, h), interpolation=cv2.INTER_LINEAR)
-    alpha_full = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_LINEAR)
-    alpha_full = np.clip(alpha_full * 0.28, 0.0, 0.28)
-    blended = (
-        frame.astype(np.float32) * (1.0 - alpha_full[..., None])
-        + heat_bgr.astype(np.float32) * alpha_full[..., None]
-    )
-    frame[:] = blended.astype(np.uint8)
+        heat_bgr = cv2.resize(heat.astype(np.uint8), (w, h), interpolation=cv2.INTER_LINEAR)
+        alpha_full = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_LINEAR)
+        alpha_full = np.clip(alpha_full * 0.28, 0.0, 0.28)
+        blended = (
+            frame.astype(np.float32) * (1.0 - alpha_full[..., None])
+            + heat_bgr.astype(np.float32) * alpha_full[..., None]
+        )
+        frame[:] = blended.astype(np.uint8)
 
-    for index, detail in enumerate(details[: len(_TARGET_COLORS)]):
-        color_bgr = _TARGET_COLORS[index % len(_TARGET_COLORS)]
+    for detail in polygon_details[: len(_TARGET_COLORS)]:
+        color_bgr = _TARGET_COLORS[color_index[detail.device_id] % len(_TARGET_COLORS)]
+        points = np.asarray(
+            [
+                (
+                    int((yaw / yaw_span + 0.5) * w),
+                    int((0.5 - pitch / pitch_span) * h),
+                )
+                for yaw, pitch in detail.boundary_polygon
+            ],
+            dtype=np.int32,
+        )
+        polygon_overlay = frame.copy()
+        cv2.fillConvexPoly(polygon_overlay, points, color_bgr, lineType=cv2.LINE_AA)
+        cv2.addWeighted(polygon_overlay, 0.18, frame, 0.82, 0, dst=frame)
+        cv2.polylines(frame, [points], True, color_bgr, 2, cv2.LINE_AA)
+        center = (
+            int((detail.center_yaw / yaw_span + 0.5) * w),
+            int((0.5 - detail.center_pitch / pitch_span) * h),
+        )
+        cv2.circle(frame, center, 4, color_bgr, thickness=-1)
+
+    for detail in details[: len(_TARGET_COLORS)]:
+        color_bgr = _TARGET_COLORS[color_index[detail.device_id] % len(_TARGET_COLORS)]
         if np.isnan(detail.target_yaw_deg) or np.isnan(detail.target_pitch_deg):
             continue
         cx = int((detail.target_yaw_deg / yaw_span + 0.5) * w)
@@ -156,9 +196,11 @@ def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
             cv2.LINE_AA,
         )
         cv2.circle(frame, (cx, cy), 4, color_bgr, thickness=-1)
+    for index, device_id in enumerate(device_ids[: len(_TARGET_COLORS)]):
+        color_bgr = _TARGET_COLORS[color_index[device_id] % len(_TARGET_COLORS)]
         y = min(h - 10, 58 + index * 18)
         cv2.circle(frame, (14, y - 5), 5, color_bgr, thickness=-1)
-        cv2.putText(frame, detail.device_id, (25, y), _FONT, 0.45, color_bgr, 1, cv2.LINE_AA)
+        cv2.putText(frame, device_id, (25, y), _FONT, 0.45, color_bgr, 1, cv2.LINE_AA)
     return frame
 
 

@@ -1485,6 +1485,7 @@ class MainWindow(QMainWindow):
             )
             area_label = (
                 f" area={record.area_profile.radius_yaw:.1f}/{record.area_profile.radius_pitch:.1f}"
+                f" hull={len(record.area_profile.boundary_polygon)}"
                 f" cap={self._gaze_config.registration_max_area_radius_deg:.1f}"
                 if record.area_profile is not None
                 else " area=none"

@@ -90,7 +90,8 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
 
 1단계에서는 물체 테두리를 훑으며 얼굴·몸을 대각선과 앞뒤로 움직여 자세·거리·
 화면 내 위치 문맥을 모은다. 2단계에서는 고개를 고정하고 테두리를 다시 한 바퀴
-돌아 최종 area를 확정한다. runtime은 area 안 후보만 만들고 8D profile로 검증·
+돌아 최종 area를 확정한다. 2단계 yaw/pitch 경계에서 95퍼센타일 밖 outlier를 제거하고
+convex hull 꼭짓점만 JSON에 저장한다. runtime은 polygon 안 후보만 만들고 8D profile로 검증·
 정렬한다. area 밖 후보는 profile이 가까워도 항상 `UNKNOWN`이다. area 안에서는 head
 pose가 달라도 눈이 보정한 최종 gaze를 우선하며, 8D 문맥은 hard rejection이 아니라
 겹친 후보의 순위와 신뢰도에만 사용한다. 겹침에서는 target
@@ -250,7 +251,9 @@ Debug monitor policy: simple `iris jump` lowers confidence so the arrow keeps mo
 
 ### Deterministic 8D target scoring
 
-The traced yaw/pitch area is the eligibility gate. Candidates inside that area are
+The traced yaw/pitch convex hull is the eligibility gate. Radial distance is zero at
+the stored center and one where the center-to-gaze ray intersects the polygon boundary.
+This preserves traced rectangular corners that the previous ellipse discarded. Candidates inside that area are
 ranked with an 8D Mahalanobis soft-context profile: gaze yaw/pitch, head yaw/pitch/
 roll, face scale, and normalized face center x/y. Per-feature covariance floors keep
 gaze more discriminative while preventing degree units from erasing scale/location.
@@ -267,7 +270,7 @@ target bonus. Blink, recovery, iris-jump and tracking-loss frames reset settle s
 | --- | ---: | --- |
 | `unknown_probability_threshold` | `0.80` | Reject as `UNKNOWN` when top-1 target probability is too low. |
 | `unknown_max_angle_deg` | `25.0` | Reject as `UNKNOWN` when even the nearest registered direction is farther than this. |
-| `target_match_tolerance` | `1.10` | Near-boundary tolerance in normalized distance. Example: `8.5/8.0deg x1.06` is accepted; `26.1/8.0deg x3.26` is rejected. |
+| `target_match_tolerance` | `1.10` | Radial convex-hull boundary tolerance; up to 10% beyond the traced edge is accepted. |
 | `minimum_probability` | `0.80` | Minimum probability for Gaze Lock candidate/hold. |
 | `minimum_margin` | `0.20` | Minimum top-1 vs top-2 margin for confident lock. |
 | `dwell_time_ms` | `3000` | Same target must remain the confident engine result for three continuous seconds before confirmation. |
@@ -287,6 +290,8 @@ target bonus. Blink, recovery, iris-jump and tracking-loss frames reset settle s
 | `registration_min_spread_deg` | `4.0` | Minimum angular spread saved for a registered target. Prevents overly tiny target regions. |
 | `registration_max_spread_deg` | `8.0` | Maximum angular spread saved for a registered target. Prevents one target from swallowing too much space. |
 | `registration_max_area_radius_deg` | `6.0` | Runtime cap for edge-loop target area radius, even if an old JSON profile saved a larger area. |
+
+Profiles saved before `boundary_polygon` existed continue to use the legacy ellipse for compatibility. Re-register the target to collect a real hull. The debug heatmap fills and outlines the stored polygon and the target list shows its hull vertex count.
 
 ### Legacy 3D profile compatibility
 

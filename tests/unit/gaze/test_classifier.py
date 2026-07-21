@@ -18,6 +18,7 @@ from jarvis.gaze.feature_profile import (
     TargetAreaProfile,
     TargetFeatureProfile,
     TargetFeatureSample,
+    build_area_profile,
     build_feature_profile,
 )
 
@@ -150,6 +151,61 @@ def test_area_profile_accepts_gaze_inside_registered_object_boundary() -> None:
     )
 
     assert result.target == "monitor"
+
+
+def test_convex_hull_accepts_a_traced_rectangular_corner() -> None:
+    area = build_area_profile(
+        [(-6.0, -4.0), (6.0, -4.0), (6.0, 4.0), (-6.0, 4.0)],
+        center_yaw_pitch=(0.0, 0.0),
+        minimum_radius_deg=1.0,
+        maximum_radius_deg=6.0,
+    )
+    classifier = TargetClassifier(
+        GazeConfig(unknown_probability_threshold=0.0, target_match_tolerance=1.1)
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        area_profile=area,
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(5.9, -3.5, 0.0, 0.0, 0.0, 0.1),
+    )
+
+    assert area.normalized_distance(5.9, -3.5) == pytest.approx(5.9 / 6.0)
+    assert result.target == "monitor"
+
+
+def test_convex_hull_rejects_point_outside_traced_shape_but_inside_bounding_box() -> None:
+    area = build_area_profile(
+        [(-4.0, -4.0), (4.0, -4.0), (0.0, 4.0)],
+        center_yaw_pitch=(0.0, 0.0),
+        minimum_radius_deg=1.0,
+        maximum_radius_deg=8.0,
+    )
+
+    assert area.boundary_polygon
+    assert area.contains(0.0, 0.0)
+    assert not area.contains(3.0, 3.0)
+
+
+def test_convex_hull_drops_single_boundary_outlier() -> None:
+    samples = [
+        (5.0 * math.cos(index * math.tau / 40), 3.0 * math.sin(index * math.tau / 40))
+        for index in range(40)
+    ]
+    samples.append((30.0, 30.0))
+
+    area = build_area_profile(
+        samples,
+        center_yaw_pitch=(0.0, 0.0),
+        minimum_radius_deg=1.0,
+        maximum_radius_deg=20.0,
+    )
+
+    assert max(yaw for yaw, _pitch in area.boundary_polygon) < 10.0
+    assert not area.contains(20.0, 20.0)
 
 
 def test_area_profile_runtime_cap_rejects_overwide_registered_area() -> None:

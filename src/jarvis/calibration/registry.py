@@ -256,12 +256,21 @@ class TargetRegistry:
         if not isinstance(payload, dict):
             return None
         try:
+            polygon_payload = payload.get("boundary_polygon", [])
+            if not isinstance(polygon_payload, list):
+                return None
+            polygon: list[tuple[float, float]] = []
+            for point in polygon_payload:
+                if not isinstance(point, (list, tuple)) or len(point) != 2:
+                    return None
+                polygon.append((float(point[0]), float(point[1])))
             return TargetAreaProfile(
                 center_yaw=float(payload["center_yaw"]),
                 center_pitch=float(payload["center_pitch"]),
                 radius_yaw=float(payload["radius_yaw"]),
                 radius_pitch=float(payload["radius_pitch"]),
                 sample_count=int(payload["sample_count"]),
+                boundary_polygon=tuple(polygon),
             )
         except (KeyError, TypeError, ValueError):
             return None

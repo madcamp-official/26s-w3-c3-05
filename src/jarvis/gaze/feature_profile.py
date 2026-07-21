@@ -223,6 +223,7 @@ class TargetAreaProfile:
     radius_yaw: float
     radius_pitch: float
     sample_count: int
+    boundary_polygon: tuple[tuple[float, float], ...] = ()
 
     def __post_init__(self) -> None:
         values = (self.center_yaw, self.center_pitch, self.radius_yaw, self.radius_pitch)
@@ -232,6 +233,15 @@ class TargetAreaProfile:
             raise ValueError("target area profile radii must be positive")
         if self.sample_count <= 0:
             raise ValueError("target area profile sample_count must be positive")
+        if self.boundary_polygon:
+            hull = _convex_hull(self.boundary_polygon)
+            if len(hull) < 3 or abs(_polygon_signed_area(hull)) <= 1e-9:
+                raise ValueError("target area polygon must contain at least three non-collinear points")
+            if not _point_in_convex_polygon(
+                (self.center_yaw, self.center_pitch), hull
+            ):
+                raise ValueError("target area center must lie inside its polygon")
+            object.__setattr__(self, "boundary_polygon", hull)
 
     def normalized_distance(
         self,
@@ -250,6 +260,21 @@ class TargetAreaProfile:
         )
         radius_yaw *= radius_scale
         radius_pitch *= radius_scale
+        if self.boundary_polygon:
+            scale_yaw = radius_yaw / self.radius_yaw
+            scale_pitch = radius_pitch / self.radius_pitch
+            polygon = tuple(
+                (
+                    self.center_yaw + (yaw - self.center_yaw) * scale_yaw,
+                    self.center_pitch + (pitch - self.center_pitch) * scale_pitch,
+                )
+                for yaw, pitch in self.boundary_polygon
+            )
+            return _radial_polygon_distance(
+                (self.center_yaw, self.center_pitch),
+                polygon,
+                (gaze_yaw, gaze_pitch),
+            )
         return math.hypot(
             (gaze_yaw - self.center_yaw) / radius_yaw,
             (gaze_pitch - self.center_pitch) / radius_pitch,
@@ -268,6 +293,88 @@ class TargetAreaProfile:
             max_radius_deg,
             radius_scale,
         ) <= 1.0
+
+
+def _cross_2d(first: tuple[float, float], second: tuple[float, float]) -> float:
+    return first[0] * second[1] - first[1] * second[0]
+
+
+def _convex_hull(
+    points: tuple[tuple[float, float], ...] | list[tuple[float, float]],
+) -> tuple[tuple[float, float], ...]:
+    """Andrew monotonic-chain hull in counter-clockwise order."""
+    unique = sorted({(float(point[0]), float(point[1])) for point in points})
+    if len(unique) <= 1:
+        return tuple(unique)
+
+    def turn(
+        origin: tuple[float, float],
+        first: tuple[float, float],
+        second: tuple[float, float],
+    ) -> float:
+        return _cross_2d(
+            (first[0] - origin[0], first[1] - origin[1]),
+            (second[0] - origin[0], second[1] - origin[1]),
+        )
+
+    lower: list[tuple[float, float]] = []
+    for point in unique:
+        while len(lower) >= 2 and turn(lower[-2], lower[-1], point) <= 0.0:
+            lower.pop()
+        lower.append(point)
+    upper: list[tuple[float, float]] = []
+    for point in reversed(unique):
+        while len(upper) >= 2 and turn(upper[-2], upper[-1], point) <= 0.0:
+            upper.pop()
+        upper.append(point)
+    return tuple(lower[:-1] + upper[:-1])
+
+
+def _polygon_signed_area(polygon: tuple[tuple[float, float], ...]) -> float:
+    return 0.5 * sum(
+        first[0] * second[1] - second[0] * first[1]
+        for first, second in zip(polygon, (*polygon[1:], polygon[0]), strict=True)
+    )
+
+
+def _point_in_convex_polygon(
+    point: tuple[float, float],
+    polygon: tuple[tuple[float, float], ...],
+    *,
+    tolerance: float = 1e-9,
+) -> bool:
+    for first, second in zip(polygon, (*polygon[1:], polygon[0]), strict=True):
+        edge = (second[0] - first[0], second[1] - first[1])
+        relative = (point[0] - first[0], point[1] - first[1])
+        if _cross_2d(edge, relative) < -tolerance:
+            return False
+    return True
+
+
+def _radial_polygon_distance(
+    center: tuple[float, float],
+    polygon: tuple[tuple[float, float], ...],
+    point: tuple[float, float],
+) -> float:
+    """Return 1 at the hull boundary along the center→point ray."""
+    direction = (point[0] - center[0], point[1] - center[1])
+    if math.hypot(*direction) <= 1e-12:
+        return 0.0
+    intersections: list[float] = []
+    for first, second in zip(polygon, (*polygon[1:], polygon[0]), strict=True):
+        edge = (second[0] - first[0], second[1] - first[1])
+        offset = (first[0] - center[0], first[1] - center[1])
+        denominator = _cross_2d(direction, edge)
+        if abs(denominator) <= 1e-12:
+            continue
+        ray_scale = _cross_2d(offset, edge) / denominator
+        edge_scale = _cross_2d(offset, direction) / denominator
+        if ray_scale > 1e-12 and -1e-9 <= edge_scale <= 1.0 + 1e-9:
+            intersections.append(ray_scale)
+    if not intersections:
+        return math.inf
+    boundary_scale = min(intersections)
+    return 1.0 / boundary_scale
 
 
 def build_area_profile(
@@ -295,12 +402,53 @@ def build_area_profile(
     radius = np.maximum(radius, minimum_radius_deg)
     if maximum_radius_deg is not None:
         radius = np.minimum(radius, maximum_radius_deg)
+    inlier_mask = np.all(deviations <= radius + 1e-9, axis=1)
+    polygon_samples = matrix[inlier_mask]
+    if len(polygon_samples) < 3:
+        polygon_samples = np.clip(matrix, center - radius, center + radius)
+    polygon = _convex_hull(
+        [(float(row[0]), float(row[1])) for row in polygon_samples]
+    )
+    if len(polygon) < 3 or abs(_polygon_signed_area(polygon)) <= 1e-9:
+        polygon = (
+            (float(center[0] - radius[0]), float(center[1] - radius[1])),
+            (float(center[0] + radius[0]), float(center[1] - radius[1])),
+            (float(center[0] + radius[0]), float(center[1] + radius[1])),
+            (float(center[0] - radius[0]), float(center[1] + radius[1])),
+        )
+    else:
+        deviations_from_center = np.abs(
+            np.asarray(polygon, dtype=np.float64) - center
+        )
+        extent = np.max(deviations_from_center, axis=0)
+        axis_scale = np.maximum(1.0, radius / np.maximum(extent, 1e-9))
+        expanded = np.clip(
+            center + (np.asarray(polygon, dtype=np.float64) - center) * axis_scale,
+            center - radius,
+            center + radius,
+        )
+        polygon = _convex_hull(
+            [
+                (float(row[0]), float(row[1]))
+                for row in expanded
+            ]
+        )
+        if not _point_in_convex_polygon(
+            (float(center[0]), float(center[1])), polygon
+        ):
+            polygon = (
+                (float(center[0] - radius[0]), float(center[1] - radius[1])),
+                (float(center[0] + radius[0]), float(center[1] - radius[1])),
+                (float(center[0] + radius[0]), float(center[1] + radius[1])),
+                (float(center[0] - radius[0]), float(center[1] + radius[1])),
+            )
     return TargetAreaProfile(
         center_yaw=float(center[0]),
         center_pitch=float(center[1]),
         radius_yaw=float(radius[0]),
         radius_pitch=float(radius[1]),
         sample_count=int(len(matrix)),
+        boundary_polygon=polygon,
     )
 
 
