@@ -49,6 +49,11 @@ DEFAULT_GESTURE_LABELS: tuple[str, ...] = (
     "drumming_fingers",
     # 정의된 제스처 어디에도 안 속하는 동작(Jester "Doing other things") (1)
     "doing_other_things",
+    # 정지 명령 — 활짝 편 손바닥 정적 포즈(Jester "Stop Sign") (1). 배경이 아니라
+    # 액션을 유발하는 전경 제스처다(2026-07-20 추가). drumming_fingers와 달리
+    # 손가락이 거의 완전히 펴진 고유 포즈라 판별이 쉽다(평균 관절각 3.04rad,
+    # 검출율 99.1%).
+    "stop_sign",
 )
 
 # 액션을 유발하지 않는 "배경" 클래스들 (2026-07-20 결정).

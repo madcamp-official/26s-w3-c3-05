@@ -34,6 +34,7 @@ JESTER_TO_OUR_LABEL: dict[str, str | None] = {
     "Sliding Two Fingers Right": "slide_two_fingers_right",
     "Drumming Fingers": "drumming_fingers",
     "Doing other things": "doing_other_things",
+    "Stop Sign": "stop_sign",  # 정지 명령 (2026-07-20 추가) — 활짝 편 손바닥 정적 포즈
     # --- 이번 라운드 제외 (README 공식 목록의 swipe 포함) ---
     "Swiping Up": None,
     "Swiping Down": None,
@@ -52,7 +53,6 @@ JESTER_TO_OUR_LABEL: dict[str, str | None] = {
     "Thumb Up": None,
     "Thumb Down": None,
     "Shaking Hand": None,
-    "Stop Sign": None,
 }
 
 # 좌우반전 augmentation이 라벨을 스왑해야 하는 쌍(양방향). 좌우가 그대로 뒤바뀌는

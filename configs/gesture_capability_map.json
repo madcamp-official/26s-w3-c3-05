@@ -6,7 +6,8 @@
       "slide_two_fingers_down": { "capability": "brightness", "operation": "decrement", "value": 10 },
       "slide_two_fingers_up": { "capability": "brightness", "operation": "increment", "value": 10 },
       "rotate_clockwise": { "capability": "color_temperature", "operation": "increment", "value": 100 },
-      "rotate_counter_clockwise": { "capability": "color_temperature", "operation": "decrement", "value": 100 }
+      "rotate_counter_clockwise": { "capability": "color_temperature", "operation": "decrement", "value": 100 },
+      "stop_sign": { "capability": "power", "operation": "toggle", "value": true }
     },
     "laptop": {
       "slide_two_fingers_down": { "capability": "scroll", "operation": "decrement", "value": 3 },

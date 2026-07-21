@@ -58,6 +58,7 @@ def test_foreground_indices_are_the_actionable_gestures() -> None:
         "slide_two_fingers_down",
         "slide_two_fingers_left",
         "slide_two_fingers_right",
+        "stop_sign",
     }
 
 

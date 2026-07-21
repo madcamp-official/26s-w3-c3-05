@@ -35,8 +35,9 @@ def test_confirmed_mappings() -> None:
 
 
 def test_excluded_mappings_are_none() -> None:
-    # 2026-07-20: swipe를 포함한 18개는 이번 라운드에서 제외(학습 대상 아님).
-    for jester_label in ("Swiping Up", "Swiping Down", "Swiping Left", "Swiping Right", "Stop Sign"):
+    # 2026-07-20: swipe를 포함한 17개는 이번 라운드에서 제외(학습 대상 아님).
+    # (Stop Sign은 2026-07-20 stop_sign 전경 제스처로 추가돼 제외 목록에서 빠졌다.)
+    for jester_label in ("Swiping Up", "Swiping Down", "Swiping Left", "Swiping Right"):
         assert JESTER_TO_OUR_LABEL[jester_label] is None
 
 

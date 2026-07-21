@@ -142,7 +142,7 @@ def test_repo_config_is_consistent_with_the_training_label_set() -> None:
 
 
 def test_every_actionable_gesture_reaches_at_least_one_device() -> None:
-    """액션 가능한 6개 제스처가 전부 어딘가에 매핑돼 있어야 한다(문서화 겸 가드)."""
+    """액션 가능한 7개 제스처가 전부 어딘가에 매핑돼 있어야 한다(문서화 겸 가드)."""
     registered = GestureCapabilityMap.from_json(_REPO_MAP_PATH).registered_gestures()
     actionable = set(DEFAULT_GESTURE_LABELS) - DEFAULT_BACKGROUND_LABELS
     assert actionable == {
@@ -152,6 +152,7 @@ def test_every_actionable_gesture_reaches_at_least_one_device() -> None:
         "slide_two_fingers_down",
         "slide_two_fingers_left",
         "slide_two_fingers_right",
+        "stop_sign",  # room.bulb 전원 토글 (2026-07-20 추가)
     }
     assert actionable <= registered
 
