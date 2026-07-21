@@ -250,11 +250,23 @@ class GazePanel(QScrollArea):
         self.setWidget(body)
 
     def update_snapshot(self, s: GazeSnapshot) -> None:
+        if s.tracking_lost:
+            source_status = "  ·  얼굴 추적 손실"
+            status_color = "#f85149"
+        elif s.gaze_source == "head-only":
+            source_status = "  ·  HEAD ONLY (눈/홍채 사용 불가)"
+            status_color = "#d29922"
+        elif s.gaze_source in {"held", "tracking-hold"}:
+            source_status = "  ·  이전 gaze 유지"
+            status_color = "#d29922"
+        else:
+            source_status = ""
+            status_color = "#3fb950"
         self._status.setText(
             f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame"
-            + ("  ·  얼굴 추적 손실" if s.tracking_lost else "")
+            + source_status
         )
-        self._status.setStyleSheet("color:#f85149;" if s.tracking_lost else "color:#3fb950;")
+        self._status.setStyleSheet(f"color:{status_color};")
 
         self._lock_strip.set_state(s.lock_state)
         self._engine_target.setText(
@@ -332,7 +344,7 @@ class GazePanel(QScrollArea):
         direction = (
             "  ".join(f"{v:+.3f}" for v in s.gaze_direction)
             if s.gaze_direction is not None
-            else "추적 손실 (None)"
+            else "사용 불가 (None)"
         )
         feature = (
             "  ".join(
@@ -383,7 +395,8 @@ class GazePanel(QScrollArea):
             f"iris L / R    : {s.left_iris_relative}  /  {s.right_iris_relative}\n"
             f"face_scale    : {s.face_scale if s.face_scale is not None else 'None'}\n"
             f"gaze vector   : {direction}\n"
-            "vector model  : geometric head + iris (no learned correction)\n"
+            f"gaze source   : {s.gaze_source}\n"
+            "vector model  : geometric head + iris, head-only fallback\n"
             f"feature       : {feature}\n"
             f"gaze delta    : {motion}\n"
             f"gaze velocity : {velocity}\n"

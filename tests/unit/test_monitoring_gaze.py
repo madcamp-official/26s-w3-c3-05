@@ -92,6 +92,24 @@ def test_tracking_loss_is_surfaced_not_faked() -> None:
     assert snapshot.target_estimate.stability == 0.0
 
 
+def test_detected_face_without_usable_iris_starts_with_head_only_vector() -> None:
+    smoother, classifier, lock, config = _fresh()
+    snapshot = evaluate(
+        _observation(yaw=24.0, eyes_open=False),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+
+    assert snapshot.face_detected is True
+    assert snapshot.tracking_lost is False
+    assert snapshot.gaze_unavailable is False
+    assert snapshot.gaze_source == "head-only"
+    assert snapshot.gaze_direction is not None
+    assert snapshot.gaze_confidence == pytest.approx(config.head_only_confidence_scale)
+
+
 def test_camera_pose_warning_flags_large_roll() -> None:
     smoother, classifier, lock, config = _fresh()
 
@@ -172,6 +190,7 @@ def test_short_blink_holds_last_gaze_without_composing_jumpy_raw_vector() -> Non
     assert blink.gaze_direction is None
     assert blink.gaze_confidence is None
     assert blink.smoothed_gaze_direction == first.smoothed_gaze_direction
+    assert blink.gaze_source == "held"
 
 
 def test_blink_holds_previous_classifier_feature_including_head_pose() -> None:

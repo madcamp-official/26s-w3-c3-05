@@ -43,7 +43,13 @@ from jarvis.gaze.feature_profile import (
     TargetFeatureProfile,
     TargetFeatureSample,
 )
-from jarvis.gaze.features import FaceObservation, GazeVector, Vector3, compose_gaze_vector
+from jarvis.gaze.features import (
+    FaceObservation,
+    GazeVector,
+    Vector3,
+    compose_gaze_vector,
+    compose_head_vector,
+)
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
 from jarvis.gaze.motion_intent import GazeSettleTracker
 from jarvis.gaze.smoothing import GazeSmoother
@@ -181,14 +187,19 @@ class GazeSnapshot:
     gaze_settle_velocity_deg_s: tuple[float, float] | None = None
     gaze_settle_age_ms: int | None = None
     gaze_motion_history_valid: bool = False
+    gaze_source: str = "unavailable"
 
     @property
     def tracking_lost(self) -> bool:
-        return self.gaze_direction is None and self.smoothed_gaze_direction is None
+        return not self.face_detected and self.smoothed_gaze_direction is None
 
     @property
     def tracking_recovering(self) -> bool:
         return not self.face_detected and self.smoothed_gaze_direction is not None
+
+    @property
+    def gaze_unavailable(self) -> bool:
+        return self.face_detected and self.smoothed_gaze_direction is None
 
 
 def _reject_reason(
@@ -501,13 +512,29 @@ def evaluate(
         )
     motion_history_valid = raw_gaze_vector is not None and not jumpy_iris
     gaze_vector = raw_gaze_vector
-    smoothed = (
-            smoother.update(gaze_vector)
-            if gaze_vector is not None
-            else smoother.hold(observation.timestamp_ms, observation.frame_id)
-            if hold_gaze
-            else smoother.hold_tracking_loss(observation.timestamp_ms, observation.frame_id)
-        )
+    if gaze_vector is not None:
+        smoothed = smoother.update(gaze_vector)
+        gaze_source = gaze_vector.source
+    elif hold_gaze:
+        if smoother.last_source == "head-only":
+            fallback = compose_head_vector(observation, config)
+            raw_gaze_vector = fallback
+            gaze_vector = fallback
+            smoothed = smoother.update(fallback) if fallback is not None else None
+            gaze_source = "head-only" if fallback is not None else "unavailable"
+        else:
+            smoothed = smoother.hold(observation.timestamp_ms, observation.frame_id)
+            if smoothed is not None:
+                gaze_source = "held"
+            else:
+                fallback = compose_head_vector(observation, config)
+                raw_gaze_vector = fallback
+                gaze_vector = fallback
+                smoothed = smoother.update(fallback) if fallback is not None else None
+                gaze_source = "head-only" if fallback is not None else "unavailable"
+    else:
+        smoothed = smoother.hold_tracking_loss(observation.timestamp_ms, observation.frame_id)
+        gaze_source = "tracking-hold" if smoothed is not None else "tracking-lost"
 
     raw_gaze_direction: tuple[float, float, float] | None = None
     raw_gaze_confidence: float | None = None
@@ -567,7 +594,7 @@ def evaluate(
         # can otherwise switch the personal ML target during a blink.
         feature_sample = (
             previous_feature_sample
-            if hold_gaze and previous_feature_sample is not None
+            if gaze_source == "held" and previous_feature_sample is not None
             else _feature_sample(observation, classify_direction, current_face_scale)
         )
         if (
@@ -708,6 +735,7 @@ def evaluate(
         gaze_settle_velocity_deg_s=gaze_settle_velocity_deg_s,
         gaze_settle_age_ms=gaze_settle_age_ms,
         gaze_motion_history_valid=motion_history_valid,
+        gaze_source=gaze_source,
     )
 
 
@@ -903,7 +931,7 @@ class GazeProbe:
         )
         if observation.face_detected and not observation.eyes_open:
             self._last_closed_eye_ms = observation.timestamp_ms
-        if snapshot.raw_gaze_direction is not None:
+        if snapshot.raw_gaze_direction is not None and snapshot.gaze_source != "head-only":
             self._previous_iris_offset = _iris_offset(observation)
         if snapshot.gaze_motion_history_valid and snapshot.feature_sample is not None:
             self._previous_feature_sample = snapshot.feature_sample

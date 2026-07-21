@@ -99,6 +99,7 @@ class GazeVector:
     timestamp_ms: int
     frame_id: int
     origin: Vector3 | None = None
+    source: str = "head+iris"
     """시선 광선의 원점(카메라 기준 머리 위치, mm 근사) — FaceObservation의
     head_position_mm을 그대로 옮긴 값. 없으면 None(3D 삼각측량에 쓰이지 않고
     각도 기반 매칭으로만 처리된다)."""
@@ -116,6 +117,8 @@ class GazeVector:
         if self.origin is not None:
             if self.origin.shape != (3,) or not np.all(np.isfinite(self.origin)):
                 raise ValueError("origin must contain exactly three finite values")
+        if self.source not in {"head+iris", "head-only"}:
+            raise ValueError("gaze source must be 'head+iris' or 'head-only'")
 
 
 def _rotate_2d(x: float, y: float, angle_deg: float) -> tuple[float, float]:
@@ -143,6 +146,22 @@ def _direction_from_yaw_pitch(yaw_deg: float, pitch_deg: float) -> Vector3:
 def compose_gaze_vector(
     observation: FaceObservation, config: GazeConfig = GazeConfig()
 ) -> GazeVector | None:
+    return _compose_gaze_vector(observation, config, use_iris=observation.eyes_open)
+
+
+def compose_head_vector(
+    observation: FaceObservation, config: GazeConfig = GazeConfig()
+) -> GazeVector | None:
+    """Compose a low-confidence fallback from face/head pose only."""
+    return _compose_gaze_vector(observation, config, use_iris=False)
+
+
+def _compose_gaze_vector(
+    observation: FaceObservation,
+    config: GazeConfig,
+    *,
+    use_iris: bool,
+) -> GazeVector | None:
     """단일 프레임의 관측값을 시선 방향 단위 벡터로 합성한다.
 
     얼굴을 잃었거나 tracking confidence가 `config.minimum_tracking_confidence`
@@ -153,7 +172,7 @@ def compose_gaze_vector(
     if not observation.face_detected or confidence < config.minimum_tracking_confidence:
         return None
 
-    if observation.eyes_open:
+    if use_iris:
         left_x, left_y = observation.left_iris_relative
         right_x, right_y = observation.right_iris_relative
         eye_offset_x = (left_x + right_x) / 2.0
@@ -186,4 +205,5 @@ def compose_gaze_vector(
         timestamp_ms=observation.timestamp_ms,
         frame_id=observation.frame_id,
         origin=observation.head_position_mm,
+        source="head+iris" if use_iris else "head-only",
     )

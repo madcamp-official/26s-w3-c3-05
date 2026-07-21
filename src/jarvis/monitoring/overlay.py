@@ -194,6 +194,19 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
             2,
             cv2.LINE_AA,
         )
+    if snapshot.gaze_unavailable:
+        cv2.rectangle(frame, (0, h - 30), (w, h), (0, 0, 0), thickness=-1)
+        cv2.putText(
+            frame,
+            "GAZE UNAVAILABLE / face detected",
+            (10, h - 9),
+            _FONT,
+            0.6,
+            (80, 190, 230),
+            2,
+            cv2.LINE_AA,
+        )
+        return frame
 
     state = str(snapshot.lock_state)
     ray_color = _LOCK_BGR.get(state, grey)
@@ -294,6 +307,8 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
         ),
         (f"stability  {stability:.2f}" if stability is not None else "stability  --", grey),
     ]
+    if snapshot.gaze_source != "head+iris":
+        lines.append((f"SOURCE  {snapshot.gaze_source}", (80, 190, 230)))
     if snapshot.camera_pose_warning:
         lines.append(("CAMERA POSE CHANGED / re-register", (60, 180, 255)))
     _text_block(frame, lines, (8, h - 6 - 20 * len(lines) - 6))

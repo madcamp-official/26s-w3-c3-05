@@ -31,6 +31,7 @@ class SmoothedGaze:
     timestamp_ms: int
     frame_id: int
     origin: Vector3 | None = None
+    source: str = "head+iris"
     """시선 광선의 평활화된 원점(mm 근사). 버퍼 안의 모든 프레임이 origin을
     가지고 있을 때만 계산되고, 그렇지 않으면 이 프레임은 None이다(3D 삼각측량·
     매칭에서만 쓰이며 각도 기반 경로는 이 값 없이도 그대로 동작한다)."""
@@ -43,11 +44,17 @@ class GazeSmoother:
         self._config = config
         self._buffer: deque[GazeVector] = deque(maxlen=config.smoothing_window_frames)
         self._last_result: SmoothedGaze | None = None
+        self._last_measurement_timestamp_ms: int | None = None
+
+    @property
+    def last_source(self) -> str | None:
+        return self._last_result.source if self._last_result is not None else None
 
     def reset(self) -> None:
         """추적 손실 시 버퍼를 비운다."""
         self._buffer.clear()
         self._last_result = None
+        self._last_measurement_timestamp_ms = None
 
     def hold(self, timestamp_ms: int, frame_id: int) -> SmoothedGaze | None:
         """Return the last result during a short blink without updating the buffer."""
@@ -58,9 +65,9 @@ class GazeSmoother:
         return self._hold_for(timestamp_ms, frame_id, self._config.tracking_loss_hold_ms)
 
     def _hold_for(self, timestamp_ms: int, frame_id: int, hold_ms: int) -> SmoothedGaze | None:
-        if self._last_result is None:
+        if self._last_result is None or self._last_measurement_timestamp_ms is None:
             return None
-        if timestamp_ms - self._last_result.timestamp_ms > hold_ms:
+        if timestamp_ms - self._last_measurement_timestamp_ms > hold_ms:
             self.reset()
             return None
         self._last_result = SmoothedGaze(
@@ -69,6 +76,7 @@ class GazeSmoother:
             timestamp_ms=timestamp_ms,
             frame_id=frame_id,
             origin=self._last_result.origin,
+            source=self._last_result.source,
         )
         return self._last_result
 
@@ -122,7 +130,9 @@ class GazeSmoother:
             timestamp_ms=latest.timestamp_ms,
             frame_id=latest.frame_id,
             origin=mean_origin,
+            source=latest.source,
         )
+        self._last_measurement_timestamp_ms = latest.timestamp_ms
         return self._last_result
 
     def _smoothed_origin(self, weights: Vector3, weight_sum: float) -> Vector3 | None:

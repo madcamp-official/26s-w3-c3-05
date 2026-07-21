@@ -246,7 +246,7 @@ final_pitch_deg =  head_pitch_deg * head_pitch_weight + eye_pitch_offset_deg
 | `tracking_loss_hold_ms` | `800` | Keep last gaze briefly during full face-landmarker dropouts. |
 | `small_motion_deadzone_deg` | `1.0` | Absorb only tiny jitter without visually freezing the arrow. |
 
-Debug monitor policy: simple `iris jump` lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames hold the previous gaze. Each eye has its own adaptive open baseline, and both eyes must indicate closure; one foreshortened eye during a head turn no longer freezes the vector.
+Debug monitor policy: simple `iris jump` lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames hold the previous gaze for at most `blink_hold_ms`; the deadline is measured from the last real vector, not extended by held frames. If no stable vector exists or the hold expires while the face is still detected, the pipeline emits a low-confidence `head-only` vector. `TRACKING LOST` is reserved for an actual face-landmarker miss. Each eye has its own adaptive open baseline, and both eyes must indicate closure; one foreshortened eye during a head turn no longer freezes the vector. The debug panel exposes the active `gaze source`.
 
 ### Deterministic 8D target scoring
 

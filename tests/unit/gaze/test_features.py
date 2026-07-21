@@ -143,6 +143,7 @@ def test_closed_eyes_fall_back_to_head_only_gaze() -> None:
     assert gaze is not None and equivalent is not None
     np.testing.assert_allclose(gaze.direction, equivalent.direction, atol=1e-9)
     assert gaze.confidence == pytest.approx(config.head_only_confidence_scale)
+    assert gaze.source == "head-only"
 
 
 def test_horizontal_axis_sign_maps_camera_left_to_positive_yaw() -> None:

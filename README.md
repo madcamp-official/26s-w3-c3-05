@@ -318,6 +318,7 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 | `ema_min_alpha` / `ema_max_alpha` | `0.15` / `0.65` | 낮은/높은 confidence 프레임의 EMA 반영률 |
 | `blink_hold_ms` | `300` | 짧은 눈 감김 동안 마지막 안정 gaze 유지 시간 |
 | `blink_recovery_hold_ms` | `250` | 눈을 다시 뜬 직후 홍채 landmark 안정화 hold 시간 |
+| `tracking_loss_hold_ms` | `800` | 실제 얼굴 landmark 손실 동안 마지막 gaze를 유지하는 시간 |
 | `eye_closed_ratio_threshold` | `0.12` | 눈꺼풀 높이/눈 너비의 절대 눈 감김 하한 |
 | `blink_close_ratio` / `blink_reopen_ratio` | `0.68` / `0.82` | 사용자별 평소 눈 뜬 높이에 대한 감김/재개방 hysteresis 비율 |
 | `eye_openness_baseline_decay` | `0.01` | 자세 변화에 맞춰 평소 눈 뜬 높이를 천천히 낮추는 프레임당 비율 |
@@ -335,6 +336,12 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 | `target_match_tolerance` | `1.10` | 등록 반경 경계값을 살짝 넘는 gaze를 허용하는 정규화 거리 상한 |
 | `registration_min_spread_deg` / `registration_max_spread_deg` | `4.0` / `8.0` | 등록 target의 각도 profile spread 하한/상한 |
 | `registration_max_area_radius_deg` | `6.0` | edge-loop target area가 과하게 커졌을 때 런타임에서 적용하는 반경 cap |
+
+`TRACKING LOST`는 MediaPipe가 얼굴 landmark를 반환하지 않은 경우에만 표시한다.
+얼굴은 검출됐지만 blink/recovery로 홍채를 잠시 못 쓰면 300ms 동안 마지막 gaze를
+유지하고, 안정된 이전 gaze가 없거나 hold가 끝나면 confidence `0.45`의 head-only
+벡터로 전환한다. 디버깅 화면의 `gaze source`가 `head+iris`, `held`, `head-only`,
+`tracking-hold`, `tracking-lost` 중 현재 경로를 표시한다.
 
 실험 중 조정 우선순위는 다음과 같다.
 
