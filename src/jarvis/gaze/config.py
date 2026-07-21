@@ -182,17 +182,17 @@ class GazeConfig:
     target_area_scale_flex: float = 0.25
     """Allowed fractional target-area radius change from face-scale distance changes."""
 
-    target_motion_alignment_weight: float = 0.35
-    """Velocity-direction bonus for targets in the direction of recent gaze motion."""
+    target_settle_alignment_weight: float = 0.55
+    """Overlap bonus for a target in the final settling direction of the iris."""
 
-    target_acceleration_alignment_weight: float = 0.15
-    """Acceleration-direction bonus used after the velocity direction bonus."""
+    gaze_settle_start_speed_deg_s: float = 12.0
+    """Iris angular speed that arms landing-direction detection."""
 
-    gaze_motion_min_speed_deg_s: float = 6.0
-    """Ignore slower gaze motion when applying a target-direction bonus."""
+    gaze_settle_stop_speed_deg_s: float = 4.0
+    """Iris angular speed below which an armed movement is considered settled."""
 
-    gaze_motion_min_acceleration_deg_s2: float = 80.0
-    """Ignore smaller acceleration as likely landmark/smoothing noise."""
+    gaze_settle_memory_ms: int = 500
+    """How long the landing direction remains available for overlap resolution."""
 
     gaze_motion_max_interval_ms: int = 250
     """Reset motion derivatives after a long gap, blink, or tracking hold."""
@@ -310,19 +310,22 @@ class GazeConfig:
             )
         for name, value in {
             "target_area_scale_flex": self.target_area_scale_flex,
-            "target_motion_alignment_weight": self.target_motion_alignment_weight,
-            "target_acceleration_alignment_weight": self.target_acceleration_alignment_weight,
+            "target_settle_alignment_weight": self.target_settle_alignment_weight,
         }.items():
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and within [0, 1]")
         for name, value in {
-            "gaze_motion_min_speed_deg_s": self.gaze_motion_min_speed_deg_s,
-            "gaze_motion_min_acceleration_deg_s2": self.gaze_motion_min_acceleration_deg_s2,
+            "gaze_settle_start_speed_deg_s": self.gaze_settle_start_speed_deg_s,
+            "gaze_settle_stop_speed_deg_s": self.gaze_settle_stop_speed_deg_s,
         }.items():
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and non-negative")
         if self.gaze_motion_max_interval_ms <= 0:
             raise ValueError("gaze_motion_max_interval_ms must be positive")
+        if self.gaze_settle_stop_speed_deg_s >= self.gaze_settle_start_speed_deg_s:
+            raise ValueError("gaze settle stop speed must be lower than start speed")
+        if self.gaze_settle_memory_ms <= 0:
+            raise ValueError("gaze_settle_memory_ms must be positive")
         if not math.isfinite(self.target_match_tolerance) or not 1.0 <= self.target_match_tolerance <= 2.0:
             raise ValueError("target_match_tolerance must be finite and within [1, 2]")
         if (

@@ -296,12 +296,12 @@ def test_overlapping_area_profiles_prefer_gaze_aligned_center() -> None:
     assert result.target == "aimed_area"
 
 
-def test_overlapping_area_profiles_use_recent_gaze_motion_as_tiebreaker() -> None:
+def test_overlapping_area_profiles_use_iris_settle_direction_as_tiebreaker() -> None:
     classifier = TargetClassifier(
         GazeConfig(
             unknown_probability_threshold=0.0,
             target_match_tolerance=1.1,
-            target_motion_alignment_weight=0.5,
+            target_settle_alignment_weight=0.5,
         )
     )
     classifier.register_profile(
@@ -328,7 +328,7 @@ def test_overlapping_area_profiles_use_recent_gaze_motion_as_tiebreaker() -> Non
     result = classifier.classify(
         _unit([0.0, 0.0, 1.0]),
         feature_sample=TargetFeatureSample(0.0, 0.0, 0.0, 0.0, 0.0, 0.1),
-        gaze_motion_delta_deg=(1.0, 0.0),
+        gaze_settle_velocity_deg_s=(20.0, 0.0),
     )
 
     assert result.target == "right"

@@ -229,6 +229,7 @@ class TargetClassifier:
         gaze_motion_delta_deg: tuple[float, float] | None = None,
         gaze_motion_velocity_deg_s: tuple[float, float] | None = None,
         gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None,
+        gaze_settle_velocity_deg_s: tuple[float, float] | None = None,
     ) -> ClassificationResult:
         """합성된 시선 방향 단위 벡터로부터 대상 기기를 추정한다.
 
@@ -256,6 +257,7 @@ class TargetClassifier:
                 gaze_motion_delta_deg,
                 gaze_motion_velocity_deg_s,
                 gaze_motion_acceleration_deg_s2,
+                gaze_settle_velocity_deg_s,
             )
 
         return self._classify_by_direction_profile(direction, origin, current_face_scale)
@@ -336,6 +338,7 @@ class TargetClassifier:
         gaze_motion_delta_deg: tuple[float, float] | None = None,
         gaze_motion_velocity_deg_s: tuple[float, float] | None = None,
         gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None,
+        gaze_settle_velocity_deg_s: tuple[float, float] | None = None,
     ) -> ClassificationResult:
         area_result = self._classify_by_area_profile(
             feature_sample,
@@ -345,6 +348,7 @@ class TargetClassifier:
             gaze_motion_delta_deg,
             gaze_motion_velocity_deg_s,
             gaze_motion_acceleration_deg_s2,
+            gaze_settle_velocity_deg_s,
         )
         if area_result is not None:
             return area_result
@@ -450,6 +454,7 @@ class TargetClassifier:
         gaze_motion_delta_deg: tuple[float, float] | None = None,
         gaze_motion_velocity_deg_s: tuple[float, float] | None = None,
         gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None,
+        gaze_settle_velocity_deg_s: tuple[float, float] | None = None,
     ) -> ClassificationResult | None:
         if not self._area_profiles:
             return None
@@ -490,12 +495,10 @@ class TargetClassifier:
                 if feature_normalized > self._config.target_context_tolerance:
                     continue
                 feature_score = math.exp(-0.5 * feature_normalized**2)
-            motion_alignment_score = self._motion_alignment_score(
+            motion_alignment_score = self._settle_alignment_score(
                 feature_sample,
                 profile,
-                gaze_motion_delta_deg,
-                gaze_motion_velocity_deg_s,
-                gaze_motion_acceleration_deg_s2,
+                gaze_settle_velocity_deg_s,
             )
             # The traced area is the eligibility gate. The 8D distribution then
             # combines gaze, head, face scale and face position to rank valid
@@ -529,13 +532,11 @@ class TargetClassifier:
             second_best_probability=second / total if total > 0.0 else 0.0,
         )
 
-    def _motion_alignment_score(
+    def _settle_alignment_score(
         self,
         sample: TargetFeatureSample,
         profile: TargetAreaProfile | None,
-        gaze_motion_delta_deg: tuple[float, float] | None,
-        gaze_motion_velocity_deg_s: tuple[float, float] | None = None,
-        gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None,
+        gaze_settle_velocity_deg_s: tuple[float, float] | None,
     ) -> float:
         if profile is None:
             return 1.0
@@ -544,30 +545,14 @@ class TargetClassifier:
         target_norm = math.hypot(target_yaw, target_pitch)
         if not math.isfinite(target_norm) or target_norm < 0.25:
             return 1.0
-        score = 1.0
-        velocity = gaze_motion_velocity_deg_s or gaze_motion_delta_deg
-        minimum_velocity = (
-            self._config.gaze_motion_min_speed_deg_s
-            if gaze_motion_velocity_deg_s is not None
-            else 0.25
-        )
-        score += self._alignment_bonus(
-            velocity,
+        return 1.0 + self._alignment_bonus(
+            gaze_settle_velocity_deg_s,
             target_yaw,
             target_pitch,
             target_norm,
-            minimum_velocity,
-            self._config.target_motion_alignment_weight,
+            self._config.gaze_settle_start_speed_deg_s,
+            self._config.target_settle_alignment_weight,
         )
-        score += self._alignment_bonus(
-            gaze_motion_acceleration_deg_s2,
-            target_yaw,
-            target_pitch,
-            target_norm,
-            self._config.gaze_motion_min_acceleration_deg_s2,
-            self._config.target_acceleration_alignment_weight,
-        )
-        return score
 
     @staticmethod
     def _alignment_bonus(

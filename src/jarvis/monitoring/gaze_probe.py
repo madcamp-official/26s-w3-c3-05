@@ -45,6 +45,7 @@ from jarvis.gaze.feature_profile import (
 )
 from jarvis.gaze.features import FaceObservation, GazeVector, Vector3, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
+from jarvis.gaze.motion_intent import GazeSettleTracker
 from jarvis.gaze.smoothing import GazeSmoother
 
 
@@ -177,6 +178,8 @@ class GazeSnapshot:
     # a target-direction bonus.
     gaze_motion_velocity_deg_s: tuple[float, float] | None = None
     gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None
+    gaze_settle_velocity_deg_s: tuple[float, float] | None = None
+    gaze_settle_age_ms: int | None = None
     gaze_motion_history_valid: bool = False
 
     @property
@@ -255,6 +258,19 @@ def _iris_offset(observation: FaceObservation) -> tuple[float, float] | None:
     left_x, left_y = observation.left_iris_relative
     right_x, right_y = observation.right_iris_relative
     return ((left_x + right_x) * 0.5, (left_y + right_y) * 0.5)
+
+
+def _iris_position_deg(
+    observation: FaceObservation,
+    config: GazeConfig,
+) -> tuple[float, float] | None:
+    offset = _iris_offset(observation)
+    if offset is None:
+        return None
+    return (
+        offset[0] * config.max_eye_offset_deg * config.horizontal_axis_sign,
+        offset[1] * config.max_eye_offset_deg,
+    )
 
 
 def _unstable_iris_reason(
@@ -476,6 +492,8 @@ def evaluate(
     previous_feature_sample: TargetFeatureSample | None = None,
     previous_motion_timestamp_ms: int | None = None,
     previous_gaze_velocity_deg_s: tuple[float, float] | None = None,
+    gaze_settle_velocity_deg_s: tuple[float, float] | None = None,
+    gaze_settle_age_ms: int | None = None,
 ) -> GazeSnapshot:
     """Run one observation through the full pipeline, capturing every stage.
 
@@ -610,6 +628,7 @@ def evaluate(
             gaze_motion_delta_deg=gaze_motion_delta_deg,
             gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
             gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
+            gaze_settle_velocity_deg_s=gaze_settle_velocity_deg_s,
         )
         lock.update(smoothed.timestamp_ms, result)
         estimate = TargetEstimate(
@@ -706,6 +725,8 @@ def evaluate(
         inference_ms=inference_ms,
         gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
         gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
+        gaze_settle_velocity_deg_s=gaze_settle_velocity_deg_s,
+        gaze_settle_age_ms=gaze_settle_age_ms,
         gaze_motion_history_valid=motion_history_valid,
     )
 
@@ -739,6 +760,7 @@ class GazeProbe:
         self._previous_feature_sample: TargetFeatureSample | None = None
         self._previous_motion_timestamp_ms: int | None = None
         self._previous_gaze_velocity_deg_s: tuple[float, float] | None = None
+        self._settle_tracker = GazeSettleTracker(self._config)
         self._profile_count = self._load_profiles(profiles_path)
 
     def _load_profiles(self, profiles_path: Path | None) -> int:
@@ -868,6 +890,19 @@ class GazeProbe:
         assert isinstance(self._adapter, FaceLandmarkerAdapter)
         started = time.monotonic()
         observation = self._adapter.process(rgb_frame, timestamp_ms, frame_id)
+        iris_is_stable = observation.face_detected and (
+            _unstable_iris_reason(
+                observation,
+                self._config,
+                previous_iris_offset=self._previous_iris_offset,
+                last_closed_eye_ms=self._last_closed_eye_ms,
+            )
+            is None
+        )
+        settle_intent = self._settle_tracker.update(
+            _iris_position_deg(observation, self._config) if iris_is_stable else None,
+            observation.timestamp_ms,
+        )
         snapshot = evaluate(
             observation,
             smoother=self._smoother,
@@ -881,6 +916,10 @@ class GazeProbe:
             previous_feature_sample=self._previous_feature_sample,
             previous_motion_timestamp_ms=self._previous_motion_timestamp_ms,
             previous_gaze_velocity_deg_s=self._previous_gaze_velocity_deg_s,
+            gaze_settle_velocity_deg_s=(
+                settle_intent.velocity_deg_s if settle_intent is not None else None
+            ),
+            gaze_settle_age_ms=(settle_intent.age_ms if settle_intent is not None else None),
         )
         if observation.face_detected and not observation.eyes_open:
             self._last_closed_eye_ms = observation.timestamp_ms

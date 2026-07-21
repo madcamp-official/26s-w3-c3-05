@@ -143,6 +143,8 @@ class GazeSampleStore:
             "raw_gaze_yaw_pitch_deg": raw_gaze_yaw_pitch,
             "gaze_velocity_deg_s": latest.gaze_motion_velocity_deg_s,
             "gaze_acceleration_deg_s2": latest.gaze_motion_acceleration_deg_s2,
+            "gaze_settle_velocity_deg_s": latest.gaze_settle_velocity_deg_s,
+            "gaze_settle_age_ms": latest.gaze_settle_age_ms,
             "gaze_motion_history_valid": latest.gaze_motion_history_valid,
             "gaze_confidence": mean(eye_confidences),
             "head_pose_deg": {

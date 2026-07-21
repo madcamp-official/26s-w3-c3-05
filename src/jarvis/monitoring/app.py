@@ -367,6 +367,13 @@ class GazePanel(QScrollArea):
             if s.gaze_motion_acceleration_deg_s2 is not None
             else "None"
         )
+        settle = (
+            f"yaw={s.gaze_settle_velocity_deg_s[0]:+.1f}  "
+            f"pitch={s.gaze_settle_velocity_deg_s[1]:+.1f} deg/s  "
+            f"age={s.gaze_settle_age_ms}ms"
+            if s.gaze_settle_velocity_deg_s is not None
+            else "None (no completed eye movement)"
+        )
         est = s.target_estimate
         self._numeric.setText(
             f"face_detected : {s.face_detected}\n"
@@ -381,6 +388,7 @@ class GazePanel(QScrollArea):
             f"gaze delta    : {motion}\n"
             f"gaze velocity : {velocity}\n"
             f"gaze accel    : {acceleration}\n"
+            f"settle intent : {settle}\n"
             "profile model : deterministic area + Mahalanobis\n"
             f"smoothing buf : {s.buffer_fill}/{s.buffer_capacity} frames\n"
             "── TargetEstimate (contract) ──────────────\n"
