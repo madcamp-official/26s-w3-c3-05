@@ -212,10 +212,19 @@ def _reject_reason(
     details: tuple[DeviceGazeDetail, ...],
     config: GazeConfig,
     feature_details: tuple[FeatureProfileDetail, ...] = (),
+    area_details: tuple[AreaProfileDetail, ...] = (),
 ) -> str | None:
     """Explain why the classifier returned UNKNOWN, including profile range diagnostics."""
     if result.target != config.UNKNOWN_TARGET:
         return None
+    if area_details:
+        nearest_area = area_details[0]
+        if nearest_area.normalized_distance > config.target_match_tolerance:
+            return (
+                "nearest traced area OUT: "
+                f"x{nearest_area.normalized_distance:.2f} > "
+                f"x{config.target_match_tolerance:.2f}"
+            )
     if feature_details:
         nearest_feature = feature_details[0]
         if nearest_feature.normalized_distance > config.target_match_tolerance:
@@ -715,7 +724,13 @@ def evaluate(
         probability=result.probability,
         second_best_probability=result.second_best_probability,
         margin=result.probability - result.second_best_probability,
-        reject_reason=_reject_reason(result, details, config, profile_details),
+        reject_reason=_reject_reason(
+            result,
+            details,
+            config,
+            profile_details,
+            area_details,
+        ),
         device_details=details,
         raw_device_details=raw_details,
         feature_sample=feature_sample,

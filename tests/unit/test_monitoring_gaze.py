@@ -17,7 +17,7 @@ from jarvis.gaze.classifier import DeviceGazeProfile, TargetClassifier
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.engine import GazeTargetingEngine
 from jarvis.gaze.features import FaceObservation
-from jarvis.gaze.feature_profile import TargetFeatureSample
+from jarvis.gaze.feature_profile import TargetAreaProfile, TargetFeatureSample
 from jarvis.gaze.lock import GazeLockState, GazeLockStateMachine
 from jarvis.gaze.smoothing import GazeSmoother
 from jarvis.monitoring.gaze_probe import GazeProbe, evaluate
@@ -440,6 +440,38 @@ def test_device_detail_reports_outside_registered_range() -> None:
     assert detail.normalized_distance > 1.0
     assert detail.within_profile_radius is False
     assert detail.range_status == "OUT"
+
+
+def test_unknown_reason_reports_authoritative_traced_area_before_legacy_angle() -> None:
+    smoother, classifier, lock, config = _fresh()
+    classifier.register_profile(
+        DeviceGazeProfile(
+            device_id="monitor",
+            mean_direction=np.array([0.0, 0.0, 1.0]),
+            variance=math.radians(20.0) ** 2,
+        ),
+        area_profile=TargetAreaProfile(
+            center_yaw=20.0,
+            center_pitch=0.0,
+            radius_yaw=2.0,
+            radius_pitch=2.0,
+            sample_count=20,
+        ),
+    )
+
+    snapshot = evaluate(
+        _observation(with_eye_centers=True),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+
+    assert snapshot.target == config.UNKNOWN_TARGET
+    assert snapshot.area_details[0].range_status == "OUT"
+    assert snapshot.device_details[0].range_status == "IN"
+    assert snapshot.reject_reason is not None
+    assert "traced area OUT" in snapshot.reject_reason
 
 
 def test_target_label_uses_registered_display_name() -> None:
