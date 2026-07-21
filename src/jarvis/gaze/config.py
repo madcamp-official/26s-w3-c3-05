@@ -48,15 +48,6 @@ class GazeConfig:
     되는 문제를 막는 절대 거리 안전 기준이다.
     """
 
-    personal_gaze_feature_weight: float = 2.0
-    """Priority multiplier for gaze yaw/pitch in the personal target classifier."""
-
-    personal_head_feature_weight: float = 0.4
-    """Context multiplier for head yaw/pitch/roll in the personal classifier."""
-
-    personal_face_scale_feature_weight: float = 0.6
-    """Context multiplier for camera-distance/face-scale evidence."""
-
     # Gaze vector composition (README 7장 "시선 방향 벡터 합성")
     max_eye_offset_deg: float = 45.0
 
@@ -264,13 +255,6 @@ class GazeConfig:
         }.items():
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
-        for name, value in {
-            "personal_gaze_feature_weight": self.personal_gaze_feature_weight,
-            "personal_head_feature_weight": self.personal_head_feature_weight,
-            "personal_face_scale_feature_weight": self.personal_face_scale_feature_weight,
-        }.items():
-            if not math.isfinite(value) or value <= 0.0:
-                raise ValueError(f"{name} must be finite and positive")
         if self.horizontal_axis_sign not in (-1.0, 1.0):
             raise ValueError("horizontal_axis_sign must be either -1.0 or 1.0")
         if not math.isfinite(self.unknown_max_angle_deg) or not 0.0 < self.unknown_max_angle_deg <= 180.0:
@@ -338,18 +322,5 @@ class GazeConfig:
             raise ValueError("gaze_motion_max_interval_ms must be positive")
         if not math.isfinite(self.target_match_tolerance) or not 1.0 <= self.target_match_tolerance <= 2.0:
             raise ValueError("target_match_tolerance must be finite and within [1, 2]")
-
-    @property
-    def personal_feature_weights(self) -> tuple[float, ...]:
-        """Feature scaling used by the standardized personal softmax classifier."""
-        return (
-            self.personal_gaze_feature_weight,
-            self.personal_gaze_feature_weight,
-            self.personal_head_feature_weight,
-            self.personal_head_feature_weight,
-            self.personal_head_feature_weight,
-            self.personal_face_scale_feature_weight,
-        )
-
 
 DEFAULT_GAZE_CONFIG = GazeConfig()

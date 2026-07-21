@@ -22,8 +22,6 @@ from jarvis.gaze.config import GazeConfig
         {"registration_max_area_radius_deg": 20.0},
         {"target_area_scale_flex": -0.1},
         {"target_area_scale_flex": 1.1},
-        {"personal_gaze_feature_weight": 0.0},
-        {"personal_head_feature_weight": -0.1},
         {"target_acceleration_alignment_weight": 1.1},
         {"gaze_motion_min_speed_deg_s": -0.1},
         {"gaze_motion_max_interval_ms": 0},
@@ -34,9 +32,3 @@ from jarvis.gaze.config import GazeConfig
 def test_invalid_config_is_rejected(overrides: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         GazeConfig(**overrides)  # type: ignore[arg-type]
-
-
-def test_personal_classifier_prioritizes_gaze_over_head_features() -> None:
-    config = GazeConfig()
-
-    assert config.personal_feature_weights == (2.0, 2.0, 0.4, 0.4, 0.4, 0.6)

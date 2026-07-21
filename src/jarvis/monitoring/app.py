@@ -59,14 +59,8 @@ from PySide6.QtWidgets import (
 from jarvis.calibration.registry import TargetRecord, TargetRegistry
 from jarvis.calibration.target_registration import RegistrationPhase, TargetRegistrationSession
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
-from jarvis.gaze.calibration_model import (
-    GazeCalibrationCorrector,
-    GazeCalibrationSample,
-    GazeCalibrationStore,
-)
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.lock import GazeLockState
-from jarvis.gaze.personal_classifier import PersonalTargetStore
 from jarvis.gaze.smoothing import SmoothedGaze
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
@@ -371,21 +365,6 @@ class GazePanel(QScrollArea):
             if s.gaze_motion_acceleration_deg_s2 is not None
             else "None"
         )
-        feature_weights = (
-            f"gaze x{s.personal_feature_weights[0]:.2f}  "
-            f"head x{s.personal_feature_weights[2]:.2f}  "
-            f"scale x{s.personal_feature_weights[5]:.2f}  head-cap 20%"
-            if s.personal_feature_weights is not None
-            else "None"
-        )
-        ml = (
-            f"{s.personal_prediction.target_id}  p={s.personal_prediction.confidence:.3f}  "
-            f"p2={s.personal_prediction.second_best_confidence:.3f}  "
-            f"{'USED' if s.personal_prediction.confidence >= s.personal_confidence_threshold else 'fallback'} "
-            f"(thr={s.personal_confidence_threshold:.2f})"
-            if s.personal_prediction is not None
-            else f"None (needs 2+ registered targets, thr={s.personal_confidence_threshold:.2f})"
-        )
         est = s.target_estimate
         self._numeric.setText(
             f"face_detected : {s.face_detected}\n"
@@ -395,14 +374,12 @@ class GazePanel(QScrollArea):
             f"iris L / R    : {s.left_iris_relative}  /  {s.right_iris_relative}\n"
             f"face_scale    : {s.face_scale if s.face_scale is not None else 'None'}\n"
             f"gaze vector   : {direction}\n"
-            f"vector model  : {s.calibration_model_kind or 'geometric'} "
-            f"({'APPLIED' if s.calibration_applied else 'raw'})\n"
+            "vector model  : geometric head + iris (no learned correction)\n"
             f"feature       : {feature}\n"
             f"gaze delta    : {motion}\n"
             f"gaze velocity : {velocity}\n"
             f"gaze accel    : {acceleration}\n"
-            f"ML priority   : {feature_weights}\n"
-            f"ml score      : {ml}\n"
+            "profile model : deterministic area + Mahalanobis\n"
             f"smoothing buf : {s.buffer_fill}/{s.buffer_capacity} frames\n"
             "── TargetEstimate (contract) ──────────────\n"
             f"target={est.target}  p={est.probability:.3f}  "
@@ -982,8 +959,6 @@ class MainWindow(QMainWindow):
         profiles_path: Path | None = None,
         hand_model_path: Path | None = None,
         samples_path: Path | None = None,
-        calibration_model_path: Path | None = None,
-        personal_classifier_path: Path | None = None,
         start_camera: bool = True,
         gaze_enabled: bool = True,
     ) -> None:
@@ -1008,20 +983,7 @@ class MainWindow(QMainWindow):
             enable_3d_target_matching=False,
             require_3d_target_registration=False,
         )
-        self._calibration_store = GazeCalibrationStore(
-            calibration_model_path or _default_calibration_model_path()
-        )
-        self._personal_target_store = PersonalTargetStore(
-            personal_classifier_path or _default_personal_classifier_path(),
-            feature_weights=self._gaze_config.personal_feature_weights,
-        )
         self._target_registry = TargetRegistry(self._profiles_path)
-        # Prefer the validated residual MLP; Ridge remains a fallback when the
-        # personal dataset is still too small for an MLP.
-        self._active_calibration_model: GazeCalibrationCorrector | None = (
-            self._calibration_store.preferred_model
-        )
-        self._gaze_regression_user_disabled = False
         self._registration: TargetRegistrationSession | None = None
         self._registration_phase_marker: tuple[RegistrationPhase, int] | None = None
         self._last_camera_pose_warning: str | None = None
@@ -1031,11 +993,6 @@ class MainWindow(QMainWindow):
             model_path=self._model_path,
             profiles_path=self._profiles_path,
             config=self._gaze_config,
-            calibration_model=self._active_calibration_model,
-        )
-        self._probe.set_personal_classifier(
-            self._personal_target_store.model,
-            confidence_threshold=self._personal_target_store.confidence_threshold,
         )
         self._hand_probe = HandProbe(model_path=self._hand_model_path)
 
@@ -1095,18 +1052,10 @@ class MainWindow(QMainWindow):
         self._clear_samples_button.clicked.connect(self._clear_gaze_samples)
         self._target_heatmap_toggle = QCheckBox("Target heatmap / 물체 영역 표시")
         self._target_heatmap_toggle.toggled.connect(self._video.set_target_heatmap_visible)
-        self._gaze_regression_toggle = QCheckBox("Use MLP gaze-vector calibration")
-        self._gaze_regression_toggle.setToolTip(
-            "등록 데이터로 학습된 residual MLP를 final yaw/pitch에 적용합니다. "
-            "MLP 데이터가 부족하면 Ridge를 사용합니다."
-        )
-        self._gaze_regression_toggle.setChecked(self._active_calibration_model is not None)
-        self._gaze_regression_toggle.toggled.connect(self._set_gaze_regression_enabled)
         sample_controls = QHBoxLayout()
         sample_controls.addWidget(self._sample_button, 1)
         sample_controls.addWidget(self._clear_samples_button)
         sample_controls.addWidget(self._target_heatmap_toggle)
-        sample_controls.addWidget(self._gaze_regression_toggle)
         layout.addLayout(sample_controls)
         self._sample_list = QListWidget()
         self._sample_list.setMaximumHeight(130)
@@ -1160,36 +1109,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._target_list)
         self._refresh_targets()
         return container
-
-    def _set_gaze_regression_enabled(self, enabled: bool) -> None:
-        self._gaze_regression_user_disabled = not enabled
-        preferred = getattr(self._calibration_store, "preferred_model", None)
-        if preferred is None:
-            fallback = getattr(self._calibration_store, "model", None)
-            preferred = fallback if fallback is not None and fallback.fitted else None
-        if enabled and preferred is not None:
-            self._active_calibration_model = preferred
-            self._probe.set_calibration_model(self._active_calibration_model)
-            self._log.info(
-                f"gaze {preferred.kind} 벡터 보정 ON "
-                f"(samples={preferred.sample_count}, "
-                f"targets={preferred.target_count})"
-            )
-            return
-        self._active_calibration_model = None
-        self._probe.set_calibration_model(None)
-        if enabled:
-            # The user asked to enable correction, but no model exists yet.
-            # Auto-enable it after enough target registrations have trained one.
-            self._gaze_regression_user_disabled = False
-            self._gaze_regression_toggle.blockSignals(True)
-            self._gaze_regression_toggle.setChecked(False)
-            self._gaze_regression_toggle.blockSignals(False)
-            self._log.warn(
-                "gaze 벡터 보정 사용 불가: 최소 2개 target의 calibration sample이 필요합니다"
-            )
-        else:
-            self._log.info("gaze 벡터 보정 OFF")
 
     def _build_gaze_tab(self) -> QWidget:
         self._gaze_panel = GazePanel(self._probe.status_text)
@@ -1279,7 +1198,6 @@ class MainWindow(QMainWindow):
                 eyes_open=snapshot.eyes_open,
                 face_scale=snapshot.face_scale,
                 feature_sample=snapshot.feature_sample,
-                calibration_features=snapshot.calibration_features,
             )
             self._update_registration_guidance(snapshot.timestamp_ms)
             if self._registration.is_elapsed(snapshot.timestamp_ms):
@@ -1334,7 +1252,7 @@ class MainWindow(QMainWindow):
         )
         self._registration_phase_marker = None
         self._set_registration_controls(active=True)
-        self._registration_step.setText("1/2 중앙점 MLP 보정 · 20초")
+        self._registration_step.setText("1/2 자세·거리별 테두리 수집 · 20초")
         self._registration_progress.setValue(0)
         self._registration_progress.setFormat("1/2 중앙점 보정  %p%")
         self._registration_status.setText(
@@ -1346,7 +1264,7 @@ class MainWindow(QMainWindow):
             " border-radius:6px; padding:8px; font-weight:700;"
         )
         self._log.info(
-            f"'{name}' 2단계 등록 시작 — 1/2 중앙점 MLP 보정: "
+            f"'{name}' 2단계 등록 시작 — 1/2 자세·거리별 테두리 수집: "
             "물체 중앙의 한 점만 보면서 얼굴/몸을 좌상·우하·좌하·우상·근거리/원거리로 이동"
         )
         self._video.set_registration_guidance(
@@ -1386,7 +1304,7 @@ class MainWindow(QMainWindow):
         remaining_s = max(0.0, (phase_end_ms - elapsed_ms) / 1000.0)
         progress = self._registration.phase_progress(timestamp_ms)
         if phase == RegistrationPhase.CENTER:
-            step = "1/2 중앙점 MLP 보정"
+            step = "1/2 자세·거리별 테두리 수집"
             count = self._registration.center_valid_frame_count
             required = self._registration.minimum_valid_frames
             title = "REGISTRATION 1/2 - CENTER CALIBRATION"
@@ -1416,9 +1334,8 @@ class MainWindow(QMainWindow):
                 else None
             )
             if phase == RegistrationPhase.BOUNDARY and previous_phase != phase:
-                self._activate_registration_preview_calibration()
                 self._log.info(
-                    "1/2 중앙점 보정 완료 — 2/2 영역 확정 시작: "
+                    "1/2 자세·거리 문맥 수집 완료 — 2/2 정밀 영역 확정 시작: "
                     "이제 고개·몸을 고정하고 눈으로만 네 모서리와 테두리를 따라가세요"
                 )
             self._registration_phase_marker = marker
@@ -1446,116 +1363,18 @@ class MainWindow(QMainWindow):
                 area_profile=record.area_profile,
                 label=record.name,
             )
-            calibration_samples = [
-                GazeCalibrationSample(
-                    features=features,
-                    target_yaw=record.direction.yaw,
-                    target_pitch=record.direction.pitch,
-                    target_id=record.target_id,
-                )
-                for features in self._registration.calibration_features
-            ]
-            if calibration_samples:
-                model = self._calibration_store.add_samples(
-                    calibration_samples,
-                    replace_target_id=record.target_id,
-                )
-            else:
-                model = self._calibration_store.model
-                self._log.warn(
-                    f"'{record.name}' 중앙점 calibration feature가 없어 MLP 재학습을 건너뜁니다"
-                )
-            preferred_model = self._calibration_store.preferred_model
-            auto_enable = (
-                preferred_model is not None and not self._gaze_regression_user_disabled
-            )
-            if auto_enable:
-                self._gaze_regression_toggle.blockSignals(True)
-                self._gaze_regression_toggle.setChecked(True)
-                self._gaze_regression_toggle.blockSignals(False)
-            self._active_calibration_model = (
-                preferred_model
-                if auto_enable
-                else None
-            )
-            self._probe.set_calibration_model(self._active_calibration_model)
-            personal_model = self._personal_target_store.add_samples(
-                record.target_id,
-                list(self._registration.feature_samples),
-                replace_target=True,
-            )
-            self._probe.set_personal_classifier(
-                personal_model,
-                confidence_threshold=self._personal_target_store.confidence_threshold,
-            )
-            personal_label = (
-                f"personal classifier samples={personal_model.sample_count}"
-                if personal_model is not None
-                else "personal classifier waiting for 2+ targets"
-            )
-            mlp_model = self._calibration_store.mlp_model
-            mlp_label = (
-                f"MLP samples={mlp_model.sample_count}, "
-                f"validation={mlp_model.validation_raw_error_deg:.2f}→"
-                f"{mlp_model.validation_mlp_error_deg:.2f}deg"
-                if mlp_model.fitted
-                and mlp_model.validation_raw_error_deg is not None
-                and mlp_model.validation_mlp_error_deg is not None
-                else "MLP waiting for 3+ target directions / validation improvement"
-            )
             self._log.info(
                 f"'{record.name}' 2단계 등록 완료 "
                 f"(중앙 {self._registration.center_valid_frame_count}, "
                 f"경계 {self._registration.boundary_valid_frame_count} frames) "
                 f"— {self._describe_triangulation_outcome(record)} | "
-                f"{self._registration.diagnostic_summary()} | "
-                f"gaze calibration samples={model.sample_count} | {mlp_label} | {personal_label}"
+                f"{self._registration.diagnostic_summary()}"
             )
         except ValueError as exc:
             self._log.warn(f"기기 등록 실패: {exc} | {self._registration.diagnostic_summary()}")
         finally:
             self._clear_registration_state()
             self._refresh_targets()
-
-    def _activate_registration_preview_calibration(self) -> None:
-        """Apply phase-1 calibration to phase 2 without persisting partial data."""
-        assert self._registration is not None
-        center = self._registration.center_yaw_pitch
-        if center is None:
-            return
-        center_yaw, center_pitch = center
-        samples = [
-            GazeCalibrationSample(
-                features=features,
-                target_yaw=center_yaw,
-                target_pitch=center_pitch,
-                target_id=self._registration.target_id,
-            )
-            for features in self._registration.calibration_features
-        ]
-        preview = self._calibration_store.preview_model(
-            samples,
-            replace_target_id=self._registration.target_id,
-        )
-        if preview is None:
-            self._log.warn(
-                "1/2 중앙점 데이터는 수집됐지만 아직 보정 모델에 필요한 target 수가 부족합니다"
-            )
-            return
-        if self._gaze_regression_user_disabled:
-            self._log.info(
-                f"1/2 중앙점 임시 {preview.kind} 학습 완료 — 사용자가 보정을 꺼서 2단계에는 미적용"
-            )
-            return
-        self._active_calibration_model = preview
-        self._probe.set_calibration_model(preview)
-        self._gaze_regression_toggle.blockSignals(True)
-        self._gaze_regression_toggle.setChecked(True)
-        self._gaze_regression_toggle.blockSignals(False)
-        self._log.info(
-            f"1/2 중앙점 임시 {preview.kind} 학습 완료·2단계 적용 "
-            f"(samples={preview.sample_count}, targets={preview.target_count}, 저장은 2단계 완료 후)"
-        )
 
     def _cancel_target_registration(self) -> None:
         if self._registration is None:
@@ -1577,13 +1396,6 @@ class MainWindow(QMainWindow):
     def _clear_registration_state(self) -> None:
         self._registration = None
         self._registration_phase_marker = None
-        persistent_model = self._calibration_store.preferred_model
-        self._active_calibration_model = (
-            persistent_model
-            if persistent_model is not None and not self._gaze_regression_user_disabled
-            else None
-        )
-        self._probe.set_calibration_model(self._active_calibration_model)
         self._set_registration_controls(active=False)
         self._registration_step.setText("2단계 물체 등록: 대기")
         self._registration_progress.setValue(0)
@@ -1651,11 +1463,6 @@ class MainWindow(QMainWindow):
             return
         self._target_registry.remove(record.target_id)
         self._probe.unregister_profile(record.target_id)
-        self._personal_target_store.remove_target(record.target_id)
-        self._probe.set_personal_classifier(
-            self._personal_target_store.model,
-            confidence_threshold=self._personal_target_store.confidence_threshold,
-        )
         self._refresh_targets()
 
     def _refresh_targets(self) -> None:
@@ -1745,14 +1552,6 @@ def _default_hand_model_path() -> Path | None:
 
 def _default_profiles_path() -> Path:
     return Path("data/calibration/profiles.json")
-
-
-def _default_calibration_model_path() -> Path:
-    return Path("data/calibration/gaze_regressor.json")
-
-
-def _default_personal_classifier_path() -> Path:
-    return Path("data/calibration/personal_target_classifier.json")
 
 
 def _load_env() -> dict[str, str]:

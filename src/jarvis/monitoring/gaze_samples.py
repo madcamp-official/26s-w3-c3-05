@@ -141,12 +141,9 @@ class GazeSampleStore:
                 "pitch": gaze_pitch_deg,
             },
             "raw_gaze_yaw_pitch_deg": raw_gaze_yaw_pitch,
-            "calibration_applied": any(item.calibration_applied for item in valid),
-            "calibration_model_kind": latest.calibration_model_kind,
             "gaze_velocity_deg_s": latest.gaze_motion_velocity_deg_s,
             "gaze_acceleration_deg_s2": latest.gaze_motion_acceleration_deg_s2,
             "gaze_motion_history_valid": latest.gaze_motion_history_valid,
-            "personal_feature_weights": latest.personal_feature_weights,
             "gaze_confidence": mean(eye_confidences),
             "head_pose_deg": {
                 "yaw": mean([item.head_yaw_deg for item in valid]),
@@ -314,8 +311,6 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
         f"실시간={judged} P={probability:.2f}  확정={confirmed} "
         f"dwell={dwell_elapsed_ms / 1000.0:.1f}/{dwell_required_ms / 1000.0:.1f}s"
     )
-    if sample.get("calibration_applied"):
-        row += " CAL"
     if range_detail is not None:
         device_id = range_detail.get("device_id", "--")
         distance = number(range_detail.get("angular_distance_deg"))

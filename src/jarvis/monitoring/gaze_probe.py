@@ -29,7 +29,6 @@ import numpy as np
 import numpy.typing as npt
 
 from jarvis.contracts.messages import TargetEstimate
-from jarvis.gaze.calibration_model import GazeCalibrationCorrector, observation_features
 from jarvis.gaze.classifier import (
     ClassificationResult,
     DeviceGazeProfile,
@@ -46,7 +45,6 @@ from jarvis.gaze.feature_profile import (
 )
 from jarvis.gaze.features import FaceObservation, GazeVector, Vector3, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
-from jarvis.gaze.personal_classifier import PersonalTargetClassifier, PersonalTargetPrediction
 from jarvis.gaze.smoothing import GazeSmoother
 
 
@@ -132,9 +130,6 @@ class GazeSnapshot:
     raw_gaze_confidence: float | None
     gaze_direction: tuple[float, float, float] | None
     gaze_confidence: float | None
-    calibration_applied: bool
-    calibration_model_kind: str | None
-    calibration_features: tuple[float, ...] | None
 
     # 2c — temporal smoothing
     smoothed_stability: float | None
@@ -156,8 +151,6 @@ class GazeSnapshot:
     gaze_motion_delta_deg: tuple[float, float] | None
     feature_details: tuple[FeatureProfileDetail, ...]
     area_details: tuple[AreaProfileDetail, ...]
-    personal_prediction: PersonalTargetPrediction | None
-    personal_confidence_threshold: float
     camera_pose_warning: str | None
 
     # 2e — gaze lock state machine
@@ -184,7 +177,6 @@ class GazeSnapshot:
     # a target-direction bonus.
     gaze_motion_velocity_deg_s: tuple[float, float] | None = None
     gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None
-    personal_feature_weights: tuple[float, ...] | None = None
     gaze_motion_history_valid: bool = False
 
     @property
@@ -471,7 +463,6 @@ def evaluate(
     config: GazeConfig,
     inference_ms: float = 0.0,
     target_labels: dict[str, str] | None = None,
-    calibration_model: GazeCalibrationCorrector | None = None,
     previous_iris_offset: tuple[float, float] | None = None,
     last_closed_eye_ms: int | None = None,
     previous_feature_sample: TargetFeatureSample | None = None,
@@ -503,19 +494,7 @@ def evaluate(
             origin=raw_gaze_vector.origin,
         )
     motion_history_valid = raw_gaze_vector is not None and not jumpy_iris
-    calibration_features = (
-        observation_features(observation, raw_gaze_vector)
-        if raw_gaze_vector is not None
-        else None
-    )
     gaze_vector = raw_gaze_vector
-    calibration_applied = False
-    if raw_gaze_vector is not None and calibration_model is not None:
-        corrected = calibration_model.correct(observation, raw_gaze_vector)
-        calibration_applied = calibration_model.fitted and not np.allclose(
-            corrected.direction, raw_gaze_vector.direction
-        )
-        gaze_vector = corrected
     smoothed = (
             smoother.update(gaze_vector)
             if gaze_vector is not None
@@ -551,7 +530,6 @@ def evaluate(
     gaze_motion_delta_deg: tuple[float, float] | None = None
     gaze_motion_velocity_deg_s: tuple[float, float] | None = None
     gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None
-    personal_prediction: PersonalTargetPrediction | None = None
     if smoothed is None:
         result = ClassificationResult(
             target=config.UNKNOWN_TARGET, probability=0.0, second_best_probability=0.0
@@ -616,12 +594,6 @@ def evaluate(
                             )
                             / dt_s,
                         )
-        personal_prediction = classifier.predict_personal(
-            feature_sample,
-            gaze_motion_delta_deg=gaze_motion_delta_deg,
-            gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
-            gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
-        )
         result = classifier.classify(
             smoothed.direction,
             origin=smoothed.origin,
@@ -689,9 +661,6 @@ def evaluate(
         raw_gaze_confidence=raw_gaze_confidence,
         gaze_direction=gaze_direction,
         gaze_confidence=gaze_confidence,
-        calibration_applied=calibration_applied,
-        calibration_model_kind=(calibration_model.kind if calibration_model is not None else None),
-        calibration_features=calibration_features,
         smoothed_stability=smoothed_stability,
         smoothed_gaze_direction=classify_direction,
         smoothed_gaze_origin=classify_origin,
@@ -709,8 +678,6 @@ def evaluate(
         gaze_motion_delta_deg=gaze_motion_delta_deg,
         feature_details=profile_details,
         area_details=area_details,
-        personal_prediction=personal_prediction,
-        personal_confidence_threshold=classifier.personal_confidence_threshold,
         camera_pose_warning=_camera_pose_warning(
             classifier,
             current_face_scale,
@@ -731,7 +698,6 @@ def evaluate(
         inference_ms=inference_ms,
         gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
         gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
-        personal_feature_weights=config.personal_feature_weights,
         gaze_motion_history_valid=motion_history_valid,
     )
 
@@ -750,7 +716,6 @@ class GazeProbe:
         model_path: Path | None,
         profiles_path: Path | None = None,
         config: GazeConfig | None = None,
-        calibration_model: GazeCalibrationCorrector | None = None,
     ) -> None:
         self._config = config or GazeConfig()
         self._smoother = GazeSmoother(self._config)
@@ -761,7 +726,6 @@ class GazeProbe:
         self._available = False
         self._status_text = "gaze 프로브 미시작"
         self._target_labels: dict[str, str] = {}
-        self._calibration_model = calibration_model
         self._previous_iris_offset: tuple[float, float] | None = None
         self._last_closed_eye_ms: int | None = None
         self._previous_feature_sample: TargetFeatureSample | None = None
@@ -806,26 +770,6 @@ class GazeProbe:
     @property
     def profile_count(self) -> int:
         return self._profile_count
-
-    def set_calibration_model(self, model: GazeCalibrationCorrector | None) -> None:
-        self._calibration_model = model
-        # Do not blend directions from two calibration coordinate systems when
-        # phase 1 trains a preview model before boundary collection.
-        self._smoother.reset()
-        self._previous_feature_sample = None
-        self._previous_motion_timestamp_ms = None
-        self._previous_gaze_velocity_deg_s = None
-
-    def set_personal_classifier(
-        self,
-        model: PersonalTargetClassifier | None,
-        *,
-        confidence_threshold: float = 0.65,
-    ) -> None:
-        self._classifier.set_personal_classifier(
-            model,
-            confidence_threshold=confidence_threshold,
-        )
 
     def register_profile(
         self,
@@ -924,7 +868,6 @@ class GazeProbe:
             config=self._config,
             inference_ms=(time.monotonic() - started) * 1000.0,
             target_labels=self._target_labels,
-            calibration_model=self._calibration_model,
             previous_iris_offset=self._previous_iris_offset,
             last_closed_eye_ms=self._last_closed_eye_ms,
             previous_feature_sample=self._previous_feature_sample,

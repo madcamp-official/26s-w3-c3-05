@@ -144,28 +144,9 @@ def test_registration_diagnostics_count_rejected_frames() -> None:
 
     assert session.diagnostic_summary() == (
         "phase=CENTER, seen=5, center=1, boundary=0, center_rays=0, "
-        "center_scale=0, center_features=0, boundary_features=0, mlp_features=0, "
+        "center_scale=0, center_features=0, boundary_features=0, "
         "tracking_lost=1, closed_eyes=1, low_conf=1, jump=1"
     )
-
-
-def test_two_phase_registration_keeps_mlp_features_center_only() -> None:
-    session = TargetRegistrationSession(
-        "lamp", "desk lamp", "LIGHT", "device-1", minimum_valid_frames=2
-    )
-    center_feature = tuple(float(index) for index in range(13))
-    boundary_feature = tuple(float(index + 100) for index in range(13))
-    assert session.add(_gaze(0, 10.0), 1.0, calibration_features=center_feature)
-    assert session.add(_gaze(1, 10.2), 1.0, calibration_features=center_feature)
-    session.start_boundary(100)
-    assert session.add(_gaze(2, 5.0), 1.0, calibration_features=boundary_feature)
-    assert session.add(_gaze(3, 15.0), 1.0, calibration_features=boundary_feature)
-
-    assert session.calibration_features == (center_feature, center_feature)
-    record = session.finalize()
-    assert record.direction.yaw == pytest.approx(10.1)
-    assert record.area_profile is not None
-    assert record.area_profile.center_yaw == pytest.approx(10.1)
 
 
 def test_two_phase_registration_advances_only_after_time_and_frames() -> None:

@@ -1,11 +1,4 @@
-"""Two-phase look-to-register collection.
-
-Phase 1 keeps the eyes on one center point while the user changes head/body pose.
-Only these samples define the target center, MLP supervision, and 3D rays. Phase 2
-keeps the head still while the eyes trace the four edges. Only these samples define
-the target area. Keeping the two sets separate prevents boundary gaze from being
-incorrectly labelled as the center direction during MLP training.
-"""
+"""Two-phase boundary collection for deterministic target profiles."""
 
 from __future__ import annotations
 
@@ -76,7 +69,6 @@ class TargetRegistrationSession:
         self._center_face_scales: list[float] = []
         self._center_feature_samples: list[TargetFeatureSample] = []
         self._boundary_feature_samples: list[TargetFeatureSample] = []
-        self._calibration_features: list[tuple[float, ...]] = []
         self.total_frames_seen = 0
         self.rejected_tracking_lost = 0
         self.rejected_closed_eyes = 0
@@ -98,11 +90,6 @@ class TargetRegistrationSession:
     @property
     def boundary_valid_frame_count(self) -> int:
         return len(self._boundary_samples)
-
-    @property
-    def calibration_features(self) -> tuple[tuple[float, ...], ...]:
-        """Raw regression features from CENTER only."""
-        return tuple(self._calibration_features)
 
     @property
     def center_yaw_pitch(self) -> tuple[float, float] | None:
@@ -149,7 +136,6 @@ class TargetRegistrationSession:
         eyes_open: bool = True,
         face_scale: float | None = None,
         feature_sample: TargetFeatureSample | None = None,
-        calibration_features: tuple[float, ...] | None = None,
     ) -> bool:
         self.total_frames_seen += 1
         if gaze is not None:
@@ -188,8 +174,6 @@ class TargetRegistrationSession:
                 self._center_face_scales.append(face_scale)
             if feature_sample is not None:
                 self._center_feature_samples.append(feature_sample)
-            if calibration_features is not None:
-                self._calibration_features.append(calibration_features)
         elif feature_sample is not None:
             self._boundary_feature_samples.append(feature_sample)
         self._advance_phase_if_ready(gaze.timestamp_ms)
@@ -317,7 +301,6 @@ class TargetRegistrationSession:
             f"center_scale={len(self._center_face_scales)}, "
             f"center_features={len(self._center_feature_samples)}, "
             f"boundary_features={len(self._boundary_feature_samples)}, "
-            f"mlp_features={len(self._calibration_features)}, "
             f"tracking_lost={self.rejected_tracking_lost}, "
             f"closed_eyes={self.rejected_closed_eyes}, "
             f"low_conf={self.rejected_low_confidence}, jump={self.rejected_jump}"

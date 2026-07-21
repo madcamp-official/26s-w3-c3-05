@@ -97,7 +97,7 @@ def test_store_persists_snapshot_as_json(tmp_path: Path) -> None:
     assert payload[0]["gaze_velocity_deg_s"] is None
     assert payload[0]["gaze_acceleration_deg_s2"] is None
     assert payload[0]["gaze_motion_history_valid"] is True
-    assert payload[0]["personal_feature_weights"] == [2.0, 2.0, 0.4, 0.4, 0.4, 0.6]
+    assert "personal_feature_weights" not in payload[0]
     assert payload[0]["nearest_target_range"] is None
 
 
@@ -150,7 +150,7 @@ def test_window_averages_multiple_smoothed_frames(tmp_path: Path) -> None:
     assert sample["raw_gaze_yaw_pitch_deg"] == pytest.approx(
         {"yaw": -7.4, "pitch": -8.5}, abs=0.1
     )
-    assert sample["calibration_applied"] is False
+    assert "calibration_applied" not in sample
     assert sample["face_metrics"] == pytest.approx(
         {"center": [0.5, 0.3], "scale": 0.2}, abs=1e-6
     )
