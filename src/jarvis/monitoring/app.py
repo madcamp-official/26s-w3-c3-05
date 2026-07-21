@@ -35,7 +35,7 @@ from typing import Any, Protocol, cast
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -81,6 +81,8 @@ from jarvis.monitoring.gesture_probe import (
     GestureProbe,
     GestureSnapshot,
     ProbeGestureSource,
+    available_gesture_checkpoints,
+    load_gesture_model_from,
     load_trained_gesture_model,
 )
 from jarvis.monitoring.gesture_source import GestureSource, UntrainedGestureSource
@@ -908,6 +910,12 @@ class GestureSidebar(QWidget):
             self._hand_line.setText("손 추적: 손 없음")
             self._hand_line.setStyleSheet(_MONO + " color:#8b949e;")
 
+    def set_source(self, source: GestureSource) -> None:
+        """활성 인식 소스를 바꾼다(가중치 전환 시) — 상태 헤더를 새 소스로 갱신한다."""
+        self._source = source
+        self._status.setText(source.status_text)
+        self._status.setStyleSheet("color:#8b949e;" if source.available else "color:#d29922;")
+
     def append_tick(self, snapshot: GestureSnapshot) -> None:
         """Append one recognition line for a processed inference tick (~12fps)."""
         estimate = snapshot.estimate
@@ -1048,7 +1056,8 @@ class FinetuneRecordingPanel(QWidget):
             f"웹캠에서 직접 파인튜닝 클립을 녹화한다. 저장 직전 {EXPECTED_INPUT_FPS:.0f}fps로 "
             "리샘플해 사전학습(Jester 12fps)과 정합시킨다. person_id는 세션 단위 split을 위해 "
             "'<이름>-s<세션>' 형식을 권장한다(예: me-s1). 저장 위치: "
-            "training/cache/webcam/<person_id>/."
+            "training/cache/webcam/<person_id>/. 이 탭이 보이는 동안 스페이스바로도 "
+            "녹화를 시작/종료할 수 있다(버튼과 동일)."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#6e7681; font-size:11px;")
@@ -1065,9 +1074,19 @@ class FinetuneRecordingPanel(QWidget):
             self._gesture_combo.addItem(label)
         controls.addWidget(self._gesture_combo, 1)
         self._record_button = QPushButton("녹화 시작")
+        self._on_record_toggled = on_record_toggled
         self._record_button.clicked.connect(lambda: on_record_toggled())
         controls.addWidget(self._record_button)
         layout.addLayout(controls)
+
+        # 스페이스바는 이 탭에서 무조건 녹화 토글이어야 한다. QComboBox·QPushButton은
+        # 포커스를 쥐면 스페이스를 자체 소비해(콤보는 팝업을 열고, 버튼은 클릭) 이벤트
+        # 필터 없이는 그 동작이 녹화 토글과 함께 겹쳐 발동한다(2026-07-21 발견). 이
+        # 두 위젯에 이벤트 필터를 걸어 스페이스를 위젯 자신에게 전달되기 전에 가로채
+        # 녹화 토글만 실행하고 소비한다 — 팝업이 열리거나 버튼이 별도로 클릭되는
+        # 일 자체가 없어진다.
+        self._gesture_combo.installEventFilter(self)
+        self._record_button.installEventFilter(self)
 
         self._status = QLabel(
             "녹화 대기"
@@ -1090,6 +1109,23 @@ class FinetuneRecordingPanel(QWidget):
     @property
     def gesture(self) -> str:
         return self._gesture_combo.currentText()
+
+    def eventFilter(self, watched: object, event: object) -> bool:  # noqa: N802 - Qt override name
+        """동작 콤보·REC 버튼이 스페이스를 받기 전에 가로채 녹화 토글로만 처리한다.
+
+        `installEventFilter`로 이 두 위젯에 걸려 있다 — 필터가 True를 반환하면 Qt가
+        그 이벤트를 대상 위젯에 아예 전달하지 않으므로, 콤보 팝업이 열리거나 버튼이
+        자체 클릭되는 일이 애초에 일어나지 않는다(단순히 신호 후 무시하는 게 아니라
+        위젯의 기본 동작 자체를 막는다).
+        """
+        if (
+            event.type() == QEvent.Type.KeyPress  # type: ignore[attr-defined]
+            and event.key() == Qt.Key.Key_Space  # type: ignore[attr-defined]
+            and watched in (self._gesture_combo, self._record_button)
+        ):
+            self._on_record_toggled()
+            return True
+        return super().eventFilter(watched, event)  # type: ignore[arg-type]
 
     def set_recording(self, is_recording: bool) -> None:
         self._record_button.setText("녹화 종료" if is_recording else "녹화 시작")
@@ -1177,6 +1213,9 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_latency_tab(), "지연·어댑터")
         tabs.addTab(self._build_finetune_tab(), "파인튜닝")
         self.setCentralWidget(tabs)
+        # keyPressEvent에서 "지금 파인튜닝 탭이 보이는가"를 판정하는 데 쓴다(스페이스바
+        # 녹화 단축키가 다른 탭에서 실수로 발동하지 않도록).
+        self._tabs = tabs
 
         self._log.info("모니터 시작")
         if self._gesture_source.available:
@@ -1220,6 +1259,64 @@ class MainWindow(QMainWindow):
         self._recognizer = probe
         return ProbeGestureSource(probe)
 
+    def _build_recognition_panel(self) -> QWidget:
+        """실시간 탭 오른쪽: 사용할 가중치 선택 콤보 + 인식 스트림 사이드바."""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        selector_row = QHBoxLayout()
+        label = QLabel("가중치:")
+        label.setStyleSheet("font-weight:600; color:#58a6ff;")
+        self._weight_selector = QComboBox()
+        self._populate_weight_selector()
+        self._weight_selector.currentIndexChanged.connect(self._on_weight_selected)
+        selector_row.addWidget(label)
+        selector_row.addWidget(self._weight_selector, 1)
+        layout.addLayout(selector_row)
+        layout.addWidget(self._sidebar, 1)
+        return panel
+
+    def _populate_weight_selector(self) -> None:
+        """models_dir의 학습된 체크포인트로 콤보를 채운다.
+
+        선호 순서(finetuned > jester)라 index 0이 시작 시 로드된 활성 모델과 같다 —
+        별도 선택 없이 기본값(0)이 곧 현재 상태다. 학습된 체크포인트가 없으면 콤보를
+        비활성으로 두어 실제 상태(인식 off)를 정직하게 드러낸다.
+        """
+        self._weight_selector.blockSignals(True)
+        self._weight_selector.clear()
+        for checkpoint in available_gesture_checkpoints(self._gesture_models_dir):
+            self._weight_selector.addItem(_weight_label(checkpoint.name), userData=str(checkpoint))
+        if self._weight_selector.count() == 0:
+            self._weight_selector.addItem("학습된 가중치 없음", userData=None)
+            self._weight_selector.setEnabled(False)
+        self._weight_selector.blockSignals(False)
+
+    def _on_weight_selected(self, index: int) -> None:
+        data = self._weight_selector.itemData(index)
+        if data is None:
+            return  # "학습된 가중치 없음" placeholder — 전환할 대상이 없다
+        self._switch_gesture_model(Path(str(data)))
+
+    def _switch_gesture_model(self, checkpoint: Path) -> None:
+        """선택한 체크포인트로 인식기를 실시간 교체한다(실패 시 정직하게 off).
+
+        새 `GestureProbe`를 만들어 내부 상태(슬라이딩 윈도우·decimation)를 초기화하고,
+        `_recognizer`(실제 인식 구동)와 `_gesture_source`(상태 표시)를 함께 바꾼다.
+        """
+        model = load_gesture_model_from(checkpoint)
+        probe = GestureProbe(model_asset_path=None, model=model) if model is not None else None
+        if probe is None or not probe.activate_headless():
+            self._recognizer = None
+            self._gesture_source = UntrainedGestureSource()
+            self._sidebar.set_source(self._gesture_source)
+            self._log.warn(f"가중치 전환 실패: {checkpoint.name} — 인식 off")
+            return
+        self._recognizer = probe
+        self._gesture_source = ProbeGestureSource(probe)
+        self._sidebar.set_source(self._gesture_source)
+        self._log.info(f"제스처 인식 가중치 전환: {checkpoint.name}")
+
     def _build_live_tab(self) -> QWidget:
         self._video = VideoView()
         self._sidebar = GestureSidebar(self._gesture_source)
@@ -1231,7 +1328,7 @@ class MainWindow(QMainWindow):
         self._control_toggle_live.toggled.connect(self._on_control_toggled_live)
         top = QSplitter(Qt.Orientation.Horizontal)
         top.addWidget(self._video)
-        top.addWidget(self._sidebar)
+        top.addWidget(self._build_recognition_panel())
         top.setStretchFactor(0, 1)
         top.setStretchFactor(1, 0)
 
@@ -1739,13 +1836,25 @@ class MainWindow(QMainWindow):
         self._latency_panel.refresh()
 
     def keyPressEvent(self, event: object) -> None:  # noqa: N802 - Qt override name
-        """ESC로 창을 닫는다 — 카메라 정리는 closeEvent가 맡는다.
+        """ESC로 창을 닫고, 파인튜닝 탭이 보이는 동안엔 스페이스바로 녹화를 토글한다.
 
         디버깅 툴은 자세를 바꿔가며 반복해서 띄웠다 닫는 도구라, 창 버튼까지 마우스를
-        옮기지 않고 닫을 수 있어야 한다.
+        옮기지 않고 닫을 수 있어야 한다. 녹화도 같은 이유(카메라 앞에서 자세를 잡은 채
+        마우스로 REC 버튼을 찾아 누르기 번거로움)로 단축키를 둔다 — person_id 입력칸이
+        포커스를 쥐고 있으면 Qt가 스페이스를 그 위젯에서 먼저 소비하므로(텍스트 입력)
+        여기까지 전달되지 않아 타이핑과 충돌하지 않는다. 동작 콤보·REC 버튼에 포커스가
+        있는 경우는 `FinetuneRecordingPanel`의 이벤트 필터가 위젯 자신에게 전달되기
+        전에 가로채므로(팝업 열기/클릭 자체가 안 일어남) 여기까지 오지 않는다 — 그 외
+        모든 경우(포커스 없음·비디오 뷰 등)만 이 핸들러가 처리한다.
         """
         if event.key() == Qt.Key.Key_Escape:  # type: ignore[attr-defined]
             self.close()
+            return
+        if (
+            event.key() == Qt.Key.Key_Space  # type: ignore[attr-defined]
+            and self._tabs.currentWidget() is self._finetune_panel
+        ):
+            self._toggle_recording()
             return
         super().keyPressEvent(event)  # type: ignore[arg-type]
 
@@ -1767,6 +1876,14 @@ def _default_hand_model_path() -> Path | None:
 
 def _default_models_dir() -> Path:
     return Path("models")
+
+
+def _weight_label(checkpoint_name: str) -> str:
+    """체크포인트 파일명 → 가중치 셀렉터에 표시할 사람이 읽는 라벨."""
+    return {
+        "gesture_tcn_finetuned.pt": "파인튜닝 (finetuned)",
+        "gesture_tcn_jester.pt": "사전학습 (jester)",
+    }.get(checkpoint_name, checkpoint_name)
 
 
 def _default_pose_model_path() -> Path:

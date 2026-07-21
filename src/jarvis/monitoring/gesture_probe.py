@@ -300,6 +300,68 @@ _CHECKPOINT_PREFERENCE: tuple[str, ...] = (
 )
 
 
+def _checkpoint_metadata(checkpoint: Path) -> ModelMetadata | None:
+    """사이드카(`<name>.metadata.json`)를 읽어 `ModelMetadata`를 구성 — 없거나 손상이면 None.
+
+    torch를 로드하지 않는 가벼운 검사다(체크포인트 목록 만들기·trained 판정용).
+    """
+    sidecar = checkpoint.with_name(checkpoint.name + ".metadata.json")
+    if not checkpoint.is_file() or not sidecar.is_file():
+        return None
+    try:
+        meta_dict = json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - 손상 사이드카는 없는 것으로 취급
+        return None
+    return ModelMetadata(
+        version=str(meta_dict.get("version", "")),
+        trained=bool(meta_dict.get("trained", False)),
+        training_data_source=str(meta_dict.get("training_data_source", "")),
+        evaluation_notes=str(meta_dict.get("evaluation_notes", "")),
+    )
+
+
+def _load_checkpoint(checkpoint: Path, config: GestureConfig) -> GestureModel | None:
+    """체크포인트 하나를 로드 — `metadata.trained=True`일 때만 GestureModel, 아니면 None.
+
+    다음은 전부 조용히 None: torch 미설치(`ml` extra 부재), `.pt`·사이드카 부재,
+    trained=False, 라벨 집합 불일치(head shape)·손상 파일. 성공을 지어내지 않는다.
+    """
+    metadata = _checkpoint_metadata(checkpoint)
+    if metadata is None or not metadata.trained:
+        return None
+    try:
+        from jarvis.gesture_fusion.model import CausalTCNGestureModel
+    except ImportError:
+        return None  # torch 없음 — 정직하게 off
+    try:
+        model = CausalTCNGestureModel(ModelConfig(feature_dim=feature_dimension(config)))
+        model.load_weights(str(checkpoint), metadata)
+        return model
+    except Exception:  # noqa: BLE001 - 라벨 불일치·손상 파일은 off로 떨어뜨린다
+        return None
+
+
+def available_gesture_checkpoints(models_dir: Path) -> list[Path]:
+    """`models_dir`에서 로드 가능한(사이드카 `trained=True`) gesture 체크포인트 경로 — 선호 순서.
+
+    실제 torch 로드는 하지 않고 사이드카만 확인한다(가중치 선택 UI 목록 채우기용).
+    """
+    result: list[Path] = []
+    for name in _CHECKPOINT_PREFERENCE:
+        checkpoint = models_dir / name
+        metadata = _checkpoint_metadata(checkpoint)
+        if metadata is not None and metadata.trained:
+            result.append(checkpoint)
+    return result
+
+
+def load_gesture_model_from(
+    checkpoint: Path, gesture_config: GestureConfig | None = None
+) -> GestureModel | None:
+    """특정 체크포인트를 로드한다(`trained=True`일 때만) — `load_trained_gesture_model`과 같은 게이트."""
+    return _load_checkpoint(checkpoint, gesture_config or DEFAULT_GESTURE_CONFIG)
+
+
 def load_trained_gesture_model(
     models_dir: Path, gesture_config: GestureConfig | None = None
 ) -> GestureModel | None:
@@ -307,35 +369,13 @@ def load_trained_gesture_model(
 
     우선순위는 finetuned > jester(사전학습). 각 `.pt`는 사이드카 `<name>.metadata.json`을
     함께 읽어 `ModelMetadata`를 구성하고, **`metadata.trained=True`일 때만** 인정한다 —
-    미학습·무작위 가중치를 인식 결과로 내보내지 않는다(성공을 지어내지 않는다). 다음은
-    전부 조용히 None/다음 후보로 떨어진다: torch 미설치(`ml` extra 부재), `.pt`·사이드카
-    부재, 라벨 집합 불일치(state_dict head shape 불일치)·손상 파일.
+    미학습·무작위 가중치를 인식 결과로 내보내지 않는다(성공을 지어내지 않는다).
 
     데모 노트북에서 VM의 `.pt`를 `models/`로 복사하면 다음 실행 때 자동으로 잡힌다.
     """
     config = gesture_config or DEFAULT_GESTURE_CONFIG
     for name in _CHECKPOINT_PREFERENCE:
-        checkpoint = models_dir / name
-        sidecar = checkpoint.with_name(checkpoint.name + ".metadata.json")
-        if not checkpoint.is_file() or not sidecar.is_file():
-            continue
-        try:
-            from jarvis.gesture_fusion.model import CausalTCNGestureModel
-        except ImportError:
-            return None  # torch 없음 — 정직하게 off (다음 후보를 봐도 마찬가지)
-        try:
-            meta_dict = json.loads(sidecar.read_text(encoding="utf-8"))
-            metadata = ModelMetadata(
-                version=str(meta_dict.get("version", "")),
-                trained=bool(meta_dict.get("trained", False)),
-                training_data_source=str(meta_dict.get("training_data_source", "")),
-                evaluation_notes=str(meta_dict.get("evaluation_notes", "")),
-            )
-            if not metadata.trained:
-                continue
-            model = CausalTCNGestureModel(ModelConfig(feature_dim=feature_dimension(config)))
-            model.load_weights(str(checkpoint), metadata)
+        model = _load_checkpoint(models_dir / name, config)
+        if model is not None:
             return model
-        except Exception:  # noqa: BLE001 - 라벨 불일치·손상 파일은 다음 후보/off로 떨어뜨린다
-            continue
     return None
