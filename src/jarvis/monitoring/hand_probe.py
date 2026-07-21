@@ -40,6 +40,7 @@ from jarvis.gesture_fusion.landmarks import (
     is_palm_tilted,
     normalize_hand,
     palm_tilt_degrees,
+    select_largest_hand_index,
 )
 from jarvis.gesture_fusion.pose_protocol import NullPoseClassifier, PoseClassifier, PosePrediction
 from jarvis.gesture_fusion.pose_state import PoseEvent, PoseStateMachine
@@ -341,7 +342,8 @@ class HandProbe:
         if not result.hand_landmarks:
             return self._lost(timestamp_ms, frame_id, inference_ms)
 
-        landmarks = result.hand_landmarks[0]
+        best_index = select_largest_hand_index(result.hand_landmarks)
+        landmarks = result.hand_landmarks[best_index]
         # z(깊이)는 단안 웹캠 추정값이라 노이즈가 커 모델은 x·y만 쓴다(config.LANDMARK_DIMS).
         # z까지 담은 3D 배열을 만들되 모델 경로에 넘기는 ``points``는 앞 2열 슬라이스로
         # 파생하고(x·y가 기존과 비트 단위 동일), z는 기울기 각도 계산에만 쓴다.
@@ -352,7 +354,7 @@ class HandProbe:
         # 기울기만 z에서 계산해 넘긴다(좌표는 2D 유지) — 화면 밖 회전은 z에만 있다.
         tilt = palm_tilt_degrees(points_3d, self._config)
 
-        handedness, score = self._primary_handedness(result)
+        handedness, score = self._primary_handedness(result, best_index)
         raw = RawHandLandmarks(
             timestamp_ms=timestamp_ms,
             frame_id=frame_id,
@@ -431,11 +433,12 @@ class HandProbe:
         return tuple((float(p[0]), float(p[1])) for p in smoothed)
 
     @staticmethod
-    def _primary_handedness(result: object) -> tuple[str, float]:
+    def _primary_handedness(result: object, index: int) -> tuple[str, float]:
+        """선택한 손(largest)의 handedness 라벨과 score를 꺼낸다."""
         handedness_list = getattr(result, "handedness", None)
-        if not handedness_list or not handedness_list[0]:
+        if not handedness_list or index >= len(handedness_list) or not handedness_list[index]:
             return "", 0.0
-        top = handedness_list[0][0]
+        top = handedness_list[index][0]
         return str(top.category_name), float(top.score)
 
     def _lost(self, timestamp_ms: int, frame_id: int, inference_ms: float) -> HandSnapshot:

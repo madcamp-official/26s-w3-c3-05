@@ -20,7 +20,37 @@ from jarvis.gesture_fusion.landmarks import (
     HandObservation,
     RawHandLandmarks,
     normalize_hand,
+    select_largest_hand_index,
 )
+
+
+class _LM:
+    """MediaPipe NormalizedLandmark의 최소 스텁 (.x/.y만)."""
+
+    def __init__(self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+
+
+def _square_hand(size: float, origin: tuple[float, float] = (0.0, 0.0)) -> list[_LM]:
+    """[origin, origin+size] 정사각형 안에 흩뿌린 21점 — bbox 넓이 = size²."""
+    ox, oy = origin
+    pts = [_LM(ox, oy), _LM(ox + size, oy + size)]
+    pts += [_LM(ox + size / 2, oy + size / 2) for _ in range(HAND_LANDMARK_COUNT - 2)]
+    return pts
+
+
+def test_select_largest_hand_picks_biggest_bbox() -> None:
+    small = _square_hand(0.1)
+    large = _square_hand(0.4, origin=(0.5, 0.5))
+    # 큰 손이 0번이든 1번이든 인덱스로 정확히 지목되어야 한다.
+    assert select_largest_hand_index([small, large]) == 1
+    assert select_largest_hand_index([large, small]) == 0
+
+
+def test_select_largest_hand_empty_returns_zero() -> None:
+    assert select_largest_hand_index([]) == 0
+    assert select_largest_hand_index(None) == 0
 
 
 def _points_with_scale(scale: float, offset: tuple[float, float] = (0.0, 0.0)) -> np.ndarray:

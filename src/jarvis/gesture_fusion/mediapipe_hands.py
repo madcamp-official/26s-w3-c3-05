@@ -37,6 +37,7 @@ from jarvis.gesture_fusion.landmarks import (
     _lost_tracking_observation,
     palm_tilt_degrees,
     normalize_hand,
+    select_largest_hand_index,
 )
 
 RgbFrame = npt.NDArray[np.uint8]
@@ -61,8 +62,8 @@ class MediaPipeHandLandmarker:
     """MediaPipe Hand Landmarker를 감싸 프레임마다 HandObservation을 만든다.
 
     `HandLandmarkSource` Protocol의 MVP 구현이다. 여러 손이 잡히면
-    handedness/detection score가 가장 높은 손 하나만 골라 downstream으로 넘긴다
-    (MVP는 주 조작 손 1개; config.num_hands로 검출 상한을 조절한다).
+    bounding-box가 가장 큰(카메라에 가까운) 손 하나만 골라 downstream으로 넘긴다
+    (landmarks.select_largest_hand_index; config.num_hands로 검출 상한을 조절한다).
     """
 
     def __init__(
@@ -144,18 +145,12 @@ class MediaPipeHandLandmarker:
 
     @staticmethod
     def _select_primary_hand(result: object) -> int:
-        """검출 score가 가장 높은 손의 인덱스를 고른다 (여러 손 중 주 조작 손)."""
-        handedness_list = getattr(result, "handedness", None)
-        if not handedness_list:
-            return 0
-        best_index = 0
-        best_score = -1.0
-        for index, categories in enumerate(handedness_list):
-            score = categories[0].score if categories else 0.0
-            if score > best_score:
-                best_score = score
-                best_index = index
-        return best_index
+        """화면에서 가장 큰 손의 인덱스를 고른다 (여러 손 중 주 조작 손).
+
+        선택 규칙은 landmarks.select_largest_hand_index에 위임한다 —
+        hand_probe와 동일한 로직을 프로젝트 한 곳에서만 정의한다.
+        """
+        return select_largest_hand_index(getattr(result, "hand_landmarks", None))
 
     @staticmethod
     def _primary_handedness(result: object, index: int) -> tuple[str, float]:

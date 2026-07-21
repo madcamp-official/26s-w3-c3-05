@@ -202,6 +202,35 @@ def is_palm_tilted(
     return observation.palm_tilt_degrees > config.max_palm_tilt_degrees
 
 
+def select_largest_hand_index(hand_landmarks: object) -> int:
+    """여러 손 중 화면에서 가장 큰 손(bounding-box 넓이 최대)의 인덱스를 고른다.
+
+    크기 = 정규화 이미지 좌표에서 21개 랜드마크의 x·y bounding-box 넓이. 카메라에
+    가까운/큰 손일수록 넓이가 커지므로, MediaPipe의 트래킹 관성이나 handedness
+    score와 무관하게 매 프레임 가장 큰 손을 주 조작 손으로 선택한다 — 추적 중인
+    손이 있어도 더 큰 손이 등장하면 그쪽으로 전환된다. 단, 후보가 여럿 잡히려면
+    config.num_hands >= 2로 검출 슬롯을 열어 둬야 한다.
+
+    ``hand_landmarks``는 MediaPipe HandLandmarkerResult.hand_landmarks 형태 —
+    손마다 .x/.y를 가진 랜드마크 리스트의 시퀀스. 비어 있으면 0을 돌려준다
+    (호출 측이 이미 빈 결과를 걸러낸 뒤 부른다).
+    """
+    if not hand_landmarks:
+        return 0
+    best_index = 0
+    best_area = -1.0
+    for index, landmarks in enumerate(hand_landmarks):
+        if not landmarks:
+            continue
+        xs = [lm.x for lm in landmarks]
+        ys = [lm.y for lm in landmarks]
+        area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+        if area > best_area:
+            best_area = area
+            best_index = index
+    return best_index
+
+
 def _lost_tracking_observation(timestamp_ms: int, frame_id: int) -> HandObservation:
     """손을 찾지 못한(또는 퇴화한) 프레임의 관측값 — 추적 손실을 지어내지 않는다."""
     return HandObservation(
