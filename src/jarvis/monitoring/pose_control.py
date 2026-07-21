@@ -27,10 +27,10 @@ SCROLL_TICKS = 1
 
 
 def _transition_key() -> InputKey:
-    """주먹→보 전이에 쓸 키. macOS는 Mission Control, Windows는 재생/일시정지."""
+    """주먹→보 전이에 쓸 키. macOS는 Mission Control, Windows는 Task View(Win+Tab)."""
     import sys
 
-    return InputKey.PLAY_PAUSE if sys.platform.startswith("win") else InputKey.MISSION_CONTROL
+    return InputKey.TASK_VIEW if sys.platform.startswith("win") else InputKey.MISSION_CONTROL
 
 
 def default_input_sink() -> InputSink | None:
@@ -114,9 +114,10 @@ class PoseControlBridge:
             "right_click": "우클릭",
             "drag_start": "드래그 시작",
             "drag_end": "드래그 끝",
-            # 주먹→보 전이. macOS=Mission Control, Windows=재생/일시정지.
+            # 주먹→보 전이. macOS=Mission Control, Windows=Task View.
             "media_toggle": (
                 "미션 컨트롤" if self.transition_key is InputKey.MISSION_CONTROL
+                else "태스크 뷰" if self.transition_key is InputKey.TASK_VIEW
                 else "재생/일시정지"
             ),
         }.get(event.kind, "")

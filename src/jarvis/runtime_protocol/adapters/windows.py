@@ -42,6 +42,7 @@ class InputKey(StrEnum):
     MUTE = "mute"
     SHOW_DESKTOP = "show_desktop"  # F11 — 바탕화면 표시(누를 때마다 토글)
     MISSION_CONTROL = "mission_control"  # macOS 전용 — Mission Control 열기(Ctrl+↑)
+    TASK_VIEW = "task_view"  # Windows 전용 — Task View 열기(Win+Tab). macOS Mission Control 대응
 
 
 class MouseButton(StrEnum):
@@ -211,6 +212,7 @@ _WHEEL_DELTA = 120
 _VK_TAB = 0x09
 _VK_MENU = 0x12  # ALT
 _VK_SHIFT = 0x10
+_VK_LWIN = 0x5B  # 왼쪽 Windows 키 — Task View(Win+Tab)용
 _SM_CXSCREEN = 0  # GetSystemMetrics: 주 디스플레이 너비(px)
 _SM_CYSCREEN = 1  # 〃 높이(px)
 
@@ -259,6 +261,14 @@ class Win32InputSink:
 
     def tap_key(self, key: InputKey) -> None:
         user32 = self._user32()
+        if key is InputKey.TASK_VIEW:
+            # Task View는 Win+Tab 조합키라 modifier(Win)로 감싼다(switch_window의
+            # Alt+Tab과 같은 구조). macOS Mission Control에 대응하는 창 개요 화면이다.
+            user32.keybd_event(_VK_LWIN, 0, 0, 0)
+            user32.keybd_event(_VK_TAB, 0, 0, 0)
+            user32.keybd_event(_VK_TAB, 0, _KEYEVENTF_KEYUP, 0)
+            user32.keybd_event(_VK_LWIN, 0, _KEYEVENTF_KEYUP, 0)
+            return
         vk = _VK[key]
         user32.keybd_event(vk, 0, 0, 0)
         user32.keybd_event(vk, 0, _KEYEVENTF_KEYUP, 0)

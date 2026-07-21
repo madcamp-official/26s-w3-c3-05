@@ -34,6 +34,7 @@ def test_nx_keytype_table_covers_every_media_key() -> None:
     assert set(_NX_KEYTYPE) == set(InputKey) - {
         InputKey.SHOW_DESKTOP,
         InputKey.MISSION_CONTROL,
+        InputKey.TASK_VIEW,
     }
 
 
