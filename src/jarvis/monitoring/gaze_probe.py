@@ -754,6 +754,10 @@ class GazeProbe:
 
     def set_calibration_model(self, model: GazeCalibrationCorrector | None) -> None:
         self._calibration_model = model
+        # Do not blend directions from two calibration coordinate systems when
+        # phase 1 trains a preview model before boundary collection.
+        self._smoother.reset()
+        self._previous_feature_sample = None
 
     def set_personal_classifier(
         self,

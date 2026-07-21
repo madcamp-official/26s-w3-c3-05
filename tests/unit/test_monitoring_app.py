@@ -23,7 +23,11 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 import numpy as np  # noqa: E402
 
 from jarvis.gaze.calibration_model import GazeCalibrationModel  # noqa: E402
-from jarvis.monitoring.app import MainWindow, _REGISTRATION_GUIDANCE_PHASES  # noqa: E402
+from jarvis.monitoring.app import (  # noqa: E402
+    MainWindow,
+    _BOUNDARY_GUIDANCE_PHASES,
+    _CENTER_GUIDANCE_PHASES,
+)
 
 
 def _calibration_path(tmp_path: Path) -> Path:
@@ -57,6 +61,8 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
         assert window._active_calibration_model is None
         assert window._gaze_regression_toggle.isChecked() is False
         assert window._register_target_button.text() == "물체 등록"
+        assert window._cancel_registration_button.isEnabled() is False
+        assert window._registration_progress.value() == 0
     finally:
         window.close()
         app.processEvents()
@@ -160,15 +166,48 @@ def test_target_registration_uses_auto_id(tmp_path: Path) -> None:
         app.processEvents()
 
 
-def test_registration_guidance_prompts_diagonal_and_depth_motion() -> None:
-    labels = [label for _end_ms, label in _REGISTRATION_GUIDANCE_PHASES]
+def test_registration_guidance_covers_center_pose_and_boundary_edges() -> None:
+    center_labels = [label for _end_ms, label, _video in _CENTER_GUIDANCE_PHASES]
+    boundary_labels = [label for _end_ms, label, _video in _BOUNDARY_GUIDANCE_PHASES]
 
-    assert len(labels) == 5
-    assert any("LEFT-UP" in label for label in labels)
-    assert any("RIGHT-DOWN" in label for label in labels)
-    assert any("LEFT-DOWN" in label for label in labels)
-    assert any("RIGHT-UP" in label for label in labels)
-    assert any("NEAR/FAR" in label for label in labels)
+    assert len(center_labels) == 5
+    assert any("왼쪽 위" in label for label in center_labels)
+    assert any("오른쪽 아래" in label for label in center_labels)
+    assert any("왼쪽 아래" in label for label in center_labels)
+    assert any("오른쪽 위" in label for label in center_labels)
+    assert any("가까이·멀리" in label for label in center_labels)
+    assert len(boundary_labels) == 5
+    assert any("윗변" in label for label in boundary_labels)
+    assert any("오른쪽 변" in label for label in boundary_labels)
+    assert any("아랫변" in label for label in boundary_labels)
+    assert any("왼쪽 변" in label for label in boundary_labels)
+
+
+def test_registration_ui_starts_in_center_phase_and_can_cancel(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        profiles_path=tmp_path / "profiles.json",
+        samples_path=tmp_path / "samples.json",
+        calibration_model_path=_calibration_path(tmp_path),
+    )
+    try:
+        window._begin_registration("target_001", "monitor", "UNKNOWN", "target_001")
+        assert window._registration is not None
+        assert "1/2" in window._registration_step.text()
+        assert window._cancel_registration_button.isEnabled()
+        assert not window._register_target_button.isEnabled()
+        assert window._video._registration_guide is not None
+
+        window._cancel_target_registration()
+        assert window._registration is None
+        assert window._cancel_registration_button.isEnabled() is False
+        assert window._register_target_button.isEnabled()
+        assert window._video._registration_guide is None
+    finally:
+        window.close()
+        app.processEvents()
 
 
 def test_startup_logs_gesture_recognition_off(tmp_path: Path) -> None:

@@ -12,7 +12,7 @@ from jarvis.calibration.registry import (
     TargetRegistry,
     TargetSpread,
 )
-from jarvis.calibration.target_registration import TargetRegistrationSession
+from jarvis.calibration.target_registration import RegistrationPhase, TargetRegistrationSession
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import yaw_pitch_to_direction
 from jarvis.gaze.feature_profile import TargetAreaProfile, TargetFeatureProfile, TargetFeatureSample
@@ -44,10 +44,32 @@ def _rays_at(
     return rays
 
 
+def _add_boundary_samples(
+    session: TargetRegistrationSession,
+    count: int,
+    *,
+    center_yaw: float = 0.0,
+    center_pitch: float = 0.0,
+    start_frame: int = 1000,
+) -> None:
+    session.start_boundary(start_frame * 50)
+    for index in range(count):
+        angle = index / max(1, count) * 2.0 * np.pi
+        assert session.add(
+            _gaze(
+                start_frame + index,
+                center_yaw + 2.0 * float(np.cos(angle)),
+                center_pitch + 2.0 * float(np.sin(angle)),
+            ),
+            1.0,
+        )
+
+
 def test_registration_uses_robust_center_and_minimum_spread() -> None:
     session = TargetRegistrationSession("lamp", "조명", "LIGHT", "device-1", minimum_valid_frames=3)
     for frame, yaw in enumerate((9.8, 10.0, 10.2)):
         assert session.add(_gaze(frame, yaw), 1.0)
+    _add_boundary_samples(session, 3, center_yaw=10.0)
     record = session.finalize()
     assert record.direction.yaw == pytest.approx(10.0)
     assert record.spread.yaw == 4.0
@@ -70,11 +92,25 @@ def test_registration_builds_feature_profile() -> None:
                 face_scale=0.10 + frame * 0.01,
             ),
         )
+    session.start_boundary(1000)
+    for frame in range(3):
+        assert session.add(
+            _gaze(20 + frame, 10.0 + frame),
+            1.0,
+            feature_sample=TargetFeatureSample(
+                gaze_yaw=10.0 + frame,
+                gaze_pitch=5.0,
+                head_yaw=0.0,
+                head_pitch=10.0,
+                head_roll=0.0,
+                face_scale=0.11,
+            ),
+        )
 
     record = session.finalize()
 
     assert record.feature_profile is not None
-    assert record.feature_profile.sample_count == 3
+    assert record.feature_profile.sample_count == 6
     assert record.area_profile is not None
     assert record.area_profile.contains(10.0, 0.0)
     assert record.reference_face_scale == pytest.approx(0.11)
@@ -82,8 +118,11 @@ def test_registration_builds_feature_profile() -> None:
 
 def test_registration_defaults_are_demo_tolerant() -> None:
     session = TargetRegistrationSession("lamp", "조명", "LIGHT", "device-1")
-    assert session.duration_ms == 20_000
-    assert session.minimum_valid_frames == 15
+    assert session.center_duration_ms == 20_000
+    assert session.boundary_duration_ms == 16_000
+    assert session.duration_ms == 36_000
+    assert session.minimum_valid_frames == 30
+    assert session.minimum_boundary_frames == 30
     assert session.minimum_confidence == pytest.approx(0.35)
     assert session.maximum_jump_deg == pytest.approx(18.0)
 
@@ -104,8 +143,51 @@ def test_registration_diagnostics_count_rejected_frames() -> None:
     assert not session.add(_gaze(4, 30.0), 1.0)
 
     assert session.diagnostic_summary() == (
-        "seen=5, valid=1, rays=0, face_scale=0, features=0, tracking_lost=1, closed_eyes=1, low_conf=1, jump=1"
+        "phase=CENTER, seen=5, center=1, boundary=0, center_rays=0, "
+        "center_scale=0, center_features=0, boundary_features=0, mlp_features=0, "
+        "tracking_lost=1, closed_eyes=1, low_conf=1, jump=1"
     )
+
+
+def test_two_phase_registration_keeps_mlp_features_center_only() -> None:
+    session = TargetRegistrationSession(
+        "lamp", "desk lamp", "LIGHT", "device-1", minimum_valid_frames=2
+    )
+    center_feature = tuple(float(index) for index in range(13))
+    boundary_feature = tuple(float(index + 100) for index in range(13))
+    assert session.add(_gaze(0, 10.0), 1.0, calibration_features=center_feature)
+    assert session.add(_gaze(1, 10.2), 1.0, calibration_features=center_feature)
+    session.start_boundary(100)
+    assert session.add(_gaze(2, 5.0), 1.0, calibration_features=boundary_feature)
+    assert session.add(_gaze(3, 15.0), 1.0, calibration_features=boundary_feature)
+
+    assert session.calibration_features == (center_feature, center_feature)
+    record = session.finalize()
+    assert record.direction.yaw == pytest.approx(10.1)
+    assert record.area_profile is not None
+    assert record.area_profile.center_yaw == pytest.approx(10.1)
+
+
+def test_two_phase_registration_advances_only_after_time_and_frames() -> None:
+    session = TargetRegistrationSession(
+        "lamp",
+        "desk lamp",
+        "LIGHT",
+        "device-1",
+        center_duration_ms=100,
+        boundary_duration_ms=100,
+        minimum_valid_frames=2,
+    )
+    assert session.add(_gaze(0, 0.0), 1.0)
+    assert session.phase == RegistrationPhase.CENTER
+    # Time has elapsed but the minimum center count has not: remain in phase 1.
+    assert session.add(SmoothedGaze(yaw_pitch_to_direction(0.1, 0.0), 1.0, 100, 1), 1.0)
+    assert session.phase == RegistrationPhase.BOUNDARY
+    assert not session.is_elapsed(250)
+    assert session.add(SmoothedGaze(yaw_pitch_to_direction(-4.0, 0.0), 1.0, 250, 2), 1.0)
+    assert session.add(SmoothedGaze(yaw_pitch_to_direction(4.0, 0.0), 1.0, 300, 3), 1.0)
+    assert session.is_elapsed(350)
+    assert session.phase == RegistrationPhase.COMPLETE
 
 
 def test_registration_rejects_jump_and_insufficient_frames() -> None:
@@ -214,6 +296,7 @@ def test_good_parallax_registration_populates_position_3d() -> None:
     )
     for frame, (direction, origin) in enumerate(_rays_at(target, baseline_radius_mm=150.0)):
         assert session.add(_ray_gaze(frame, direction, origin), 1.0)
+    _add_boundary_samples(session, 20)
 
     record = session.finalize()
 
@@ -234,6 +317,7 @@ def test_insufficient_head_movement_falls_back_to_angular_only() -> None:
     # 머리가 거의 고정된 채(반경 1mm) 등록 — 실제로는 눈만 움직인 것과 같다.
     for frame, (direction, origin) in enumerate(_rays_at(target, baseline_radius_mm=1.0)):
         assert session.add(_ray_gaze(frame, direction, origin), 1.0)
+    _add_boundary_samples(session, 20)
 
     record = session.finalize()
 
@@ -252,6 +336,7 @@ def test_required_3d_registration_rejects_angular_fallback() -> None:
     )
     for frame, (direction, origin) in enumerate(_rays_at(target, baseline_radius_mm=1.0)):
         assert session.add(_ray_gaze(frame, direction, origin), 1.0)
+    _add_boundary_samples(session, 20)
 
     with pytest.raises(ValueError, match="3D target registration failed"):
         session.finalize()
@@ -271,6 +356,7 @@ def test_too_few_rays_skips_triangulation_attempt_entirely() -> None:
     target = np.array([50.0, -20.0, 1500.0])
     for frame, (direction, origin) in enumerate(_rays_at(target, baseline_radius_mm=150.0, n=10)):
         assert session.add(_ray_gaze(frame, direction, origin), 1.0)
+    _add_boundary_samples(session, 5)
 
     record = session.finalize()
 

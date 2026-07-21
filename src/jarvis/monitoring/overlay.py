@@ -292,6 +292,58 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
     return frame
 
 
+def draw_registration_guidance(
+    frame: Frame,
+    *,
+    title: str,
+    instruction: str,
+    progress: float,
+) -> Frame:
+    """Draw a high-visibility two-phase registration guide over the camera view."""
+    h, w = frame.shape[:2]
+    progress = float(np.clip(progress, 0.0, 1.0))
+    margin = max(12, int(w * 0.04))
+    box_top = max(92, int(h * 0.22))
+    box_bottom = min(h - 12, box_top + 104)
+    overlay = frame.copy()
+    cv2.rectangle(
+        overlay,
+        (margin, box_top),
+        (w - margin, box_bottom),
+        (8, 12, 18),
+        thickness=-1,
+    )
+    cv2.addWeighted(overlay, 0.76, frame, 0.24, 0, dst=frame)
+    cv2.rectangle(frame, (margin, box_top), (w - margin, box_bottom), (40, 170, 245), 2)
+    cv2.putText(
+        frame,
+        title,
+        (margin + 14, box_top + 30),
+        _FONT,
+        0.68,
+        (80, 220, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        instruction,
+        (margin + 14, box_top + 60),
+        _FONT,
+        0.52,
+        (235, 235, 235),
+        1,
+        cv2.LINE_AA,
+    )
+    bar_left, bar_right = margin + 14, w - margin - 14
+    bar_top, bar_bottom = box_bottom - 20, box_bottom - 10
+    cv2.rectangle(frame, (bar_left, bar_top), (bar_right, bar_bottom), (60, 65, 75), -1)
+    fill_right = bar_left + int((bar_right - bar_left) * progress)
+    if fill_right > bar_left:
+        cv2.rectangle(frame, (bar_left, bar_top), (fill_right, bar_bottom), (80, 200, 120), -1)
+    return frame
+
+
 def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot, *, mirror: bool = False) -> Frame:
     """Overlay the real hand skeleton (21 landmarks) and tracking info.
 

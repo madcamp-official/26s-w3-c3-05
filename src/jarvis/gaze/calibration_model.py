@@ -290,6 +290,27 @@ class GazeCalibrationStore:
         self._save()
         return self._model
 
+    def preview_model(
+        self,
+        samples: Iterable[GazeCalibrationSample],
+        *,
+        replace_target_id: str | None = None,
+    ) -> GazeCalibrationCorrector | None:
+        """Fit a non-persistent model for phase-2 boundary collection.
+
+        The completed center phase should already improve the gaze used to trace
+        the boundary, but a cancelled/failed registration must not mutate disk.
+        """
+        replay = list(self._samples)
+        if replace_target_id is not None:
+            replay = [sample for sample in replay if sample.target_id != replace_target_id]
+        replay.extend(samples)
+        mlp = GazeMLPCalibrationModel.fit(replay)
+        if mlp.fitted:
+            return mlp
+        ridge = GazeCalibrationModel.fit(replay, regularization=self._regularization)
+        return ridge if ridge.fitted else None
+
     def _load_samples(self) -> list[GazeCalibrationSample]:
         if not self._path.is_file():
             return []

@@ -65,7 +65,8 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
   화면 위쪽이 양수가 되도록 수정 완료, yaw·roll 최종 확인 필요)
 - [ ] Gesture·Fusion·Runtime과의 실제 통합(코드 조립은 Runtime composition root 몫)
 - [ ] 환경 변화(조명/안경/거리) 조건에서 실측 Target Selection Accuracy 수집
-- [x] 10초·다양한 자세 물체 등록 + 머리 이동 삼각측량 3D 위치·유효 반경 추정
+- [x] 2단계 물체 등록(중앙점 20초 + 경계 16초) + 중앙점 머리 이동 삼각측량
+  3D 위치·유효 반경 추정
   (`calibration/triangulation.py`, `target_registration.py`)
 - [x] 3D geometry ↔ 각도 모드 통합 classifier(`effective_distance_and_variance`) —
   origin 없거나 깊이 퇴화 시 프레임 단위 폴백
@@ -79,16 +80,17 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
   테스트에서 확인되면 여기와 models/README.md를 갱신할 것(있으면 [decisions.md](decisions.md)로 옮기기).
 ## Device registration update (2026-07-19)
 
-Demo target registration follows README section 7: the user looks at a real object for about two seconds, and the
-system stores a camera-relative gaze direction profile as `mean_direction + variance`.
+Demo target registration follows README section 7 as two strictly separated phases:
+20 seconds on one center point for MLP/center/3D, followed by 16 seconds tracing
+the four edges with the head still for the angular target area.
 
 Implemented files:
 
 - `src/jarvis/gaze/direction.py`: vector/yaw-pitch conversion used only at the registration/debug boundary.
 - `src/jarvis/calibration/registry.py`: target add/update/rename/delete persistence, JSON auto-load, legacy profile migration,
   and conversion back to README-style `DeviceGazeProfile`.
-- `src/jarvis/calibration/target_registration.py`: two-second robust sample collection with minimum frame count,
-  confidence filtering, closed-eye filtering, jump filtering, median center, and robust angular variance.
+- `src/jarvis/calibration/target_registration.py`: phase-separated center/boundary samples,
+  minimum frame count, confidence/closed-eye/jump filtering, center median, and edge area.
 - `src/jarvis/gaze/classifier.py`: registered target matching uses cosine similarity normalized by stored variance,
   then rejects `UNKNOWN` when the nearest registered direction is too far or the first/second target margin is too small.
 - `src/jarvis/gaze/smoothing.py`: confidence-aware EMA smoothing is enabled before classification.
@@ -122,6 +124,8 @@ samples replace its previous identified samples, all targets are replayed, and b
 Ridge and MLP are retrained. Validation is split within each target direction. A new
 MLP is activated only when it improves held-out angular error over the raw vector.
 Training runs only after registration; live inference is three matrix multiplies.
+Only phase-1 center-point frames become MLP rows. Phase-2 edge frames are deliberately
+excluded so distinct boundary directions are never mislabeled as the center.
 
 The debug panel exposes `vector model: mlp/ridge/geometric`, raw yaw/pitch, final
 yaw/pitch, and whether correction was applied. The checkbox disables correction for
@@ -129,9 +133,9 @@ an immediate A/B comparison without changing or deleting the dataset.
 
 ## 3D object position update (2026-07-20)
 
-사용자 요청: 등록을 10초로 늘리고 다양한 각도·자세로 물체를 바라보게 해, 방향+각도
-분산이 아니라 물체의 실제 좌표와 크기를 예측한 뒤 그것으로 시선 대상을 판정한다.
-머리 이동(parallax)으로 3D 위치를 삼각측량 시도하고, 신뢰도가 낮으면(baseline 부족,
+현재 등록 1단계는 중앙의 한 점을 20초 동안 보며 다양한 자세·거리에서 머리
+이동(parallax) 광선을 모아 3D 위치를 삼각측량한다. 2단계 경계 프레임은 서로 다른
+실제 표면점을 향하므로 삼각측량과 MLP 중앙점 정답에서 제외한다. 3D 신뢰도가 낮으면(baseline 부족,
 광선이 거의 평행, 잔차 과다) 2026-07-19의 각도 기반 등록으로 조용히 대체한다
 (documents/decisions.md 2026-07-20 항목들).
 

@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
 )
 
 from jarvis.calibration.registry import TargetRecord, TargetRegistry
-from jarvis.calibration.target_registration import TargetRegistrationSession
+from jarvis.calibration.target_registration import RegistrationPhase, TargetRegistrationSession
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
 from jarvis.gaze.calibration_model import (
     GazeCalibrationCorrector,
@@ -65,7 +65,6 @@ from jarvis.gaze.calibration_model import (
     GazeCalibrationStore,
 )
 from jarvis.gaze.config import GazeConfig
-from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.lock import GazeLockState
 from jarvis.gaze.personal_classifier import PersonalTargetStore
 from jarvis.gaze.smoothing import SmoothedGaze
@@ -81,6 +80,7 @@ from jarvis.monitoring.overlay import (
     draw_gaze_overlay,
     draw_hand_overlay,
     draw_hud,
+    draw_registration_guidance,
     placeholder_frame,
     render_normalized_hand,
     render_vector,
@@ -108,12 +108,19 @@ _LOCK_COLOR = {
     GazeLockState.EXPIRED: "#f85149",
     GazeLockState.COMMITTED: "#2ea043",
 }
-_REGISTRATION_GUIDANCE_PHASES: tuple[tuple[int, str], ...] = (
-    (4_000, "1/5 move face to LEFT-UP, keep looking at target"),
-    (8_000, "2/5 move face to RIGHT-DOWN, keep looking at target"),
-    (12_000, "3/5 move face to LEFT-DOWN, keep looking at target"),
-    (16_000, "4/5 move face to RIGHT-UP, keep looking at target"),
-    (20_000, "5/5 move slightly NEAR/FAR, keep looking at target"),
+_CENTER_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
+    (4_000, "중앙점을 보면서 얼굴·몸을 왼쪽 위로 천천히 이동", "EYES CENTER - FACE LEFT-UP"),
+    (8_000, "중앙점을 보면서 얼굴·몸을 오른쪽 아래로 천천히 이동", "EYES CENTER - FACE RIGHT-DOWN"),
+    (12_000, "중앙점을 보면서 얼굴·몸을 왼쪽 아래로 천천히 이동", "EYES CENTER - FACE LEFT-DOWN"),
+    (16_000, "중앙점을 보면서 얼굴·몸을 오른쪽 위로 천천히 이동", "EYES CENTER - FACE RIGHT-UP"),
+    (20_000, "중앙점을 보면서 카메라에 조금 가까이·멀리 이동", "EYES CENTER - MOVE NEAR / FAR"),
+)
+_BOUNDARY_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
+    (2_000, "고개를 고정하고 시선을 물체의 왼쪽 위 모서리로 이동", "HEAD STILL - LOOK TOP-LEFT"),
+    (5_500, "윗변을 따라 왼쪽 위에서 오른쪽 위까지 천천히 응시", "TRACE TOP EDGE  LEFT -> RIGHT"),
+    (9_000, "오른쪽 변을 따라 오른쪽 위에서 오른쪽 아래까지 응시", "TRACE RIGHT EDGE  TOP -> BOTTOM"),
+    (12_500, "아랫변을 따라 오른쪽 아래에서 왼쪽 아래까지 응시", "TRACE BOTTOM EDGE  RIGHT -> LEFT"),
+    (16_000, "왼쪽 변을 따라 왼쪽 아래에서 왼쪽 위까지 응시", "TRACE LEFT EDGE  BOTTOM -> TOP"),
 )
 _MONO = "font-family:Consolas,monospace; font-size:12px; color:#c9d1d9;"
 
@@ -782,6 +789,7 @@ class VideoView(QLabel):
         self._gaze: GazeSnapshot | None = None
         self._hand: HandSnapshot | None = None
         self._show_target_heatmap = False
+        self._registration_guide: tuple[str, str, float] | None = None
         self._show_placeholder("카메라 시작 중…")
 
     def set_gaze(self, snapshot: GazeSnapshot) -> None:
@@ -792,6 +800,14 @@ class VideoView(QLabel):
 
     def set_hand(self, snapshot: HandSnapshot) -> None:
         self._hand = snapshot
+
+    def set_registration_guidance(
+        self, title: str, instruction: str, progress: float
+    ) -> None:
+        self._registration_guide = (title, instruction, progress)
+
+    def clear_registration_guidance(self) -> None:
+        self._registration_guide = None
 
     def _show_placeholder(self, text: str) -> None:
         self._render(placeholder_frame(text=text))
@@ -814,6 +830,14 @@ class VideoView(QLabel):
             draw_gaze_overlay(display, self._gaze, mirror=True)
         if self._hand is not None:
             draw_hand_overlay(display, self._hand, mirror=True)
+        if self._registration_guide is not None:
+            title, instruction, progress = self._registration_guide
+            draw_registration_guidance(
+                display,
+                title=title,
+                instruction=instruction,
+                progress=progress,
+            )
         self._render(display)
 
     def _current_fps(self) -> float:
@@ -968,9 +992,7 @@ class MainWindow(QMainWindow):
         )
         self._gaze_regression_user_disabled = False
         self._registration: TargetRegistrationSession | None = None
-        self._registration_points: list[tuple[float, float]] = []
-        self._registration_calibration_features: list[tuple[float, ...]] = []
-        self._registration_phase_index: int | None = None
+        self._registration_phase_marker: tuple[RegistrationPhase, int] | None = None
         self._last_camera_pose_warning: str | None = None
         self._target_list = QListWidget()
         self._register_target_button = QPushButton()
@@ -1062,7 +1084,19 @@ class MainWindow(QMainWindow):
             self._sample_list.addItem(format_gaze_sample(sample))
         layout.addWidget(self._sample_list)
         self._refresh_sample_button()
-        self._registration_status = QLabel("등록 대기")
+        self._registration_step = QLabel("2단계 물체 등록: 대기")
+        self._registration_step.setStyleSheet("font-weight:700; color:#8b949e;")
+        layout.addWidget(self._registration_step)
+        self._registration_progress = QProgressBar()
+        self._registration_progress.setRange(0, 1000)
+        self._registration_progress.setValue(0)
+        self._registration_progress.setFormat("등록 대기")
+        layout.addWidget(self._registration_progress)
+        self._registration_status = QLabel(
+            "1단계에서는 중앙점만 보며 자세를 바꾸고, "
+            "2단계에서는 고개를 고정한 채 눈으로 물체 테두리를 따라갑니다."
+        )
+        self._registration_status.setWordWrap(True)
         self._registration_status.setStyleSheet(
             "background:#161b22; color:#8b949e; border:1px solid #30363d;"
             " border-radius:6px; padding:8px; font-weight:600;"
@@ -1078,11 +1112,15 @@ class MainWindow(QMainWindow):
         self._rename_target_button.clicked.connect(self._rename_selected_target)
         self._delete_target_button = QPushButton("기기 삭제")
         self._delete_target_button.clicked.connect(self._delete_selected_target)
+        self._cancel_registration_button = QPushButton("등록 취소")
+        self._cancel_registration_button.setEnabled(False)
+        self._cancel_registration_button.clicked.connect(self._cancel_target_registration)
         for button in (
             self._register_target_button,
             self._reregister_target_button,
             self._rename_target_button,
             self._delete_target_button,
+            self._cancel_registration_button,
         ):
             target_controls.addWidget(button)
         layout.addLayout(target_controls)
@@ -1204,19 +1242,14 @@ class MainWindow(QMainWindow):
         self._latency.record(LatencyStage.CAPTURE_TO_INFERENCE, snapshot.inference_ms)
         if self._registration is not None:
             smoothed = self._smoothed_from_snapshot(snapshot)
-            if (
-                self._registration.add(
-                    smoothed,
-                    snapshot.tracking_confidence,
-                    eyes_open=snapshot.eyes_open,
-                    face_scale=snapshot.face_scale,
-                    feature_sample=snapshot.feature_sample,
-                )
-                and smoothed is not None
-            ):
-                self._registration_points.append(direction_to_yaw_pitch(smoothed.direction))
-                if snapshot.calibration_features is not None:
-                    self._registration_calibration_features.append(snapshot.calibration_features)
+            self._registration.add(
+                smoothed,
+                snapshot.tracking_confidence,
+                eyes_open=snapshot.eyes_open,
+                face_scale=snapshot.face_scale,
+                feature_sample=snapshot.feature_sample,
+                calibration_features=snapshot.calibration_features,
+            )
             self._update_registration_guidance(snapshot.timestamp_ms)
             if self._registration.is_elapsed(snapshot.timestamp_ms):
                 self._finish_target_registration()
@@ -1268,22 +1301,27 @@ class MainWindow(QMainWindow):
         self._registration = TargetRegistrationSession(
             target_id, name, device_type, device_id, config=self._gaze_config
         )
-        self._registration_points = []
-        self._registration_calibration_features = []
-        self._registration_phase_index = None
-        self._register_target_button.setEnabled(False)
+        self._registration_phase_marker = None
+        self._set_registration_controls(active=True)
+        self._registration_step.setText("1/2 중앙점 MLP 보정 · 20초")
+        self._registration_progress.setValue(0)
+        self._registration_progress.setFormat("1/2 중앙점 보정  %p%")
         self._registration_status.setText(
-            f"'{name}' registration ready: keep looking at the target; "
-            "move face center diagonally and near/far for 20s"
+            f"'{name}' 중앙의 한 점을 계속 바라보세요. 눈은 그 점에 고정하고, "
+            "안내에 따라 얼굴·몸의 위치와 거리를 바꿉니다. 물체 테두리는 아직 보지 마세요."
         )
         self._registration_status.setStyleSheet(
             "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
             " border-radius:6px; padding:8px; font-weight:700;"
         )
         self._log.info(
-            f"'{name}' registration start: do not only rotate your head; "
-            "move face/body LEFT-UP -> RIGHT-DOWN -> LEFT-DOWN -> RIGHT-UP -> NEAR/FAR "
-            "while continuously looking at the target"
+            f"'{name}' 2단계 등록 시작 — 1/2 중앙점 MLP 보정: "
+            "물체 중앙의 한 점만 보면서 얼굴/몸을 좌상·우하·좌하·우상·근거리/원거리로 이동"
+        )
+        self._video.set_registration_guidance(
+            "REGISTRATION 1/2 - CENTER CALIBRATION",
+            "KEEP EYES ON ONE CENTER POINT",
+            0.0,
         )
 
     def _update_registration_guidance(self, timestamp_ms: int) -> None:
@@ -1291,23 +1329,68 @@ class MainWindow(QMainWindow):
         if self._registration.started_at_ms is None:
             self._registration_status.setText("등록 대기: 얼굴과 시선이 안정적으로 잡히길 기다리는 중")
             return
-        elapsed_ms = max(0, timestamp_ms - self._registration.started_at_ms)
+        phase = self._registration.phase
+        if phase == RegistrationPhase.COMPLETE:
+            self._registration_step.setText("2/2 물체 영역 확정 완료")
+            self._registration_progress.setValue(1000)
+            self._registration_progress.setFormat("등록 데이터 처리 중  %p%")
+            self._video.set_registration_guidance(
+                "REGISTRATION COMPLETE", "BUILDING TARGET PROFILE", 1.0
+            )
+            return
+        elapsed_ms = self._registration.phase_elapsed_ms(timestamp_ms)
+        phases = (
+            _CENTER_GUIDANCE_PHASES
+            if phase == RegistrationPhase.CENTER
+            else _BOUNDARY_GUIDANCE_PHASES
+        )
         phase_index = 0
-        for index, (end_ms, _label) in enumerate(_REGISTRATION_GUIDANCE_PHASES):
+        for index, (end_ms, _label, _video_label) in enumerate(phases):
             if elapsed_ms < end_ms:
                 phase_index = index
                 break
         else:
-            phase_index = len(_REGISTRATION_GUIDANCE_PHASES) - 1
-        phase_end_ms, label = _REGISTRATION_GUIDANCE_PHASES[phase_index]
+            phase_index = len(phases) - 1
+        phase_end_ms, label, video_label = phases[phase_index]
         remaining_s = max(0.0, (phase_end_ms - elapsed_ms) / 1000.0)
+        progress = self._registration.phase_progress(timestamp_ms)
+        if phase == RegistrationPhase.CENTER:
+            step = "1/2 중앙점 MLP 보정"
+            count = self._registration.center_valid_frame_count
+            required = self._registration.minimum_valid_frames
+            title = "REGISTRATION 1/2 - CENTER CALIBRATION"
+        else:
+            step = "2/2 물체 영역 확정"
+            count = self._registration.boundary_valid_frame_count
+            required = self._registration.minimum_boundary_frames
+            title = "REGISTRATION 2/2 - TRACE BOUNDARY"
+        if elapsed_ms >= self._registration.phase_duration_ms() and count < required:
+            label = "시간은 완료됐지만 유효 프레임이 부족합니다. 안내 자세를 유지해 주세요."
+            video_label = "HOLD POSITION - NEED MORE VALID FRAMES"
         status = (
-            f"등록 중: {label}  |  남은 {remaining_s:0.1f}s  |  "
-            f"valid {self._registration.valid_frame_count}/{self._registration.minimum_valid_frames}"
+            f"{label}\n현재 구간 남은 시간 {remaining_s:0.1f}s · 유효 프레임 {count}/{required} · "
+            f"중앙 {self._registration.center_valid_frame_count} / 경계 "
+            f"{self._registration.boundary_valid_frame_count}"
         )
+        self._registration_step.setText(step)
+        self._registration_progress.setValue(round(progress * 1000))
+        self._registration_progress.setFormat(f"{step}  %p%")
         self._registration_status.setText(status)
-        if phase_index != self._registration_phase_index:
-            self._registration_phase_index = phase_index
+        self._video.set_registration_guidance(title, video_label, progress)
+        marker = (phase, phase_index)
+        if marker != self._registration_phase_marker:
+            previous_phase = (
+                self._registration_phase_marker[0]
+                if self._registration_phase_marker is not None
+                else None
+            )
+            if phase == RegistrationPhase.BOUNDARY and previous_phase != phase:
+                self._activate_registration_preview_calibration()
+                self._log.info(
+                    "1/2 중앙점 보정 완료 — 2/2 영역 확정 시작: "
+                    "이제 고개·몸을 고정하고 눈으로만 네 모서리와 테두리를 따라가세요"
+                )
+            self._registration_phase_marker = marker
             self._log.info(status)
 
     def _finish_target_registration(self) -> None:
@@ -1339,12 +1422,18 @@ class MainWindow(QMainWindow):
                     target_pitch=record.direction.pitch,
                     target_id=record.target_id,
                 )
-                for features in self._registration_calibration_features
+                for features in self._registration.calibration_features
             ]
-            model = self._calibration_store.add_samples(
-                calibration_samples,
-                replace_target_id=record.target_id,
-            )
+            if calibration_samples:
+                model = self._calibration_store.add_samples(
+                    calibration_samples,
+                    replace_target_id=record.target_id,
+                )
+            else:
+                model = self._calibration_store.model
+                self._log.warn(
+                    f"'{record.name}' 중앙점 calibration feature가 없어 MLP 재학습을 건너뜁니다"
+                )
             preferred_model = self._calibration_store.preferred_model
             auto_enable = (
                 preferred_model is not None and not self._gaze_regression_user_disabled
@@ -1384,7 +1473,9 @@ class MainWindow(QMainWindow):
                 else "MLP waiting for 3+ target directions / validation improvement"
             )
             self._log.info(
-                f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames) "
+                f"'{record.name}' 2단계 등록 완료 "
+                f"(중앙 {self._registration.center_valid_frame_count}, "
+                f"경계 {self._registration.boundary_valid_frame_count} frames) "
                 f"— {self._describe_triangulation_outcome(record)} | "
                 f"{self._registration.diagnostic_summary()} | "
                 f"gaze calibration samples={model.sample_count} | {mlp_label} | {personal_label}"
@@ -1392,17 +1483,89 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             self._log.warn(f"기기 등록 실패: {exc} | {self._registration.diagnostic_summary()}")
         finally:
-            self._registration = None
-            self._registration_points = []
-            self._registration_calibration_features = []
-            self._registration_phase_index = None
-            self._register_target_button.setEnabled(True)
-            self._registration_status.setText("등록 대기")
-            self._registration_status.setStyleSheet(
-                "background:#161b22; color:#8b949e; border:1px solid #30363d;"
-                " border-radius:6px; padding:8px; font-weight:600;"
-            )
+            self._clear_registration_state()
             self._refresh_targets()
+
+    def _activate_registration_preview_calibration(self) -> None:
+        """Apply phase-1 calibration to phase 2 without persisting partial data."""
+        assert self._registration is not None
+        center = self._registration.center_yaw_pitch
+        if center is None:
+            return
+        center_yaw, center_pitch = center
+        samples = [
+            GazeCalibrationSample(
+                features=features,
+                target_yaw=center_yaw,
+                target_pitch=center_pitch,
+                target_id=self._registration.target_id,
+            )
+            for features in self._registration.calibration_features
+        ]
+        preview = self._calibration_store.preview_model(
+            samples,
+            replace_target_id=self._registration.target_id,
+        )
+        if preview is None:
+            self._log.warn(
+                "1/2 중앙점 데이터는 수집됐지만 아직 보정 모델에 필요한 target 수가 부족합니다"
+            )
+            return
+        if self._gaze_regression_user_disabled:
+            self._log.info(
+                f"1/2 중앙점 임시 {preview.kind} 학습 완료 — 사용자가 보정을 꺼서 2단계에는 미적용"
+            )
+            return
+        self._active_calibration_model = preview
+        self._probe.set_calibration_model(preview)
+        self._gaze_regression_toggle.blockSignals(True)
+        self._gaze_regression_toggle.setChecked(True)
+        self._gaze_regression_toggle.blockSignals(False)
+        self._log.info(
+            f"1/2 중앙점 임시 {preview.kind} 학습 완료·2단계 적용 "
+            f"(samples={preview.sample_count}, targets={preview.target_count}, 저장은 2단계 완료 후)"
+        )
+
+    def _cancel_target_registration(self) -> None:
+        if self._registration is None:
+            return
+        name = self._registration.name
+        self._clear_registration_state()
+        self._log.warn(f"'{name}' 물체 등록을 사용자가 취소했습니다")
+
+    def _set_registration_controls(self, *, active: bool) -> None:
+        for button in (
+            self._register_target_button,
+            self._reregister_target_button,
+            self._rename_target_button,
+            self._delete_target_button,
+        ):
+            button.setEnabled(not active)
+        self._cancel_registration_button.setEnabled(active)
+
+    def _clear_registration_state(self) -> None:
+        self._registration = None
+        self._registration_phase_marker = None
+        persistent_model = self._calibration_store.preferred_model
+        self._active_calibration_model = (
+            persistent_model
+            if persistent_model is not None and not self._gaze_regression_user_disabled
+            else None
+        )
+        self._probe.set_calibration_model(self._active_calibration_model)
+        self._set_registration_controls(active=False)
+        self._registration_step.setText("2단계 물체 등록: 대기")
+        self._registration_progress.setValue(0)
+        self._registration_progress.setFormat("등록 대기")
+        self._registration_status.setText(
+            "1단계에서는 중앙점만 보며 자세를 바꾸고, "
+            "2단계에서는 고개를 고정한 채 눈으로 물체 테두리를 따라갑니다."
+        )
+        self._registration_status.setStyleSheet(
+            "background:#161b22; color:#8b949e; border:1px solid #30363d;"
+            " border-radius:6px; padding:8px; font-weight:600;"
+        )
+        self._video.clear_registration_guidance()
 
     def _describe_triangulation_outcome(self, record: TargetRecord) -> str:
         """3D 위치 추정이 성공했는지, 실패했다면 왜 각도 모드로 대체됐는지를

@@ -18,6 +18,7 @@ from jarvis.monitoring.overlay import (  # noqa: E402
     draw_gaze_overlay,
     draw_hand_overlay,
     draw_hud,
+    draw_registration_guidance,
     draw_target_heatmap,
     placeholder_frame,
 )
@@ -86,6 +87,21 @@ def test_draw_hud_no_lines_is_noop() -> None:
     before = frame.copy()
     draw_hud(frame, [])
     assert np.array_equal(before, frame)
+
+
+def test_draw_registration_guidance_adds_panel_and_progress() -> None:
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    before = frame.copy()
+
+    draw_registration_guidance(
+        frame,
+        title="REGISTRATION 1/2 - CENTER",
+        instruction="KEEP EYES ON CENTER",
+        progress=0.5,
+    )
+
+    assert not np.array_equal(before, frame)
+    assert frame.shape == (240, 320, 3)
 
 
 def test_draw_gaze_overlay_draws_when_tracking() -> None:
