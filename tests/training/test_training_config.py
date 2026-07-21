@@ -23,6 +23,8 @@ def test_default_training_config_singleton_matches_defaults() -> None:
         {"batch_size": 0},
         {"learning_rate": 0.0},
         {"learning_rate": -1.0},
+        {"finetune_learning_rate": 0.0},
+        {"finetune_learning_rate": -1e-4},
         {"max_epochs": 0},
         {"early_stopping_patience": 0},
         {"phase_loss_weight": -0.1},
@@ -44,3 +46,9 @@ def test_rejects_invalid_overrides(overrides: dict[str, object]) -> None:
 def test_lr_min_factor_accepts_boundary_values() -> None:
     TrainingConfig(lr_min_factor=0.0)  # 완전히 0까지 감쇠 — 허용.
     TrainingConfig(lr_min_factor=1.0)  # 감쇠 없음(상수 LR)과 동일 — 허용.
+
+
+def test_finetune_learning_rate_defaults_below_pretrain() -> None:
+    """finetune LR이 pretrain LR보다 낮아야 한다 — 적은 데이터에서 표현 보존."""
+    config = DEFAULT_TRAINING_CONFIG
+    assert config.finetune_learning_rate < config.learning_rate

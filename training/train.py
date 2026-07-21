@@ -216,7 +216,25 @@ def _resolve_datasets(
     if stage == "pretrain":
         train_root = training_config.cache_dir / "jester" / "train"
         val_root = training_config.cache_dir / "jester" / "validation"
-        dataset_id = "jester-v1 (공식 train/validation split)"
+        # 2026-07-21: pooled 모드 추가(6bb43c6)가 finetune 분기를 early-return으로
+        # 바꾸면서 if/elif 뒤에 있던 공용 dataset 생성·return을 함께 지워, pretrain
+        # 분기가 로컬만 설정하고 None을 반환하던 회귀를 복원한다(pretrain은 VM의
+        # 구버전으로 학습돼 드러나지 않았다). 이제 각 분기가 스스로 build·return한다.
+        train_dataset = ClipDataset(
+            train_root,
+            gesture_config=gesture_config,
+            training_config=training_config,
+            augment=True,
+            seed=0,
+        )
+        val_dataset = ClipDataset(
+            val_root,
+            gesture_config=gesture_config,
+            training_config=training_config,
+            augment=False,
+            seed=1,
+        )
+        return train_dataset, val_dataset, "jester-v1 (공식 train/validation split)"
     elif stage == "finetune":
         webcam_root = training_config.cache_dir / "webcam"
         if train_persons or val_persons:
@@ -344,8 +362,15 @@ def train(
         collate_fn=collate_fn,
     )
 
+    # finetune은 pretrain보다 낮은 LR을 쓴다 — 적은 웹캠 데이터에서 큰 스텝이 사전학습
+    # 표현을 덮어쓰는 것을 막는다(config.finetune_learning_rate 참조).
+    base_lr = (
+        training_config.finetune_learning_rate
+        if stage == "finetune"
+        else training_config.learning_rate
+    )
     optimizer = torch.optim.AdamW(
-        net.parameters(), lr=training_config.learning_rate, weight_decay=training_config.weight_decay
+        net.parameters(), lr=base_lr, weight_decay=training_config.weight_decay
     )
     writer = SummaryWriter(log_dir=str(training_config.runs_dir / stage))
 
@@ -362,7 +387,7 @@ def train(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=max(1, epoch_limit),
-        eta_min=training_config.learning_rate * training_config.lr_min_factor,
+        eta_min=base_lr * training_config.lr_min_factor,
     )
 
     for epoch in range(epoch_limit):
@@ -439,11 +464,22 @@ def main(argv: list[str] | None = None) -> int:
             "GPU 사용률이 낮게 나오면 이 값을 코어 수에 맞춰 올린다."
         ),
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help=(
+            "DataLoader 배치 크기(기본 TrainingConfig.batch_size=32). finetune은 클립 수가 "
+            "적어 32가 클 수 있다 — 8~16으로 낮추면 epoch당 업데이트 수가 늘어난다."
+        ),
+    )
     args = parser.parse_args(argv)
 
     training_config = DEFAULT_TRAINING_CONFIG
     if args.num_workers is not None:
         training_config = replace(training_config, num_workers=args.num_workers)
+    if args.batch_size is not None:
+        training_config = replace(training_config, batch_size=args.batch_size)
 
     checkpoint_path = train(
         stage=args.stage,

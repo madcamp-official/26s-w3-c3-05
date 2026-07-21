@@ -45,7 +45,15 @@ class TrainingConfig:
     """DataLoader 워커 프로세스 수."""
 
     learning_rate: float = 1e-3
-    """AdamW 초기 학습률."""
+    """AdamW 초기 학습률 (pretrain)."""
+
+    finetune_learning_rate: float = 1e-4
+    """AdamW 초기 학습률 (finetune 전용, pretrain의 1/10).
+
+    웹캠 파인튜닝 데이터는 Jester 사전학습셋보다 훨씬 적어, pretrain LR(1e-3) 같은 큰
+    스텝은 사전학습이 만든 표현을 덮어써(catastrophic forgetting) 오히려 손해다. 작은
+    LR로 기존 표현을 보존하며 대상 사용자·카메라에만 미세 적응한다. `train(stage=
+    "finetune")`이 이 값을 쓰고, 코사인 스케줄의 eta_min도 이 값 기준으로 정한다."""
 
     weight_decay: float = 1e-4
     """AdamW weight decay."""
@@ -141,6 +149,8 @@ class TrainingConfig:
             raise ValueError("num_workers must be non-negative")
         if not math.isfinite(self.learning_rate) or self.learning_rate <= 0.0:
             raise ValueError("learning_rate must be finite and positive")
+        if not math.isfinite(self.finetune_learning_rate) or self.finetune_learning_rate <= 0.0:
+            raise ValueError("finetune_learning_rate must be finite and positive")
         if not math.isfinite(self.weight_decay) or self.weight_decay < 0.0:
             raise ValueError("weight_decay must be finite and non-negative")
         if not math.isfinite(self.lr_min_factor) or not (0.0 <= self.lr_min_factor <= 1.0):
