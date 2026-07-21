@@ -126,13 +126,17 @@ class CausalTCN(nn.Module):
         if not bool(torch.isfinite(mean).all()) or not bool(torch.isfinite(std).all()):
             raise ValueError("mean·std must contain only finite values")
         safe_std = torch.where(std > 1e-6, std, torch.ones_like(std))
-        self.input_mean.copy_(mean.to(self.input_mean.dtype))
-        self.input_std.copy_(safe_std.to(self.input_std.dtype))
+        input_mean = cast("torch.Tensor", self.input_mean)
+        input_std = cast("torch.Tensor", self.input_std)
+        input_mean.copy_(mean.to(input_mean.dtype))
+        input_std.copy_(safe_std.to(input_std.dtype))
 
     def forward(self, x: "torch.Tensor") -> tuple["torch.Tensor", "torch.Tensor"]:
         """x: (batch, feature_dim, time) → (gesture_logits, phase_logits), 각 (batch, classes, time)."""
         # (feature_dim,) → (1, feature_dim, 1)로 broadcast: 시간축과 무관한 프레임별 affine.
-        x = (x - self.input_mean.view(1, -1, 1)) / self.input_std.view(1, -1, 1)
+        input_mean = cast("torch.Tensor", self.input_mean)
+        input_std = cast("torch.Tensor", self.input_std)
+        x = (x - input_mean.view(1, -1, 1)) / input_std.view(1, -1, 1)
         hidden = self.blocks(x)
         return self.gesture_head(hidden), self.phase_head(hidden)
 

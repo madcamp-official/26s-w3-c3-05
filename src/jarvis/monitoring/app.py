@@ -59,7 +59,11 @@ from PySide6.QtWidgets import (
 from jarvis.calibration.registry import TargetRecord, TargetRegistry
 from jarvis.calibration.target_registration import TargetRegistrationSession
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
-from jarvis.gaze.calibration_model import GazeCalibrationSample, GazeCalibrationStore
+from jarvis.gaze.calibration_model import (
+    GazeCalibrationModel,
+    GazeCalibrationSample,
+    GazeCalibrationStore,
+)
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.lock import GazeLockState
@@ -884,6 +888,7 @@ class MainWindow(QMainWindow):
         profiles_path: Path | None = None,
         hand_model_path: Path | None = None,
         samples_path: Path | None = None,
+        calibration_model_path: Path | None = None,
         start_camera: bool = True,
         gaze_enabled: bool = True,
     ) -> None:
@@ -908,11 +913,13 @@ class MainWindow(QMainWindow):
             enable_3d_target_matching=False,
             require_3d_target_registration=False,
         )
-        self._calibration_store = GazeCalibrationStore(_default_calibration_model_path())
+        self._calibration_store = GazeCalibrationStore(
+            calibration_model_path or _default_calibration_model_path()
+        )
         self._target_registry = TargetRegistry(self._profiles_path)
-        # Diagnostic experiment #1: keep learned gaze calibration OFF so raw/head
-        # composition can be inspected without a regression model shifting final y/p.
-        self._active_calibration_model = None
+        # Default OFF so raw/head composition can be inspected without a regression
+        # model shifting final y/p. The live tab exposes a checkbox to compare it.
+        self._active_calibration_model: GazeCalibrationModel | None = None
         self._registration: TargetRegistrationSession | None = None
         self._registration_points: list[tuple[float, float]] = []
         self._registration_calibration_features: list[tuple[float, ...]] = []
@@ -983,10 +990,16 @@ class MainWindow(QMainWindow):
         self._clear_samples_button.clicked.connect(self._clear_gaze_samples)
         self._target_heatmap_toggle = QCheckBox("Target heatmap / 물체 영역 표시")
         self._target_heatmap_toggle.toggled.connect(self._video.set_target_heatmap_visible)
+        self._gaze_regression_toggle = QCheckBox("Use gaze regression calibration")
+        self._gaze_regression_toggle.setToolTip(
+            "저장된 data/calibration/gaze_regressor.json 회귀 모델을 final yaw/pitch에 적용합니다."
+        )
+        self._gaze_regression_toggle.toggled.connect(self._set_gaze_regression_enabled)
         sample_controls = QHBoxLayout()
         sample_controls.addWidget(self._sample_button, 1)
         sample_controls.addWidget(self._clear_samples_button)
         sample_controls.addWidget(self._target_heatmap_toggle)
+        sample_controls.addWidget(self._gaze_regression_toggle)
         layout.addLayout(sample_controls)
         self._sample_list = QListWidget()
         self._sample_list.setMaximumHeight(130)
@@ -1024,6 +1037,28 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._target_list)
         self._refresh_targets()
         return container
+
+    def _set_gaze_regression_enabled(self, enabled: bool) -> None:
+        if enabled and self._calibration_store.model.fitted:
+            self._active_calibration_model = self._calibration_store.model
+            self._probe.set_calibration_model(self._active_calibration_model)
+            self._log.info(
+                "gaze 회귀 보정 ON "
+                f"(samples={self._active_calibration_model.sample_count}, "
+                f"targets={self._active_calibration_model.target_count})"
+            )
+            return
+        self._active_calibration_model = None
+        self._probe.set_calibration_model(None)
+        if enabled:
+            self._gaze_regression_toggle.blockSignals(True)
+            self._gaze_regression_toggle.setChecked(False)
+            self._gaze_regression_toggle.blockSignals(False)
+            self._log.warn(
+                "gaze 회귀 보정 사용 불가: 최소 2개 target의 calibration sample이 필요합니다"
+            )
+        else:
+            self._log.info("gaze 회귀 보정 OFF")
 
     def _build_gaze_tab(self) -> QWidget:
         self._gaze_panel = GazePanel(self._probe.status_text)
@@ -1236,7 +1271,9 @@ class MainWindow(QMainWindow):
                 for features in self._registration_calibration_features
             ]
             model = self._calibration_store.add_samples(calibration_samples)
-            self._active_calibration_model = None
+            self._active_calibration_model = (
+                model if self._gaze_regression_toggle.isChecked() and model.fitted else None
+            )
             self._probe.set_calibration_model(self._active_calibration_model)
             self._log.info(
                 f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames) "

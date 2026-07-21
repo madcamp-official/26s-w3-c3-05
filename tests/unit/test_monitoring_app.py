@@ -8,7 +8,9 @@ teardown is clean. Requires the ui extra (PySide6).
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -18,12 +20,26 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+import numpy as np  # noqa: E402
+
+from jarvis.gaze.calibration_model import GazeCalibrationModel  # noqa: E402
 from jarvis.monitoring.app import MainWindow, _REGISTRATION_GUIDANCE_PHASES  # noqa: E402
+
+
+def _calibration_path(tmp_path: Path) -> Path:
+    path = tmp_path / "gaze_regressor_empty.json"
+    path.write_text(json.dumps({"samples": []}), encoding="utf-8")
+    return path
 
 
 def test_main_window_builds_offscreen(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(env={}, start_camera=False, samples_path=tmp_path / "samples.json")
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        samples_path=tmp_path / "samples.json",
+        calibration_model_path=_calibration_path(tmp_path),
+    )
     try:
         tabs = window.centralWidget()
         assert tabs is not None
@@ -39,7 +55,34 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
         assert window._gaze_config.enable_3d_target_matching is False
         assert window._gaze_config.require_3d_target_registration is False
         assert window._active_calibration_model is None
+        assert window._gaze_regression_toggle.isChecked() is False
         assert window._register_target_button.text() == "물체 등록"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_gaze_regression_toggle_applies_fitted_model(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        samples_path=tmp_path / "samples.json",
+        calibration_model_path=_calibration_path(tmp_path),
+    )
+    try:
+        model = GazeCalibrationModel(
+            coefficients=np.zeros((13, 2), dtype=np.float64),
+            sample_count=2,
+            target_count=2,
+        )
+        window._calibration_store = SimpleNamespace(model=model)
+
+        window._gaze_regression_toggle.setChecked(True)
+        assert window._active_calibration_model is model
+
+        window._gaze_regression_toggle.setChecked(False)
+        assert window._active_calibration_model is None
     finally:
         window.close()
         app.processEvents()
@@ -108,6 +151,7 @@ def test_target_registration_uses_auto_id(tmp_path: Path) -> None:
         start_camera=False,
         profiles_path=tmp_path / "profiles.json",
         samples_path=tmp_path / "samples.json",
+        calibration_model_path=_calibration_path(tmp_path),
     )
     try:
         assert window._next_target_id() == "target_001"
@@ -127,11 +171,15 @@ def test_registration_guidance_prompts_diagonal_and_depth_motion() -> None:
     assert any("NEAR/FAR" in label for label in labels)
 
 
-def test_startup_logs_gesture_recognition_off() -> None:
+def test_startup_logs_gesture_recognition_off(tmp_path: Path) -> None:
     """The gesture pipeline exists but its model is untrained — startup says so
     honestly ("미학습"), never claiming recognition is running."""
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(env={}, start_camera=False)
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        calibration_model_path=_calibration_path(tmp_path),
+    )
     try:
         texts = [m.text for m in window._log.recent()]
         assert any("미학습" in t for t in texts)

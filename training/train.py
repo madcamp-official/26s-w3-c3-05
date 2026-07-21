@@ -108,7 +108,9 @@ def _collapsed_predictions(gesture_logits: "torch.Tensor") -> "torch.Tensor":
     probs = torch.softmax(gesture_logits, dim=1)
     background = probs[:, _BACKGROUND_SELECTOR, :].sum(dim=1, keepdim=True)
     foreground = probs[:, _FOREGROUND_SELECTOR, :]
-    return torch.cat([background, foreground], dim=1).argmax(dim=1)
+    collapsed = torch.cat([background, foreground], dim=1)
+    collapsed[:, 0, :] += torch.finfo(collapsed.dtype).eps * 8
+    return collapsed.argmax(dim=1)
 
 
 def _run_epoch(
