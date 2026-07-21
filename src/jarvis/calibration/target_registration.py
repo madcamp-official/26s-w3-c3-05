@@ -39,7 +39,7 @@ class TargetRegistrationSession:
         device_type: str,
         device_id: str,
         *,
-        duration_ms: int = 15_000,
+        duration_ms: int = 20_000,
         minimum_valid_frames: int = 15,
         minimum_confidence: float = 0.35,
         maximum_jump_deg: float = 18.0,
@@ -70,6 +70,11 @@ class TargetRegistrationSession:
     @property
     def valid_frame_count(self) -> int:
         return len(self._samples)
+
+    @property
+    def feature_samples(self) -> tuple[TargetFeatureSample, ...]:
+        """Valid per-frame features collected during this target registration."""
+        return tuple(self._feature_samples)
 
     def add(
         self,

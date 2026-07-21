@@ -46,6 +46,7 @@ from jarvis.gaze.feature_profile import (
 )
 from jarvis.gaze.features import FaceObservation, GazeVector, Vector3, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
+from jarvis.gaze.personal_classifier import PersonalTargetClassifier, PersonalTargetPrediction
 from jarvis.gaze.smoothing import GazeSmoother
 
 
@@ -154,6 +155,8 @@ class GazeSnapshot:
     gaze_motion_delta_deg: tuple[float, float] | None
     feature_details: tuple[FeatureProfileDetail, ...]
     area_details: tuple[AreaProfileDetail, ...]
+    personal_prediction: PersonalTargetPrediction | None
+    personal_confidence_threshold: float
     camera_pose_warning: str | None
 
     # 2e — gaze lock state machine
@@ -526,6 +529,7 @@ def evaluate(
     current_face_scale = _face_scale(observation)
     feature_sample: TargetFeatureSample | None = None
     gaze_motion_delta_deg: tuple[float, float] | None = None
+    personal_prediction: PersonalTargetPrediction | None = None
     if smoothed is None:
         result = ClassificationResult(
             target=config.UNKNOWN_TARGET, probability=0.0, second_best_probability=0.0
@@ -558,6 +562,7 @@ def evaluate(
                 feature_sample.gaze_yaw - previous_feature_sample.gaze_yaw,
                 feature_sample.gaze_pitch - previous_feature_sample.gaze_pitch,
             )
+        personal_prediction = classifier.predict_personal(feature_sample)
         result = classifier.classify(
             smoothed.direction,
             origin=smoothed.origin,
@@ -630,6 +635,8 @@ def evaluate(
         gaze_motion_delta_deg=gaze_motion_delta_deg,
         feature_details=profile_details,
         area_details=area_details,
+        personal_prediction=personal_prediction,
+        personal_confidence_threshold=classifier.personal_confidence_threshold,
         camera_pose_warning=_camera_pose_warning(
             classifier,
             current_face_scale,
@@ -714,6 +721,17 @@ class GazeProbe:
 
     def set_calibration_model(self, model: GazeCalibrationModel | None) -> None:
         self._calibration_model = model
+
+    def set_personal_classifier(
+        self,
+        model: PersonalTargetClassifier | None,
+        *,
+        confidence_threshold: float = 0.65,
+    ) -> None:
+        self._classifier.set_personal_classifier(
+            model,
+            confidence_threshold=confidence_threshold,
+        )
 
     def register_profile(
         self,

@@ -82,7 +82,7 @@ def test_registration_builds_feature_profile() -> None:
 
 def test_registration_defaults_are_demo_tolerant() -> None:
     session = TargetRegistrationSession("lamp", "조명", "LIGHT", "device-1")
-    assert session.duration_ms == 15_000
+    assert session.duration_ms == 20_000
     assert session.minimum_valid_frames == 15
     assert session.minimum_confidence == pytest.approx(0.35)
     assert session.maximum_jump_deg == pytest.approx(18.0)

@@ -23,6 +23,7 @@ from jarvis.gaze.feature_profile import (
     TargetFeatureSample,
 )
 from jarvis.gaze.features import Vector3
+from jarvis.gaze.personal_classifier import PersonalTargetClassifier, PersonalTargetPrediction
 
 _MINIMUM_VARIANCE = 1e-6
 """분산이 0에 가까울 때 나눗셈이 발산하지 않도록 하는 하한값."""
@@ -163,6 +164,8 @@ class TargetClassifier:
         self._geometries: dict[str, TargetGeometry3D] = {}
         self._feature_profiles: dict[str, TargetFeatureProfile] = {}
         self._area_profiles: dict[str, TargetAreaProfile] = {}
+        self._personal_classifier: PersonalTargetClassifier | None = None
+        self._personal_confidence_threshold = 0.65
 
     def register_profile(
         self,
@@ -196,6 +199,26 @@ class TargetClassifier:
         self._geometries.pop(device_id, None)
         self._feature_profiles.pop(device_id, None)
         self._area_profiles.pop(device_id, None)
+
+    def set_personal_classifier(
+        self,
+        model: PersonalTargetClassifier | None,
+        *,
+        confidence_threshold: float = 0.65,
+    ) -> None:
+        self._personal_classifier = model if model is not None and model.fitted else None
+        self._personal_confidence_threshold = confidence_threshold
+
+    @property
+    def personal_confidence_threshold(self) -> float:
+        return self._personal_confidence_threshold
+
+    def predict_personal(
+        self, sample: TargetFeatureSample | None
+    ) -> PersonalTargetPrediction | None:
+        if sample is None or self._personal_classifier is None:
+            return None
+        return self._personal_classifier.predict(sample)
 
     @property
     def profiles(self) -> dict[str, DeviceGazeProfile]:
@@ -245,7 +268,11 @@ class TargetClassifier:
                 second_best_probability=0.0,
             )
 
-        if feature_sample is not None and (self._feature_profiles or self._area_profiles):
+        if feature_sample is not None and (
+            self._personal_classifier is not None
+            or self._feature_profiles
+            or self._area_profiles
+        ):
             return self._classify_by_feature_profile(
                 feature_sample,
                 direction,
@@ -331,6 +358,13 @@ class TargetClassifier:
         current_face_scale: float | None = None,
         gaze_motion_delta_deg: tuple[float, float] | None = None,
     ) -> ClassificationResult:
+        personal = self.predict_personal(feature_sample)
+        if personal is not None and personal.confidence >= self._personal_confidence_threshold:
+            return ClassificationResult(
+                target=personal.target_id,
+                probability=personal.confidence,
+                second_best_probability=personal.second_best_confidence,
+            )
         area_result = self._classify_by_area_profile(
             feature_sample,
             direction,

@@ -67,6 +67,7 @@ from jarvis.gaze.calibration_model import (
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.lock import GazeLockState
+from jarvis.gaze.personal_classifier import PersonalTargetStore
 from jarvis.gaze.smoothing import SmoothedGaze
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
@@ -108,11 +109,11 @@ _LOCK_COLOR = {
     GazeLockState.COMMITTED: "#2ea043",
 }
 _REGISTRATION_GUIDANCE_PHASES: tuple[tuple[int, str], ...] = (
-    (3_000, "1/5 move face to LEFT-UP, keep looking at target"),
-    (6_000, "2/5 move face to RIGHT-DOWN, keep looking at target"),
-    (9_000, "3/5 move face to LEFT-DOWN, keep looking at target"),
-    (12_000, "4/5 move face to RIGHT-UP, keep looking at target"),
-    (15_000, "5/5 move slightly NEAR/FAR, keep looking at target"),
+    (4_000, "1/5 move face to LEFT-UP, keep looking at target"),
+    (8_000, "2/5 move face to RIGHT-DOWN, keep looking at target"),
+    (12_000, "3/5 move face to LEFT-DOWN, keep looking at target"),
+    (16_000, "4/5 move face to RIGHT-UP, keep looking at target"),
+    (20_000, "5/5 move slightly NEAR/FAR, keep looking at target"),
 )
 _MONO = "font-family:Consolas,monospace; font-size:12px; color:#c9d1d9;"
 
@@ -316,6 +317,14 @@ class GazePanel(QScrollArea):
             if s.gaze_motion_delta_deg is not None
             else "None"
         )
+        ml = (
+            f"{s.personal_prediction.target_id}  p={s.personal_prediction.confidence:.3f}  "
+            f"p2={s.personal_prediction.second_best_confidence:.3f}  "
+            f"{'USED' if s.personal_prediction.confidence >= s.personal_confidence_threshold else 'fallback'} "
+            f"(thr={s.personal_confidence_threshold:.2f})"
+            if s.personal_prediction is not None
+            else f"None (needs 2+ registered targets, thr={s.personal_confidence_threshold:.2f})"
+        )
         est = s.target_estimate
         self._numeric.setText(
             f"face_detected : {s.face_detected}\n"
@@ -327,6 +336,7 @@ class GazePanel(QScrollArea):
             f"gaze vector   : {direction}\n"
             f"feature       : {feature}\n"
             f"gaze motion   : {motion}\n"
+            f"ml score      : {ml}\n"
             f"smoothing buf : {s.buffer_fill}/{s.buffer_capacity} frames\n"
             "── TargetEstimate (contract) ──────────────\n"
             f"target={est.target}  p={est.probability:.3f}  "
@@ -890,6 +900,7 @@ class MainWindow(QMainWindow):
         hand_model_path: Path | None = None,
         samples_path: Path | None = None,
         calibration_model_path: Path | None = None,
+        personal_classifier_path: Path | None = None,
         start_camera: bool = True,
         gaze_enabled: bool = True,
     ) -> None:
@@ -917,6 +928,9 @@ class MainWindow(QMainWindow):
         self._calibration_store = GazeCalibrationStore(
             calibration_model_path or _default_calibration_model_path()
         )
+        self._personal_target_store = PersonalTargetStore(
+            personal_classifier_path or _default_personal_classifier_path()
+        )
         self._target_registry = TargetRegistry(self._profiles_path)
         # Default OFF so raw/head composition can be inspected without a regression
         # model shifting final y/p. The live tab exposes a checkbox to compare it.
@@ -933,6 +947,10 @@ class MainWindow(QMainWindow):
             profiles_path=self._profiles_path,
             config=self._gaze_config,
             calibration_model=self._active_calibration_model,
+        )
+        self._probe.set_personal_classifier(
+            self._personal_target_store.model,
+            confidence_threshold=self._personal_target_store.confidence_threshold,
         )
         self._hand_probe = HandProbe(model_path=self._hand_model_path)
 
@@ -1214,7 +1232,7 @@ class MainWindow(QMainWindow):
         self._register_target_button.setEnabled(False)
         self._registration_status.setText(
             f"'{name}' registration ready: keep looking at the target; "
-            "move face center diagonally and near/far for 15s"
+            "move face center diagonally and near/far for 20s"
         )
         self._registration_status.setStyleSheet(
             "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
@@ -1285,11 +1303,25 @@ class MainWindow(QMainWindow):
                 model if self._gaze_regression_toggle.isChecked() and model.fitted else None
             )
             self._probe.set_calibration_model(self._active_calibration_model)
+            personal_model = self._personal_target_store.add_samples(
+                record.target_id,
+                list(self._registration.feature_samples),
+                replace_target=True,
+            )
+            self._probe.set_personal_classifier(
+                personal_model,
+                confidence_threshold=self._personal_target_store.confidence_threshold,
+            )
+            personal_label = (
+                f"personal classifier samples={personal_model.sample_count}"
+                if personal_model is not None
+                else "personal classifier waiting for 2+ targets"
+            )
             self._log.info(
                 f"'{record.name}' 방향 등록 완료 ({self._registration.valid_frame_count} frames) "
                 f"— {self._describe_triangulation_outcome(record)} | "
                 f"{self._registration.diagnostic_summary()} | "
-                f"gaze calibration samples={model.sample_count}"
+                f"gaze calibration samples={model.sample_count} | {personal_label}"
             )
         except ValueError as exc:
             self._log.warn(f"기기 등록 실패: {exc} | {self._registration.diagnostic_summary()}")
@@ -1359,6 +1391,11 @@ class MainWindow(QMainWindow):
             return
         self._target_registry.remove(record.target_id)
         self._probe.unregister_profile(record.target_id)
+        self._personal_target_store.remove_target(record.target_id)
+        self._probe.set_personal_classifier(
+            self._personal_target_store.model,
+            confidence_threshold=self._personal_target_store.confidence_threshold,
+        )
         self._refresh_targets()
 
     def _refresh_targets(self) -> None:
@@ -1452,6 +1489,10 @@ def _default_profiles_path() -> Path:
 
 def _default_calibration_model_path() -> Path:
     return Path("data/calibration/gaze_regressor.json")
+
+
+def _default_personal_classifier_path() -> Path:
+    return Path("data/calibration/personal_target_classifier.json")
 
 
 def _load_env() -> dict[str, str]:
