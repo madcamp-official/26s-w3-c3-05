@@ -308,7 +308,10 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 | `smoothing_window_frames` | `8` | confidence 가중 이동 평균에 쓰는 최근 프레임 수 |
 | `ema_min_alpha` / `ema_max_alpha` | `0.15` / `0.65` | 낮은/높은 confidence 프레임의 EMA 반영률 |
 | `blink_hold_ms` | `300` | 짧은 눈 감김 동안 마지막 안정 gaze 유지 시간 |
-| `blink_recovery_hold_ms` | `150` | 눈을 다시 뜬 직후 홍채 landmark 안정화 hold 시간 |
+| `blink_recovery_hold_ms` | `250` | 눈을 다시 뜬 직후 홍채 landmark 안정화 hold 시간 |
+| `eye_closed_ratio_threshold` | `0.12` | 눈꺼풀 높이/눈 너비의 절대 눈 감김 하한 |
+| `blink_close_ratio` / `blink_reopen_ratio` | `0.68` / `0.82` | 사용자별 평소 눈 뜬 높이에 대한 감김/재개방 hysteresis 비율 |
+| `eye_openness_baseline_decay` | `0.01` | 자세 변화에 맞춰 평소 눈 뜬 높이를 천천히 낮추는 프레임당 비율 |
 | `iris_jump_threshold` | `0.18` | 프레임 간 홍채 offset jump 감지 기준 |
 | `max_valid_eye_offset` | `0.55` | 비현실적인 눈 가장자리 홍채 offset reject 기준 |
 | `small_motion_deadzone_deg` | `5.0` | 미세한 smoothed gaze 흔들림 흡수 각도 |

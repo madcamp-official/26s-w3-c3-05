@@ -77,8 +77,20 @@ class GazeConfig:
     blink_hold_ms: int = 300
     """Short eye-closed intervals keep the last stable gaze instead of jumping."""
 
-    blink_recovery_hold_ms: int = 150
+    blink_recovery_hold_ms: int = 250
     """Keep holding briefly after reopening eyes so unstable iris landmarks settle."""
+
+    eye_closed_ratio_threshold: float = 0.12
+    """Absolute eyelid-height/eye-width floor used by adaptive blink detection."""
+
+    blink_close_ratio: float = 0.68
+    """Close when eye openness falls below this fraction of the personal baseline."""
+
+    blink_reopen_ratio: float = 0.82
+    """Reopen only above this baseline fraction to avoid rapid open/closed chatter."""
+
+    eye_openness_baseline_decay: float = 0.01
+    """Per-frame downward adaptation rate of the personal open-eye baseline."""
 
     max_valid_eye_offset: float = 0.55
     """Reject iris offsets that jump to implausible eye-edge positions."""
@@ -196,6 +208,20 @@ class GazeConfig:
                 raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
         if self.ema_min_alpha > self.ema_max_alpha:
             raise ValueError("ema_min_alpha must not exceed ema_max_alpha")
+        if (
+            not math.isfinite(self.eye_closed_ratio_threshold)
+            or self.eye_closed_ratio_threshold <= 0.0
+        ):
+            raise ValueError("eye_closed_ratio_threshold must be finite and positive")
+        if not (
+            0.0 < self.blink_close_ratio < self.blink_reopen_ratio <= 1.0
+        ):
+            raise ValueError("blink ratios must satisfy 0 < close < reopen <= 1")
+        if not (
+            math.isfinite(self.eye_openness_baseline_decay)
+            and 0.0 <= self.eye_openness_baseline_decay <= 1.0
+        ):
+            raise ValueError("eye_openness_baseline_decay must be within [0, 1]")
         if not math.isfinite(self.max_eye_offset_deg) or self.max_eye_offset_deg <= 0.0:
             raise ValueError("max_eye_offset_deg must be finite and positive")
         for name, value in {

@@ -190,13 +190,16 @@ final_pitch_deg =  head_pitch_deg * head_pitch_weight + eye_pitch_offset_deg
 | `smoothing_window_frames` | `8` | Confidence-weighted moving average window. |
 | `ema_min_alpha` / `ema_max_alpha` | `0.15` / `0.65` | Low-confidence frames move slowly; high-confidence frames move faster. |
 | `blink_hold_ms` | `300` | Short eye-closed intervals hold the last stable gaze. |
-| `blink_recovery_hold_ms` | `150` | Brief hold after reopening eyes so iris landmarks can settle. |
+| `blink_recovery_hold_ms` | `250` | Brief hold after reopening eyes so iris landmarks can settle. |
+| `eye_closed_ratio_threshold` | `0.12` | Absolute eyelid-height/eye-width floor for eye-closed detection. |
+| `blink_close_ratio` / `blink_reopen_ratio` | `0.68` / `0.82` | Adaptive close/reopen ratios relative to the user's open-eye baseline. |
+| `eye_openness_baseline_decay` | `0.01` | Slow per-frame downward adaptation of the open-eye baseline. |
 | `iris_jump_threshold` | `0.18` | Frame-to-frame iris-offset jump threshold. |
 | `max_valid_eye_offset` | `0.55` | Reject implausible eye-edge iris offsets. |
 | `tracking_loss_hold_ms` | `800` | Keep last gaze briefly during full face-landmarker dropouts. |
 | `small_motion_deadzone_deg` | `5.0` | Absorb tiny smoothed-gaze changes to reduce jitter. |
 
-Debug monitor policy: simple `iris jump` no longer freezes the vector completely; it lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames still hold the previous stable gaze.
+Debug monitor policy: simple `iris jump` no longer freezes the vector completely; it lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames hold both the previous gaze direction and the complete classifier feature, so head/scale changes during a blink cannot switch the ML target. Eye closure uses an adaptive personal open-eye baseline with reopen hysteresis, not only one absolute threshold.
 
 ### Target matching / UNKNOWN rejection
 

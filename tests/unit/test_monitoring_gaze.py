@@ -16,6 +16,7 @@ from jarvis.gaze.classifier import DeviceGazeProfile, TargetClassifier
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.engine import GazeTargetingEngine
 from jarvis.gaze.features import FaceObservation
+from jarvis.gaze.feature_profile import TargetFeatureSample
 from jarvis.gaze.lock import GazeLockState, GazeLockStateMachine
 from jarvis.gaze.smoothing import GazeSmoother
 from jarvis.monitoring.gaze_probe import GazeProbe, evaluate
@@ -151,6 +152,37 @@ def test_short_blink_holds_last_gaze_without_composing_jumpy_raw_vector() -> Non
     assert blink.gaze_direction is None
     assert blink.gaze_confidence is None
     assert blink.smoothed_gaze_direction == first.smoothed_gaze_direction
+
+
+def test_blink_holds_previous_classifier_feature_including_head_pose() -> None:
+    smoother, classifier, lock, config = _fresh()
+    previous = TargetFeatureSample(
+        gaze_yaw=1.0,
+        gaze_pitch=2.0,
+        head_yaw=3.0,
+        head_pitch=4.0,
+        head_roll=5.0,
+        face_scale=0.1,
+    )
+    assert evaluate(
+        _observation(timestamp_ms=1_000),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    ).smoothed_gaze_direction is not None
+
+    blink = evaluate(
+        _observation(timestamp_ms=1_100, yaw=40.0, pitch=25.0, eyes_open=False),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+        previous_feature_sample=previous,
+    )
+
+    assert blink.feature_sample == previous
+    assert blink.gaze_motion_delta_deg is None
 
 
 def test_iris_jump_keeps_live_vector_with_low_confidence() -> None:

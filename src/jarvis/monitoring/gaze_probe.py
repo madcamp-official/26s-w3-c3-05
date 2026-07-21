@@ -556,8 +556,15 @@ def evaluate(
                 float(smoothed.origin[1]),
                 float(smoothed.origin[2]),
             )
-        feature_sample = _feature_sample(observation, classify_direction, current_face_scale)
-        if feature_sample is not None and previous_feature_sample is not None:
+        # A blink/recovery frame reuses the complete last stable classifier
+        # feature. Recomputing head/scale while only the gaze direction is held
+        # can otherwise switch the personal ML target during a blink.
+        feature_sample = (
+            previous_feature_sample
+            if hold_gaze and previous_feature_sample is not None
+            else _feature_sample(observation, classify_direction, current_face_scale)
+        )
+        if not hold_gaze and feature_sample is not None and previous_feature_sample is not None:
             gaze_motion_delta_deg = (
                 feature_sample.gaze_yaw - previous_feature_sample.gaze_yaw,
                 feature_sample.gaze_pitch - previous_feature_sample.gaze_pitch,
@@ -777,7 +784,7 @@ class GazeProbe:
             self._status_text = "mediapipe 미설치 — pip install -e \".[vision]\""
             return False
         try:
-            self._adapter = FaceLandmarkerAdapter(self._model_path)
+            self._adapter = FaceLandmarkerAdapter(self._model_path, config=self._config)
         except Exception as exc:  # noqa: BLE001 - surface any init failure honestly
             self._status_text = f"gaze 어댑터 초기화 실패: {exc}"
             return False
