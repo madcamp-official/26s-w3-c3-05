@@ -90,6 +90,8 @@ def test_store_persists_snapshot_as_json(tmp_path: Path) -> None:
     assert payload[0]["left_iris_relative"] == [0.1, -0.2]
     assert payload[0]["gaze_yaw_pitch_deg"]["yaw"] == pytest.approx(-7.4, abs=0.1)
     assert payload[0]["target_label"] == "UNKNOWN"
+    assert payload[0]["confirmed_target"] is None
+    assert payload[0]["dwell_required_ms"] == 3000
     assert payload[0]["nearest_target_range"] is None
 
 
@@ -114,7 +116,8 @@ def test_format_sample_shows_vector_head_and_target(tmp_path: Path) -> None:
     assert "raw_y/p=(-7.4, -8.5)" in rendered
     assert "final_y/p=(-7.4, -8.5)" in rendered
     assert "head=(+3.0, -4.0, +1.0)" in rendered
-    assert "판단=응시대상 없음 P=0.00" in rendered
+    assert "실시간=응시대상 없음 P=0.00" in rendered
+    assert "확정=없음 dwell=0.0/3.0s" in rendered
 
 
 def test_format_sample_shows_raw_nearest_target(tmp_path: Path) -> None:

@@ -413,7 +413,7 @@ SEARCHING
 초기 기준:
 
 ```
-dwell_time_ms: 500
+dwell_time_ms: 3000
 minimum_probability: 0.80
 minimum_margin: 0.20
 target_lock_ttl_ms: 1500

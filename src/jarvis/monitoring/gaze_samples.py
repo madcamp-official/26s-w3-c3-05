@@ -177,6 +177,13 @@ class GazeSampleStore:
             "target_label": latest.target_label,
             "probability": latest.probability,
             "second_best_probability": latest.second_best_probability,
+            "candidate_target": latest.candidate_device,
+            "candidate_target_label": latest.candidate_label,
+            "dwell_elapsed_ms": latest.dwell_elapsed_ms,
+            "dwell_required_ms": latest.dwell_required_ms,
+            "dwell_progress": latest.dwell_progress,
+            "confirmed_target": latest.locked_device,
+            "confirmed_target_label": latest.locked_target_label,
             "reject_reason": latest.reject_reason,
             "nearest_target_range": (
                 {
@@ -274,6 +281,8 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
     index = sample.get("sample_index", "?")
     target = sample.get("target", "UNKNOWN")
     target_label = sample.get("target_label", target)
+    confirmed_target = sample.get("confirmed_target")
+    confirmed_target_label = sample.get("confirmed_target_label", confirmed_target)
     probability = number(sample.get("probability"))
     frame_count = sample.get("window_frame_count", 1)
     if target == "UNKNOWN":
@@ -282,12 +291,21 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
         judged = f"{target_label}[{target}]"
     else:
         judged = str(target)
+    if confirmed_target is None:
+        confirmed = "없음"
+    elif isinstance(confirmed_target_label, str) and confirmed_target_label != confirmed_target:
+        confirmed = f"{confirmed_target_label}[{confirmed_target}]"
+    else:
+        confirmed = str(confirmed_target)
+    dwell_elapsed_ms = number(sample.get("dwell_elapsed_ms"))
+    dwell_required_ms = number(sample.get("dwell_required_ms"))
     row = (
         f"#{index} [{frame_count}f] gaze=({x:+.3f}, {y:+.3f}, {z:+.3f})  "
         f"raw_y/p=({raw_gaze_yaw:+.1f}, {raw_gaze_pitch:+.1f})  "
         f"final_y/p=({gaze_yaw:+.1f}, {gaze_pitch:+.1f})  "
         f"head=({yaw:+.1f}, {pitch:+.1f}, {roll:+.1f})  "
-        f"판단={judged} P={probability:.2f}"
+        f"실시간={judged} P={probability:.2f}  확정={confirmed} "
+        f"dwell={dwell_elapsed_ms / 1000.0:.1f}/{dwell_required_ms / 1000.0:.1f}s"
     )
     if sample.get("calibration_applied"):
         row += " CAL"

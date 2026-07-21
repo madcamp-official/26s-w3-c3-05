@@ -46,6 +46,7 @@ class GazeLockStateMachine:
         self._locked_device: str | None = None
         self._candidate_device: str | None = None
         self._candidate_started_at_ms: int | None = None
+        self._candidate_elapsed_ms = 0
         self._lock_expires_at_ms: int | None = None
 
     @property
@@ -59,6 +60,27 @@ class GazeLockStateMachine:
             return self._locked_device
         return None
 
+    @property
+    def candidate_device(self) -> str | None:
+        """Target currently accumulating dwell time, before confirmation."""
+        return self._candidate_device if self._state == GazeLockState.CANDIDATE else None
+
+    @property
+    def candidate_elapsed_ms(self) -> int:
+        """Continuous dwell accumulated for the current candidate."""
+        return self._candidate_elapsed_ms
+
+    @property
+    def dwell_progress(self) -> float:
+        """Normalized 0..1 progress toward the configured gaze confirmation."""
+        if self._state in (GazeLockState.TARGET_LOCKED, GazeLockState.GESTURE_WAIT):
+            return 1.0
+        if self._state != GazeLockState.CANDIDATE:
+            return 0.0
+        if self._config.dwell_time_ms == 0:
+            return 1.0
+        return min(1.0, self._candidate_elapsed_ms / self._config.dwell_time_ms)
+
     def is_locked_to(self, device_id: str) -> bool:
         """Cursor Control Mapper 게이트(README 6장) 등에서 쓰는 편의 함수."""
         return self.locked_device == device_id
@@ -69,6 +91,7 @@ class GazeLockStateMachine:
         self._locked_device = None
         self._candidate_device = None
         self._candidate_started_at_ms = None
+        self._candidate_elapsed_ms = 0
         self._lock_expires_at_ms = None
 
     def update(self, timestamp_ms: int, classification: ClassificationResult) -> GazeLockState:
@@ -91,6 +114,7 @@ class GazeLockStateMachine:
             self._state = GazeLockState.CANDIDATE
             self._candidate_device = classification.target
             self._candidate_started_at_ms = timestamp_ms
+            self._candidate_elapsed_ms = 0
             # 곧바로 dwell 조건을 확인하기 위해 아래 CANDIDATE 분기로 이어진다.
 
         if self._state == GazeLockState.CANDIDATE:
@@ -100,13 +124,16 @@ class GazeLockStateMachine:
             if classification.target != self._candidate_device:
                 self._candidate_device = classification.target
                 self._candidate_started_at_ms = timestamp_ms
+                self._candidate_elapsed_ms = 0
                 return self._state
             assert self._candidate_started_at_ms is not None
             dwell_elapsed_ms = timestamp_ms - self._candidate_started_at_ms
+            self._candidate_elapsed_ms = max(0, dwell_elapsed_ms)
             if dwell_elapsed_ms < self._config.dwell_time_ms:
                 return self._state
             self._state = GazeLockState.TARGET_LOCKED
             self._locked_device = self._candidate_device
+            self._candidate_elapsed_ms = self._config.dwell_time_ms
             self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
             return self._state
 

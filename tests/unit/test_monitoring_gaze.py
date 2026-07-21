@@ -341,7 +341,7 @@ def test_lock_reaches_target_locked_after_dwell() -> None:
         )
     )
     last = None
-    for i in range(6):
+    for i in range(16):
         last = evaluate(
             _observation(frame_id=i, timestamp_ms=i * 200),
             smoother=smoother,
@@ -352,6 +352,34 @@ def test_lock_reaches_target_locked_after_dwell() -> None:
     assert last is not None
     assert last.lock_state == GazeLockState.TARGET_LOCKED
     assert last.locked_device == "laptop"
+    assert last.locked_target_label == "laptop"
+    assert last.dwell_progress == 1.0
+
+
+def test_snapshot_separates_instant_engine_target_from_three_second_confirmation() -> None:
+    smoother, classifier, lock, config = _fresh()
+    classifier.register_profile(
+        DeviceGazeProfile(
+            device_id="laptop", mean_direction=np.array([0.0, 0.0, 1.0]), variance=0.05
+        )
+    )
+
+    instant = evaluate(
+        _observation(timestamp_ms=1_000),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+        target_labels={"laptop": "노트북"},
+    )
+
+    assert instant.target == "laptop"
+    assert instant.target_label == "노트북"
+    assert instant.candidate_device == "laptop"
+    assert instant.candidate_label == "노트북"
+    assert instant.locked_device is None
+    assert instant.locked_target_label is None
+    assert instant.dwell_progress == 0.0
 
 
 # --- honesty: evaluate() mirrors the engine ----------------------------------

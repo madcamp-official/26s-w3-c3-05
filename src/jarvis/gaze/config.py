@@ -18,7 +18,7 @@ class GazeConfig:
     """
 
     # Gaze Lock state machine (README 7장 "초기 기준")
-    dwell_time_ms: int = 500
+    dwell_time_ms: int = 3000
     """CANDIDATE 상태를 TARGET_LOCKED로 승격하기 전 유지해야 하는 최소 시간."""
 
     minimum_probability: float = 0.80

@@ -53,6 +53,10 @@ def _config(**overrides: object) -> AlignmentConfig:
 # --- TargetLockTracker: dwell → lock ---
 
 
+def test_default_target_confirmation_requires_three_seconds() -> None:
+    assert AlignmentConfig().target_dwell_ms == 3000
+
+
 def test_below_dwell_time_stays_unlocked() -> None:
     tracker = TargetLockTracker(_config(target_dwell_ms=200))
     tracker.push(_target(0))

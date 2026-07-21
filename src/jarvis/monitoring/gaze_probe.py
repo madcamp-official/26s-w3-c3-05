@@ -161,7 +161,13 @@ class GazeSnapshot:
 
     # 2e — gaze lock state machine
     lock_state: GazeLockState
+    candidate_device: str | None
+    candidate_label: str | None
+    dwell_elapsed_ms: int
+    dwell_required_ms: int
+    dwell_progress: float
     locked_device: str | None
+    locked_target_label: str | None
     is_confident: bool
 
     # 2f — the contract message emitted to Fusion
@@ -602,6 +608,18 @@ def evaluate(
         if result.target == config.UNKNOWN_TARGET
         else (target_labels or {}).get(result.target, result.target)
     )
+    candidate_device = lock.candidate_device
+    candidate_label = (
+        (target_labels or {}).get(candidate_device, candidate_device)
+        if candidate_device is not None
+        else None
+    )
+    locked_device = lock.locked_device
+    locked_target_label = (
+        (target_labels or {}).get(locked_device, locked_device)
+        if locked_device is not None
+        else None
+    )
 
     return GazeSnapshot(
         timestamp_ms=observation.timestamp_ms,
@@ -650,7 +668,13 @@ def evaluate(
             observation.head_roll_deg,
         ),
         lock_state=lock.state,
-        locked_device=lock.locked_device,
+        candidate_device=candidate_device,
+        candidate_label=candidate_label,
+        dwell_elapsed_ms=lock.candidate_elapsed_ms,
+        dwell_required_ms=config.dwell_time_ms,
+        dwell_progress=lock.dwell_progress,
+        locked_device=locked_device,
+        locked_target_label=locked_target_label,
         is_confident=_is_confident(result, config),
         target_estimate=estimate,
         inference_ms=inference_ms,

@@ -25,13 +25,13 @@ from jarvis.contracts.messages import GestureEstimate, GesturePhase, TargetEstim
 class AlignmentConfig:
     """Fusion 자체 Target Lock·정렬 판정에 쓰는 튜너블 파라미터.
 
-    README 7장 "초기 기준"과 같은 실세계 상수(dwell 500ms, TTL 1500ms, 확률 0.80,
+    README 7장 "초기 기준"과 같은 실세계 상수(dwell 3000ms, TTL 1500ms, 확률 0.80,
     margin 0.20)를 기본값으로 쓰지만, Gaze 모듈의 `GazeConfig`와는 독립된 값이다 —
     두 모듈이 같은 원시 신호에서 각자의 목적(커서 게이팅 vs intent commit)으로 따로
     lock을 추적하므로, 한쪽 임계값을 바꿔도 다른 쪽에 영향이 없어야 한다.
     """
 
-    target_dwell_ms: int = 500
+    target_dwell_ms: int = 3000
     """TARGET_CANDIDATE가 TARGET_LOCKED로 승격하기 전 유지해야 하는 최소 시간."""
 
     target_lock_ttl_ms: int = 1500

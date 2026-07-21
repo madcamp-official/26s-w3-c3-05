@@ -21,6 +21,8 @@ def _unknown() -> ClassificationResult:
 def test_starts_in_searching() -> None:
     lock = GazeLockStateMachine()
     assert lock.state == GazeLockState.SEARCHING
+    assert GazeConfig().dwell_time_ms == 3000
+    assert lock.dwell_progress == 0.0
 
 
 def test_unknown_keeps_searching() -> None:
@@ -33,6 +35,19 @@ def test_confident_target_becomes_candidate() -> None:
     lock = GazeLockStateMachine()
     state = lock.update(0, _confident("laptop"))
     assert state == GazeLockState.CANDIDATE
+    assert lock.candidate_device == "laptop"
+    assert lock.candidate_elapsed_ms == 0
+
+
+def test_candidate_exposes_three_second_progress() -> None:
+    lock = GazeLockStateMachine(GazeConfig(dwell_time_ms=3000))
+    lock.update(1_000, _confident("laptop"))
+
+    lock.update(2_500, _confident("laptop"))
+
+    assert lock.candidate_device == "laptop"
+    assert lock.candidate_elapsed_ms == 1_500
+    assert lock.dwell_progress == 0.5
 
 
 def test_low_margin_does_not_promote_to_candidate() -> None:
@@ -55,6 +70,8 @@ def test_dwell_promotes_candidate_to_target_locked() -> None:
     assert state == GazeLockState.TARGET_LOCKED
     assert lock.locked_device == "laptop"
     assert lock.is_locked_to("laptop")
+    assert lock.candidate_device is None
+    assert lock.dwell_progress == 1.0
 
 
 def test_switching_candidate_device_resets_dwell_timer() -> None:

@@ -205,9 +205,14 @@ class GazePanel(QScrollArea):
         layout.addWidget(_header("Gaze Lock 상태 (2e)"))
         self._lock_strip = LockStateStrip()
         layout.addWidget(self._lock_strip)
-        self._locked = QLabel("locked device: --")
-        self._locked.setStyleSheet(_MONO)
-        layout.addWidget(self._locked)
+        self._engine_target = QLabel("실시간 엔진 판단: UNKNOWN")
+        self._engine_target.setStyleSheet(_MONO)
+        layout.addWidget(self._engine_target)
+        self._dwell = LabeledBar("3초 연속 응시 진행")
+        layout.addWidget(self._dwell)
+        self._confirmed_target = QLabel("3초 확정 응시 대상: --")
+        self._confirmed_target.setStyleSheet(_MONO)
+        layout.addWidget(self._confirmed_target)
 
         # 2d — classifier
         layout.addWidget(_header("Target 분류 (2d)"))
@@ -251,7 +256,27 @@ class GazePanel(QScrollArea):
         self._status.setStyleSheet("color:#f85149;" if s.tracking_lost else "color:#3fb950;")
 
         self._lock_strip.set_state(s.lock_state)
-        self._locked.setText(f"locked device: {s.locked_device or '--'}   confident: {s.is_confident}")
+        self._engine_target.setText(
+            f"실시간 엔진 판단: {s.target_label} [{s.target}]  "
+            f"P={s.probability:.2f}  confident={s.is_confident}"
+        )
+        dwell_color = "#3fb950" if s.dwell_progress >= 1.0 else "#58a6ff"
+        self._dwell.set_value(s.dwell_progress, color=dwell_color)
+        if s.candidate_label is not None:
+            dwell_seconds = s.dwell_elapsed_ms / 1000.0
+            required_seconds = s.dwell_required_ms / 1000.0
+            self._confirmed_target.setText(
+                f"3초 확정 응시 대상: --  | 후보 {s.candidate_label} "
+                f"{dwell_seconds:.1f}/{required_seconds:.1f}s"
+            )
+            self._confirmed_target.setStyleSheet(_MONO + " color:#58a6ff;")
+        else:
+            self._confirmed_target.setText(
+                f"3초 확정 응시 대상: {s.locked_target_label or '--'} "
+                f"[{s.locked_device or '--'}]"
+            )
+            color = "#3fb950" if s.locked_device is not None else "#8b949e"
+            self._confirmed_target.setStyleSheet(_MONO + f" color:{color};")
 
         prob_color = "#3fb950" if s.probability >= 0.80 else "#d29922"
         self._prob.set_value(s.probability, color=prob_color)

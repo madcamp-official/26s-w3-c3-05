@@ -198,30 +198,51 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
     state = str(snapshot.lock_state)
     ray_color = _LOCK_BGR.get(state, grey)
     looking_unknown = snapshot.target == "UNKNOWN"
-    looking_color = (90, 90, 240) if looking_unknown else ray_color
-    looking_text = f"LOOKING AT: {snapshot.target_label}"
-    (text_w, text_h), _ = cv2.getTextSize(looking_text, _FONT, 0.9, 2)
+    looking_color = (90, 90, 240) if looking_unknown else (230, 180, 80)
+    engine_text = f"ENGINE NOW: {snapshot.target_label}  P={snapshot.probability:.0%}"
+    if snapshot.candidate_label is not None:
+        dwell_text = (
+            f"HOLD 3S: {snapshot.candidate_label}  "
+            f"{snapshot.dwell_elapsed_ms / 1000.0:.1f}/"
+            f"{snapshot.dwell_required_ms / 1000.0:.1f}s"
+        )
+        dwell_color = (230, 180, 80)
+    else:
+        dwell_text = "HOLD 3S: --"
+        dwell_color = grey
+    confirmed_text = f"CONFIRMED: {snapshot.locked_target_label or '--'}"
+    confirmed_color = (80, 200, 80) if snapshot.locked_device is not None else grey
+    headline_lines = (
+        (engine_text, looking_color),
+        (dwell_text, dwell_color),
+        (confirmed_text, confirmed_color),
+    )
+    text_sizes = [cv2.getTextSize(text, _FONT, 0.68, 2)[0] for text, _ in headline_lines]
+    text_w = max(size[0] for size in text_sizes)
+    text_h = max(size[1] for size in text_sizes)
+    line_height = text_h + 10
     box_x = max(8, (w - text_w) // 2 - 14)
-    box_y = 44
+    box_y = 6
     overlay = frame.copy()
     cv2.rectangle(
         overlay,
         (box_x, box_y),
-        (min(w - 8, box_x + text_w + 28), box_y + text_h + 22),
+        (min(w - 8, box_x + text_w + 28), box_y + line_height * len(headline_lines) + 10),
         (0, 0, 0),
         thickness=-1,
     )
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
-    cv2.putText(
-        frame,
-        looking_text,
-        (box_x + 14, box_y + text_h + 9),
-        _FONT,
-        0.9,
-        looking_color,
-        2,
-        cv2.LINE_AA,
-    )
+    for index, (text, color) in enumerate(headline_lines):
+        cv2.putText(
+            frame,
+            text,
+            (box_x + 14, box_y + text_h + 7 + index * line_height),
+            _FONT,
+            0.68,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
 
     # Gaze ray: use the same smoothed direction that the classifier consumes.
     left_eye = snapshot.left_eye_center_normalized
@@ -256,7 +277,7 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
         range_color = (80, 200, 80) if nearest.within_profile_radius else (90, 90, 240)
     lines: list[tuple[str, tuple[int, int, int]]] = [
         (f"LOCK  {state}", ray_color),
-        (f"TARGET  {snapshot.target_label}  {snapshot.probability:.0%}", white),
+        (f"ENGINE  {snapshot.target_label}  {snapshot.probability:.0%}", white),
         (range_line, range_color),
         (
             f"yaw {snapshot.head_yaw_deg:+5.0f}  pitch {snapshot.head_pitch_deg:+5.0f}"

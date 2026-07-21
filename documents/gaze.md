@@ -210,7 +210,7 @@ Debug monitor policy: simple `iris jump` no longer freezes the vector completely
 | `target_match_tolerance` | `1.10` | Near-boundary tolerance in normalized distance. Example: `8.5/8.0deg x1.06` is accepted; `26.1/8.0deg x3.26` is rejected. |
 | `minimum_probability` | `0.80` | Minimum probability for Gaze Lock candidate/hold. |
 | `minimum_margin` | `0.20` | Minimum top-1 vs top-2 margin for confident lock. |
-| `dwell_time_ms` | `500` | Required stable duration before lock. |
+| `dwell_time_ms` | `3000` | Same target must remain the confident engine result for three continuous seconds before confirmation. |
 | `target_lock_ttl_ms` | `1500` | Lock validity window while waiting for gesture. |
 
 ### Registration / target profile
