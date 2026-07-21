@@ -149,6 +149,7 @@ class GazeSnapshot:
     margin: float
     reject_reason: str | None
     device_details: tuple[DeviceGazeDetail, ...]
+    raw_device_details: tuple[DeviceGazeDetail, ...]
     feature_sample: TargetFeatureSample | None
     gaze_motion_delta_deg: tuple[float, float] | None
     feature_details: tuple[FeatureProfileDetail, ...]
@@ -551,6 +552,13 @@ def evaluate(
         )
 
     details = _device_details(classify_direction, classify_origin, classifier, config, result.target)
+    raw_details = _device_details(
+        raw_gaze_direction,
+        classify_origin,
+        classifier,
+        config,
+        result.target,
+    )
     profile_details = _feature_details(feature_sample, classifier, config, result.target)
     area_details = _area_details(feature_sample, classifier, config, result.target)
     target_label = (
@@ -593,6 +601,7 @@ def evaluate(
         margin=result.probability - result.second_best_probability,
         reject_reason=_reject_reason(result, details, config, profile_details),
         device_details=details,
+        raw_device_details=raw_details,
         feature_sample=feature_sample,
         gaze_motion_delta_deg=gaze_motion_delta_deg,
         feature_details=profile_details,

@@ -8,12 +8,15 @@ from pathlib import Path
 import pytest
 
 from jarvis.gaze.classifier import TargetClassifier
+from jarvis.gaze.classifier import DeviceGazeProfile
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.features import FaceObservation
 from jarvis.gaze.lock import GazeLockStateMachine
 from jarvis.gaze.smoothing import GazeSmoother
 from jarvis.monitoring.gaze_probe import GazeSnapshot, evaluate
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
+
+import numpy as np
 
 
 def _snapshot(frame_id: int = 1) -> GazeSnapshot:
@@ -36,6 +39,38 @@ def _snapshot(frame_id: int = 1) -> GazeSnapshot:
         observation,
         smoother=GazeSmoother(config),
         classifier=TargetClassifier(config),
+        lock=GazeLockStateMachine(config),
+        config=config,
+    )
+
+
+def _snapshot_with_target(frame_id: int = 1) -> GazeSnapshot:
+    config = GazeConfig(unknown_probability_threshold=0.0)
+    classifier = TargetClassifier(config)
+    classifier.register_profile(
+        DeviceGazeProfile(
+            "speaker",
+            np.array([-0.1270695, 0.1472359, 0.9809052], dtype=np.float64),
+            variance=0.1,
+        )
+    )
+    return evaluate(
+        FaceObservation(
+            timestamp_ms=frame_id * 33,
+            frame_id=frame_id,
+            left_iris_relative=(0.1, -0.2),
+            right_iris_relative=(0.2, -0.1),
+            head_yaw_deg=3.0,
+            head_pitch_deg=-4.0,
+            head_roll_deg=1.0,
+            eye_tracking_confidence=1.0,
+            face_tracking_confidence=1.0,
+            face_detected=True,
+            left_eye_center_normalized=(0.4, 0.3),
+            right_eye_center_normalized=(0.6, 0.3),
+        ),
+        smoother=GazeSmoother(config),
+        classifier=classifier,
         lock=GazeLockStateMachine(config),
         config=config,
     )
@@ -80,6 +115,16 @@ def test_format_sample_shows_vector_head_and_target(tmp_path: Path) -> None:
     assert "final_y/p=(-7.4, -8.5)" in rendered
     assert "head=(+3.0, -4.0, +1.0)" in rendered
     assert "판단=응시대상 없음 P=0.00" in rendered
+
+
+def test_format_sample_shows_raw_nearest_target(tmp_path: Path) -> None:
+    store = GazeSampleStore(tmp_path / "samples.json")
+
+    sample = store.add(_snapshot_with_target())
+    rendered = format_gaze_sample(sample)
+
+    assert sample["raw_nearest_target_range"]["device_id"] == "speaker"
+    assert "raw_nearest=speaker" in rendered
 
 
 def test_window_averages_multiple_smoothed_frames(tmp_path: Path) -> None:
