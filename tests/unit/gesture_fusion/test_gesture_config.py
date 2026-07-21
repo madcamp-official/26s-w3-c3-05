@@ -8,7 +8,7 @@ from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG, GestureConfig
 
 
 def test_default_config_is_valid() -> None:
-    assert DEFAULT_GESTURE_CONFIG.num_hands == 4
+    assert DEFAULT_GESTURE_CONFIG.num_hands == 2
 
 
 def test_confidence_out_of_range_rejected() -> None:

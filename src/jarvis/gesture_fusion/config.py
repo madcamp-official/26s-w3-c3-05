@@ -26,7 +26,7 @@ class GestureConfig:
     """
 
     # --- Landmark 소스 (README 8장 "MediaPipe Hand Landmark") ---
-    num_hands: int = 4
+    num_hands: int = 2
     """동시에 검출할 최대 손 개수(검출 슬롯 상한).
 
     주 조작 손은 이 중 bounding-box가 가장 큰(카메라에 가까운) 손 하나를
