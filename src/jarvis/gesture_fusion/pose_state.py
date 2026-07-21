@@ -73,6 +73,7 @@ CURSOR_MAX_ACCEL = 3.5        # 이득 상한(급격한 튐 방지)
 CURSOR_DEADZONE = 0.006       # 이보다 작은 손 떨림은 무시(팜 단위)
 CURSOR_MAX_STEP_PX = 220      # 한 프레임 최대 이동(검출 튐이 커서를 순간이동시키지 않게)
 CURSOR_INVERT_X = True        # 거울 뷰가 아닌 실제 손 기준 — 왼손 이동 = 커서 왼쪽
+CURSOR_Y_GAIN_SCALE = 0.5     # y축 이동 감도 배율. x 대비 세로가 과민해 절반으로 낮춘다
 
 # soft deadzone: 데드존을 하드컷(distance<dz면 0)하지 않고, 넘는 순간 이동량이 0부터
 # 연속으로 살아나게 한다 — `distance - deadzone`만큼만 이동에 반영해 경계의 급점프를 없앤다.
@@ -225,7 +226,7 @@ class PoseStateMachine:
         speed = distance / dt_s
         gain = CURSOR_BASE_GAIN * min(CURSOR_MAX_ACCEL, 1.0 + CURSOR_ACCEL_GAIN * speed)
         px = (-dx if CURSOR_INVERT_X else dx) * gain
-        py = dy * gain
+        py = dy * gain * CURSOR_Y_GAIN_SCALE
         step = math.hypot(px, py)
         if step > CURSOR_MAX_STEP_PX:  # 검출 튐 방지
             scale = CURSOR_MAX_STEP_PX / step
