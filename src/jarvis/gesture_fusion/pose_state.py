@@ -38,17 +38,13 @@ FloatArray = npt.NDArray[np.float64]
 
 INDEX_MCP, INDEX_TIP, MIDDLE_MCP, MIDDLE_TIP = 5, 8, 9, 12
 
-# 자세별 진입 유지 시간(ms). 클릭류는 빠른 반응이 중요해 짧고, 연속 동작인 스크롤은
-# 오발동 비용이 커서 길다(우클릭 준비 중 손가락이 펴진 구간을 확실히 넘기려면 필요).
+# 자세별 진입 유지 시간(ms). 핀치 클릭류만 빠른 반응이 중요해 짧게(60) 명시하고,
+# 그 외 자세(index_point·two_fingers·open_palm·fist)는 모두 기본값(120)을 쓴다.
 DWELL_MS: dict[str, int] = {
-    "index_point": 150,
-    "pinch_index": 120,
-    "pinch_middle": 120,
-    "two_fingers": 300,
-    "open_palm": 200,
-    "fist": 200,
+    "pinch_index": 60,
+    "pinch_middle": 60,
 }
-DEFAULT_DWELL_MS = 200
+DEFAULT_DWELL_MS = 120
 
 # 이 프레임 수만큼 연속으로 자세가 사라져야 상태를 해제한다. 분류기가 정상 자세를
 # none으로 흘리는 비율이 15.4%라, 1프레임만에 끊으면 조작이 계속 끊긴다.
@@ -61,10 +57,15 @@ CLICK_MAX_MS = 400
 # 확정 지연을 예산에서 빼야 사용자가 체감하는 간격과 맞는다.
 DOUBLE_CLICK_MS = 600
 # `fist → open_palm` 전이로 인정하는 최대 간격. 중간의 `none` 구간을 건너뛴다.
-TRANSITION_WINDOW_MS = 800
+TRANSITION_WINDOW_MS = 1000
 # 스크롤 방향을 인정할 최소 수직성(|dy| / 길이). 손가락이 옆을 가리키면 위아래를
 # 지어내지 않는다 — 0.5는 수평에서 30° 이상 기울어야 방향을 인정한다는 뜻이다.
 MIN_VERTICALITY = 0.5
+# 스크롤을 인정할 검지·중지 최소 폄 정도(palm_scale 정규화 단위, MCP→끝 거리 평균).
+# 스크롤을 멈추려 주먹을 쥐면 손가락이 접히며 끝이 잠깐 아래로 스윙해 역방향 스크롤이
+# 튀는데, 접히기 시작하면 이 값이 임계 아래로 떨어져 스크롤을 즉시 끊는다. 손 거리·각도에
+# 강건하도록 정규화 좌표로 잰다. 실기기에서 편 두 손가락 vs 접히는 중 값으로 튜닝한다.
+MIN_FINGER_EXTENSION = 0.55
 
 # 커서 이동: index_point(이동) 또는 pinch_index(드래그) 상태에서 손 이동을 커서로 옮긴다.
 # 좌표를 1:1로 대응시키지 않고, 마우스처럼 손 이동 **델타**에 이득을 곱한다.
@@ -135,6 +136,21 @@ def pointing_direction(landmarks: FloatArray) -> tuple[float, float] | None:
     if not math.isfinite(norm) or norm < 1e-9:
         return None
     return float(mean[0] / norm), float(mean[1] / norm)
+
+
+def two_finger_extension(landmarks: FloatArray) -> float | None:
+    """검지·중지가 얼마나 펴졌는지 — MCP→끝 거리의 평균(palm_scale 정규화 단위).
+
+    landmarks는 이미 손목 원점·palm_scale 정규화된 좌표라 이 거리는 손 크기·카메라
+    거리에 무관하다. 편 두 손가락은 값이 크고, 주먹을 쥐려 접기 시작하면 끝이 손바닥으로
+    말려들며 값이 급격히 줄어든다 — 스크롤을 접히는 순간 끊는 게이트로 쓴다.
+    """
+    points = np.asarray(landmarks, dtype=np.float64)
+    if points.ndim != 2 or points.shape[0] <= MIDDLE_TIP:
+        return None
+    index_len = float(np.linalg.norm(points[INDEX_TIP][:2] - points[INDEX_MCP][:2]))
+    middle_len = float(np.linalg.norm(points[MIDDLE_TIP][:2] - points[MIDDLE_MCP][:2]))
+    return (index_len + middle_len) / 2.0
 
 
 @dataclass
@@ -332,7 +348,16 @@ class PoseStateMachine:
             events.append(PoseEvent("drag_start", self._state_since))
         elif self.state == "two_fingers" and landmarks is not None:
             direction = pointing_direction(landmarks)
-            if direction is not None and abs(direction[1]) >= MIN_VERTICALITY:
+            extension = two_finger_extension(landmarks)
+            # 손가락이 충분히 펴진 동안만 스크롤한다. 주먹을 쥐려 접히기 시작하면 끝이
+            # 잠깐 아래로 스윙해 역방향 스크롤이 튀는데, 그 순간 extension이 임계 아래로
+            # 떨어져 여기서 걸러진다(B안 — 접힘을 물리적으로 감지).
+            if (
+                direction is not None
+                and abs(direction[1]) >= MIN_VERTICALITY
+                and extension is not None
+                and extension >= MIN_FINGER_EXTENSION
+            ):
                 # 화면 y는 아래로 증가하므로 부호를 뒤집어 위쪽을 +로 만든다.
                 events.append(PoseEvent("scroll", timestamp_ms, -direction[1]))
         return events
