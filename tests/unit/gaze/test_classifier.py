@@ -154,6 +154,44 @@ def test_area_profile_accepts_near_boundary_with_tolerance() -> None:
     assert result.target == "monitor"
 
 
+def test_area_profile_inside_boundary_overrides_low_softmax_probability() -> None:
+    classifier = TargetClassifier(
+        GazeConfig(
+            unknown_probability_threshold=0.95,
+            registration_max_area_radius_deg=8.0,
+            target_match_tolerance=1.0,
+        )
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        area_profile=TargetAreaProfile(
+            center_yaw=0.0,
+            center_pitch=0.0,
+            radius_yaw=8.0,
+            radius_pitch=8.0,
+            sample_count=80,
+        ),
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("speaker", _unit([0.1, 0.0, 0.99]), variance=0.01),
+        area_profile=TargetAreaProfile(
+            center_yaw=14.0,
+            center_pitch=0.0,
+            radius_yaw=8.0,
+            radius_pitch=8.0,
+            sample_count=80,
+        ),
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(6.5, 0.0, 0.0, 0.0, 0.0, 0.1),
+    )
+
+    assert result.target == "monitor"
+    assert result.probability < 0.95
+
+
 def test_area_profile_flexes_with_face_scale_for_apparent_target_size() -> None:
     classifier = TargetClassifier(
         GazeConfig(

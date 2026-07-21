@@ -453,17 +453,28 @@ class TargetClassifier:
                 feature_sample.gaze_yaw - profile.center_yaw,
                 feature_sample.gaze_pitch - profile.center_pitch,
             )
-            area_score = math.exp(-0.5 * normalized_distance**2)
-            alignment_score = math.exp(-0.5 * (center_distance_deg / alignment_radius) ** 2)
+            inside_depth = max(0.0, 1.0 - normalized_distance)
+            area_score = 0.60 + 0.40 * inside_depth
+            if normalized_distance > 1.0:
+                area_score *= 0.75
+            center_score = math.exp(-0.5 * normalized_distance**2)
+            absolute_alignment_score = math.exp(
+                -0.5 * (center_distance_deg / alignment_radius) ** 2
+            )
             motion_alignment_score = self._motion_alignment_score(
                 feature_sample,
                 profile,
                 gaze_motion_delta_deg,
             )
-            # 겹친 target에서는 단순 IN/OUT보다 "현재 시선 방향이 어느 중심을 더
-            # 향하는지"가 더 중요하다. 큰 허용영역이 작은/정확한 영역을 먹지 않도록
-            # 중심 방향 정렬 점수를 한 번 더 강하게 반영한다.
-            combined_score = area_score * alignment_score**2 * motion_alignment_score
+            # Edge-loop registration means every point inside the saved object
+            # area is a valid look target.  Center closeness should raise
+            # confidence and break overlaps, not reject valid edge looks.
+            combined_score = (
+                area_score
+                * (0.70 + 0.30 * center_score)
+                * absolute_alignment_score**6
+                * motion_alignment_score
+            )
             candidates.append((combined_score, center_distance_deg, normalized_distance, device_id))
         if not candidates:
             return None
