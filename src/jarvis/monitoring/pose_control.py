@@ -87,6 +87,7 @@ class PoseControlBridge:
             return f"스크롤 {'위' if event.value > 0 else '아래'}"
         return {
             "click": "클릭",
+            "double_click": "더블클릭",
             "right_click": "우클릭",
             "drag_start": "드래그 시작",
             "drag_end": "드래그 끝",
@@ -106,6 +107,8 @@ class PoseControlBridge:
             )
         elif event.kind == "click":
             self.sink.click(MouseButton.LEFT)
+        elif event.kind == "double_click":
+            self.sink.double_click(MouseButton.LEFT)
         elif event.kind == "right_click":
             self.sink.click(MouseButton.RIGHT)
         elif event.kind == "drag_start":
