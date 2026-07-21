@@ -43,6 +43,7 @@ class InputKey(StrEnum):
     SHOW_DESKTOP = "show_desktop"  # F11 — 바탕화면 표시(누를 때마다 토글)
     MISSION_CONTROL = "mission_control"  # macOS 전용 — Mission Control 열기(Ctrl+↑)
     TASK_VIEW = "task_view"  # Windows 전용 — Task View 열기(Win+Tab). macOS Mission Control 대응
+    CLOSE_TAB = "close_tab"  # 탭 닫기 — Windows Ctrl+W, macOS Cmd+W. 앱이 정의한 탭/창 닫기
 
 
 class MouseButton(StrEnum):
@@ -206,6 +207,8 @@ _VK_TAB = 0x09
 _VK_MENU = 0x12  # ALT
 _VK_SHIFT = 0x10
 _VK_LWIN = 0x5B  # 왼쪽 Windows 키 — Task View(Win+Tab)용
+_VK_CONTROL = 0x11
+_VK_W = 0x57  # 탭 닫기(Ctrl+W)용
 
 
 class Win32InputSink:
@@ -259,6 +262,14 @@ class Win32InputSink:
             user32.keybd_event(_VK_TAB, 0, 0, 0)
             user32.keybd_event(_VK_TAB, 0, _KEYEVENTF_KEYUP, 0)
             user32.keybd_event(_VK_LWIN, 0, _KEYEVENTF_KEYUP, 0)
+            return
+        if key is InputKey.CLOSE_TAB:
+            # 탭 닫기는 Ctrl+W 조합키라 modifier(Ctrl)로 감싼다(TASK_VIEW의 Win+Tab과
+            # 같은 구조). 앱이 정의한 "현재 탭 또는 창 닫기"로 동작한다.
+            user32.keybd_event(_VK_CONTROL, 0, 0, 0)
+            user32.keybd_event(_VK_W, 0, 0, 0)
+            user32.keybd_event(_VK_W, 0, _KEYEVENTF_KEYUP, 0)
+            user32.keybd_event(_VK_CONTROL, 0, _KEYEVENTF_KEYUP, 0)
             return
         vk = _VK[key]
         user32.keybd_event(vk, 0, 0, 0)

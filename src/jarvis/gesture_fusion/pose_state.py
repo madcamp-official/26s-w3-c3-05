@@ -43,6 +43,9 @@ INDEX_MCP, INDEX_TIP, MIDDLE_MCP, MIDDLE_TIP = 5, 8, 9, 12
 DWELL_MS: dict[str, int] = {
     "pinch_index": 60,
     "pinch_middle": 60,
+    # 탭 닫기는 되돌리기 어려운 파괴적 동작이라, 전환 중 스치는 중지 포즈로 오발동하지
+    # 않도록 기본(120)보다 길게 잡아 의도를 확인한다.
+    "middle_point": 250,
 }
 DEFAULT_DWELL_MS = 120
 
@@ -299,6 +302,10 @@ class PoseStateMachine:
             and timestamp_ms - self._last_pose_end <= self.transition_window_ms
         ):
             events.append(PoseEvent("media_toggle", timestamp_ms))
+        # 중지만 편 포즈 → 탭 닫기(Cmd/Ctrl+W). 진입 시 한 번만 발화한다(유지 중에는
+        # label==state라 _continuous로 빠져 재발화하지 않는다).
+        elif label == "middle_point":
+            events.append(PoseEvent("close_tab", timestamp_ms))
         self.state, self._state_since = label, timestamp_ms
         self._pending, self._missing = "", 0
         return events

@@ -61,6 +61,12 @@ DEFAULT_POSE_LABELS: tuple[str, ...] = (
 # 둔다 — 모르는 각도를 임의로 허용하면 조용히 오동작한다.
 DEFAULT_POSE_TILT_LIMITS: dict[str, float] = {
     "index_point": 20.0,
+    # 중지 하나 → 탭 닫기(파괴적). 명시 엔트리가 없으면 unknown-label 폴백으로 가장
+    # 보수적인 20°가 걸려, 분류기가 맞힌 진짜 middle_point의 56%까지 조용히 거부됐다
+    # (2026-07-22 v2 데이터 실측: 20°면 진짜 44%만 통과). 진짜 중앙 기울기 21° vs
+    # none→middle_point 오분류 중앙 37°이라, 30°가 진짜 84% 유지·오분류 71% 차단으로
+    # 최적. dwell 250ms와 곱해져 실오발동은 더 낮다.
+    "middle_point": 30.0,
     "pinch_index": 20.0,
     "pinch_middle": 20.0,
     # 편 두 손가락은 기울어도 실루엣이 남아 30~90° 묶음에서도 99% 정확하다(위 표). 40°

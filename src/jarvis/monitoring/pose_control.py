@@ -97,6 +97,7 @@ class PoseControlBridge:
                 else "태스크 뷰" if self.transition_key is InputKey.TASK_VIEW
                 else "재생/일시정지"
             ),
+            "close_tab": "탭 닫기",
         }.get(event.kind, "")
 
     def _execute(self, event: PoseEvent) -> None:
@@ -123,5 +124,7 @@ class PoseControlBridge:
             self._dragging = False
         elif event.kind == "media_toggle":
             self.sink.tap_key(self.transition_key)
+        elif event.kind == "close_tab":
+            self.sink.tap_key(InputKey.CLOSE_TAB)
         elif event.kind == "scroll":
             self.sink.scroll(SCROLL_TICKS if event.value > 0 else -SCROLL_TICKS)

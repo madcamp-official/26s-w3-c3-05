@@ -42,6 +42,7 @@ _KEYCODE_TAB = 0x30
 _KEYCODE_COMMAND = 0x37
 _KEYCODE_SHIFT = 0x38
 _KEYCODE_F11 = 0x67  # 바탕화면 표시
+_KEYCODE_W = 0x0D  # 탭 닫기(Cmd+W)용
 
 
 class MacOSInputSink:
@@ -121,6 +122,9 @@ class MacOSInputSink:
         if key is InputKey.MISSION_CONTROL:
             self._tap_mission_control()
             return
+        if key is InputKey.CLOSE_TAB:
+            self._tap_close_tab()
+            return
         if key is InputKey.SHOW_DESKTOP:
             import Quartz
 
@@ -148,6 +152,27 @@ class MacOSInputSink:
             check=False,
             capture_output=True,
         )
+
+    def _tap_close_tab(self) -> None:
+        """Cmd+W로 현재 탭(또는 창)을 닫는다.
+
+        `switch_window`의 Cmd+Tab과 같은 구조: Command 플래그를 실은 W 키를
+        누름→뗌으로 보낸다. 표준 keycode 경로라 미디어 키(NSEvent)와 달리
+        Quartz 키보드 이벤트로 충분하다. 앱이 정의한 '탭 또는 창 닫기'로 동작한다.
+        """
+        import Quartz
+
+        flags = Quartz.kCGEventFlagMaskCommand
+
+        def key(code: int, key_down: bool) -> None:
+            event = Quartz.CGEventCreateKeyboardEvent(None, code, key_down)
+            Quartz.CGEventSetFlags(event, flags)
+            self._post(event)
+
+        key(_KEYCODE_COMMAND, True)
+        key(_KEYCODE_W, True)
+        key(_KEYCODE_W, False)
+        key(_KEYCODE_COMMAND, False)
 
     def _tap_media_key(self, key: InputKey) -> None:
         """미디어 키 하나를 누름→뗌으로 전송한다.

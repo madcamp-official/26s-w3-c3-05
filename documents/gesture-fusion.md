@@ -34,7 +34,7 @@ README [8장 핵심 기능 2](../README.md), [9장 핵심 기능 3](../README.md
 
 ### 자세 분류기 (`pose_protocol.py`, `pose_classifier.py`, `training/train_pose.py`)
 
-- **7-class**: `index_point`·`pinch_index`·`pinch_middle`·`two_fingers`·`open_palm`·`fist` + `none`. 참고 레포와 같은 규모의 MLP(입력→20→10→클래스), 노트북 CPU로 수 초 학습.
+- **8-class**(2026-07-22): `index_point`·`middle_point`·`pinch_index`·`pinch_middle`·`two_fingers`·`open_palm`·`fist` + `none`. 참고 레포와 같은 규모의 MLP(입력→20→10→클래스), 노트북 CPU로 수 초 학습. `middle_point`(중지 하나 → 탭 닫기) 추가로 데이터를 처음부터 재수집(2세션·1인 → 클래스당 ~48 에피소드, 각도 다양성 확보). 활성 모델 `models/hand_pose_classifier.pt` = **v2, 전체 94.4%**(index_point 99.4 / middle_point 92.5 / pinch_index 98.6 / pinch_middle 99.4 / two_fingers 99.2 / open_palm 94.5 / fist 95.9 / none 89.9). 이전 7-class(87.1%, `pinch_middle` 68%에 정체)는 각도 다양성 부족이 원인이었고, 재수집으로 pinch_middle 68→99.4%로 해소. 이전 모델은 `hand_pose_classifier.7class.bak`로 보존. (아래 82.6%→92.3% 등은 7-class 초기 실측 이력.)
 - **입력 feature = 정규화 좌표 42 + 손끝 쌍거리 10 = 52차원**(`pose_features()`, 학습·추론의 단일 진실). 좌표만 주면 작은 MLP가 손끝 사이 *관계*를 못 뽑는다 — 엄지-중지끝 거리는 단독으로 index_point/pinch_middle을 오류율 10.9%로 가르지만 좌표만 준 모델의 index_point 재현율은 50.2%였고, 쌍거리를 더하자 전체 82.6%→92.3%로 올랐다.
 - **`none` 배경 클래스**: 소프트맥스는 반드시 한 클래스를 고르므로, 이게 없으면 손이 보이기만 해도 명령이 나간다. 전이 구간·휴지·일상 동작을 모아 학습. 효과(실측): 우클릭 직전 엄지-중지 접근이 two_fingers로 오분류돼 스크롤이 튀던 문제 0건, 헐거운 핀치 흡수. 오류가 안전한 쪽으로 이동(오발동 1.7%, 명령 간 오인 2.8%, 놓침 15.4% — 놓침은 재시도로 끝나지만 오발동은 되돌릴 수 없다).
 - **전처리 재현성**: 학습·추론 모두 `normalize_hand` + One-Euro(`GestureConfig.smoothing_*`, 3번 탭 좌표)를 쓴다. 저장 파일에 전처리 설정을 넣고 로드 시 현재 `GestureConfig`와 대조 — 어긋나면 `PreprocessingMismatch`로 거부(어긋나면 예외 없이 정확도만 조용히 떨어지는 고장). 평가는 **에피소드 단위 홀드아웃**(인접 프레임 누수 차단, 실측 무작위 84.6% vs 에피소드 82%).
@@ -43,7 +43,7 @@ README [8장 핵심 기능 2](../README.md), [9장 핵심 기능 3](../README.md
 
 - 손바닥 축(손목→중지 MCP)이 이미지 평면과 이루는 각. 카메라 쪽으로 눕히면 이 축이 2D에서 단축돼 자세 정보가 **실제로 소실**된다(구간별 정확도 0~10° 90.8%, 20~30° 47.3%, 30° 초과 37.0%). 정규화 방식 4종 비교에서 회전 민감도 30배 차이에도 정확도 동률이라 **분모 교체로는 해결 불가** — 좌표를 어떻게 정규화해도 없는 정보는 못 만든다.
 - **각도만 z에서 계산**해 소스가 넘긴다(`RawHandLandmarks.palm_tilt_degrees`). 좌표는 2D 유지(`LANDMARK_DIMS=2` 불변) — z를 좌표로 되살리는 게 아니라 화면 밖 회전이라는 z만 아는 정보를 각도 하나로 요약해 굵은 임계 판정에만 쓴다. z를 못 내는 소스(`None`)에서는 게이트를 걸지 않는다(시스템 전체 정지 방지).
-- **자세별 허용 각도**(`DEFAULT_POSE_TILT_LIMITS`): 손가락을 편 자세는 기울어도 실루엣이 남아 관대하다 — two_fingers는 30~90°에서도 99% 정확해 **기울기 제한을 없앴고**(90° = 사실상 무제한, 아래를 크게 가리키는 정상 스크롤 자세를 tilt 게이트가 막던 문제 해소), open_palm 30°, 나머지는 20°. **분류 뒤** 예측 자세의 한계로 판정한다 — 순환이 아니라, 먼저 분류하고 그 결과를 이 각도에서 믿어도 되는지 실측 표로 확인하는 순서다. 근거 없는 구간은 보수적으로 20°.
+- **자세별 허용 각도**(`DEFAULT_POSE_TILT_LIMITS`): 손가락을 편 자세는 기울어도 실루엣이 남아 관대하다 — two_fingers는 30~90°에서도 99% 정확해 **기울기 제한을 없앴고**(90° = 사실상 무제한, 아래를 크게 가리키는 정상 스크롤 자세를 tilt 게이트가 막던 문제 해소), open_palm 30°, **middle_point 30°**, 나머지는 20°. **분류 뒤** 예측 자세의 한계로 판정한다 — 순환이 아니라, 먼저 분류하고 그 결과를 이 각도에서 믿어도 되는지 실측 표로 확인하는 순서다. 근거 없는 구간은 보수적으로 20°. `middle_point`는 명시 엔트리가 없으면 unknown-label 폴백(20°)이 걸려 진짜의 56%까지 조용히 거부됐다(v2 실측): 진짜 중앙 기울기 21° vs `none→middle_point` 오분류 중앙 37°이라 **30°가 진짜 84% 유지·오분류 71% 차단**으로 최적이며, dwell 250ms와 곱해져 실오발동은 더 낮다. 손가락 펴짐(straightness)으로 이 leak을 가르려 했으나 진짜와 leak의 펴짐 분포가 거의 겹쳐(같은 손모양을 전환 중 스치는 것) 기하 게이트는 무력했고, 기울기·시간만이 유효한 방어선이었다.
 
 ### 시간축 상태기계 (`pose_state.py`)
 
@@ -53,7 +53,7 @@ README [8장 핵심 기능 2](../README.md), [9장 핵심 기능 3](../README.md
 2. **믿을 수 없는 판정(trusted=False, 기울기 게이트)은 상태를 바꾸지도 끊지도 않는다.**
 3. **`none`은 자세 이력을 지우지 않는다**: 주먹→보 전이 중간이 none으로 분류되므로, "마지막 명령 자세"를 따로 기억해 전이 판정이 빈 구간을 건너뛴다(인접 상태로 보면 절대 성립 안 함).
 
-동작: 커서 이동(index_point·pinch_index, 마우스식 상대 이동+포인터 가속+soft deadzone+palm_scale 정규화, 참조점은 손목의 **평활된 이미지 좌표**), 클릭/드래그·더블클릭(핀치 유지 시간으로 클릭↔드래그 분기+진입 시점 소급, 빠른 두 번 핀치는 두 **진입** 간격으로 더블클릭 — dwell·release 확정 지연을 예산에서 빼야 체감 간격과 맞음), 우클릭(pinch_middle), 스크롤(two_fingers가 **가리키는 방향** — 손 이동이 아니라 MCP→끝 벡터라 손을 멈춰도 유지, 수직성 0.5 미만이면 방향 안 지어냄; 손가락이 접히면 **폄 게이트**(`MIN_FINGER_EXTENSION`)로 스크롤을 끊어, 멈추려 주먹 쥘 때 손끝이 아래로 스윙해 역방향 스크롤이 튀는 것을 막음), 손 펴기(fist→open_palm 전이)로 **Mission Control**(macOS, `open -a`)·**Task View**(Windows, Win+Tab) 열기. 임계는 대부분 **시간**이라 투영에 흔들리지 않는다(기하학적 임계는 손 각도에 8.85배까지 흔들렸다) — 폄 게이트만은 palm_scale 정규화 좌표라 손 거리·각도에 강건하다.
+동작: 커서 이동(index_point·pinch_index, 마우스식 상대 이동+포인터 가속+soft deadzone+palm_scale 정규화, 참조점은 손목의 **평활된 이미지 좌표**), 클릭/드래그·더블클릭(핀치 유지 시간으로 클릭↔드래그 분기+진입 시점 소급, 빠른 두 번 핀치는 두 **진입** 간격으로 더블클릭 — dwell·release 확정 지연을 예산에서 빼야 체감 간격과 맞음), 우클릭(pinch_middle), 스크롤(two_fingers가 **가리키는 방향** — 손 이동이 아니라 MCP→끝 벡터라 손을 멈춰도 유지, 수직성 0.5 미만이면 방향 안 지어냄; 손가락이 접히면 **폄 게이트**(`MIN_FINGER_EXTENSION`)로 스크롤을 끊어, 멈추려 주먹 쥘 때 손끝이 아래로 스윙해 역방향 스크롤이 튀는 것을 막음), 손 펴기(fist→open_palm 전이)로 **Mission Control**(macOS, `open -a`)·**Task View**(Windows, Win+Tab) 열기, 중지만 폄(`middle_point`)으로 **탭 닫기**(macOS Cmd+W·Windows Ctrl+W, 진입 시 1회 발화, dwell 250ms — 파괴적이라 기본보다 길게). 임계는 대부분 **시간**이라 투영에 흔들리지 않는다(기하학적 임계는 손 각도에 8.85배까지 흔들렸다) — 폄 게이트만은 palm_scale 정규화 좌표라 손 거리·각도에 강건하다.
 
 ### 실제 OS 제어 (`monitoring/pose_control.py`)
 
