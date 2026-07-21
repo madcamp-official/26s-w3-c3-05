@@ -34,6 +34,9 @@ build/
 models/*.task
 models/*.onnx
 models/*.pt
+# 예외: 정적 자세 분류기는 10KB로 작고 데모에 바로 필요해 저장소에 포함한다
+# (동적 제스처 TCN 가중치는 크므로 여전히 제외 — models/README.md의 재현 절차 참조).
+!models/hand_pose_classifier.pt
 data/raw/
 data/traces/
 data/calibration/

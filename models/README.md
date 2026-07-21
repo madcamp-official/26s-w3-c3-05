@@ -121,3 +121,42 @@ MediaPipe 번들과 달리 사전 학습된 파일을 내려받는 게 아니라
   spotting 상태 머신, task 4)은 이 Protocol만 바라보면 된다(2026-07-18 결정: 추론 위치를
   교체 가능한 경계로 분리 — landmark 소스와 같은 설계를 모델 자체에도 적용).
 
+
+## hand_pose_classifier.pt (Gesture — 정적 손 자세)
+
+`jarvis.gesture_fusion.pose_classifier.TorchPoseClassifier`가 로드하는 정적 손 자세
+분류기다. 동적 제스처(위 TCN)와 **별개 경계**로, 단일 프레임의 손 모양을 판정해 로컬에서
+커서·클릭·드래그·우클릭·스크롤·바탕화면 토글을 구동한다(`documents/gesture-fusion.md`
+"정적 손 자세 파이프라인" 참조). TCN과 달리 **이 파일은 커밋한다** — 10KB로 작고 데모에
+바로 필요하기 때문(`.gitignore`에 `!models/hand_pose_classifier.pt` 예외).
+
+- **아키텍처**: MLP 입력 52 → 20 → ReLU → Dropout(0.2) → 10 → ReLU → 7. 파라미터 약
+  1,447개라 노트북 CPU로 수 초면 학습된다(`pyproject.toml` `ml` extra: torch).
+- **입력(52차원)**: 정규화·평활된 21개 랜드마크 좌표 42 + 손끝 5점 쌍거리 10
+  (`pose_protocol.pose_features()`, **학습·추론이 반드시 같이 쓰는 단일 함수**). 좌표만으론
+  작은 MLP가 손끝 관계를 못 뽑아 쌍거리를 명시 추가했다(index_point 재현율 50.2%→94.0%).
+- **전처리(재현성 필수)**: `normalize_hand`(손목 원점 + palm_scale) → One-Euro
+  (`GestureConfig.smoothing_min_cutoff=2.0`, `beta=1.2`, `d_cutoff=1.5`), 즉 디버깅 툴
+  3번 탭(손 추적)에 뜨는 좌표. z는 쓰지 않는다(`LANDMARK_DIMS=2`) — 기울기는 각도로만
+  게이트에 쓴다. **저장 파일에 이 전처리 설정이 함께 들어 있고**, 로드 시 현재
+  `GestureConfig`와 대조해 다르면 `PreprocessingMismatch`로 거부한다(어긋나면 예외 없이
+  정확도만 조용히 떨어지는 고장 방지).
+- **label 집합(7종)**: `pose_protocol.DEFAULT_POSE_LABELS` = index_point, pinch_index,
+  pinch_middle, two_fingers, open_palm, fist, **none**(제어 자세가 아닌 전이·휴지·일상
+  동작 배경 클래스 — 없으면 손이 보이기만 해도 명령이 나간다).
+- **평가 결과(2026-07-21, 에피소드 단위 홀드아웃, 테스트 2862프레임)**: 전체 87.1%.
+  자세별 재현율 none 98.3% / two_fingers 94.8% / fist 89.8% / index_point 88.1% /
+  pinch_index 76.3% / open_palm 71.7% / pinch_middle 67.7%. **한 세션 데이터**라 다른
+  날·조명·위치 일반화는 이 수치가 보장하지 않는다(실사용은 이보다 낮을 수 있음). 약한
+  자세의 실패는 주로 none으로 빠지는 안전한 방향(오동작이 아니라 무반응).
+- **재학습 방법**: 수집 데이터(raw 랜드마크 + 라벨 npz)와 `training/train_pose.py`가
+  있으면 누구나 같은 모델을 재현·개선할 수 있다.
+  ```
+  python -m training.train_pose --data <수집 npz> --out models/hand_pose_classifier.pt
+  ```
+  매번 처음부터 학습한다(파라미터가 적어 수 초, fine-tuning 개념 불필요). 수집기는
+  누적 저장이라 새 데이터를 이어 붙인 뒤 전체를 다시 학습하면 균형이 자동으로 맞는다.
+  평가는 에피소드 단위 홀드아웃(인접 프레임 누수 차단). **주의**: 수집 데이터 npz는 팀
+  공유 위치에 따로 두어야 재현 가능하다(현재 로컬 `.claude/tmp/pose_frames.npz`).
+- **모델 없을 때**: `pose_classifier`를 못 불러오면 `NullPoseClassifier`로 대체돼 자세를
+  지어내지 않고 "자세 분류 모델 없음"을 UI에 정직하게 표시한다(크래시 없음).
