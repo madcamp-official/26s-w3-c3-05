@@ -211,12 +211,18 @@ class CausalTCNGestureModel:
         )
         phase_index = int(np.argmax(phase_probs))
 
+        # float32 softmax 결과는 합이 1.0을 ~1e-7 초과할 수 있어 확률·엔트로피가 [0,1]을
+        # 미세하게 벗어난다. ModelPrediction 계약([0,1])을 지키도록 경계에서 잘라준다
+        # (진짜 잘못된 값이 아니라 부동소수 오차이므로 clamp가 정직한 처리다).
+        def _unit(x: float) -> float:
+            return float(min(1.0, max(0.0, x)))
+
         return ModelPrediction(
             gesture=self._config.gesture_labels[gesture_index],
-            gesture_confidence=gesture_confidence,
+            gesture_confidence=_unit(gesture_confidence),
             phase=PHASE_LABELS[phase_index],
-            phase_confidence=float(phase_probs[phase_index]),
-            uncertainty=normalized_entropy(collapsed_probs),
+            phase_confidence=_unit(float(phase_probs[phase_index])),
+            uncertainty=_unit(normalized_entropy(collapsed_probs)),
         )
 
     def _pad_to_window(self, window: FloatArray) -> FloatArray:
