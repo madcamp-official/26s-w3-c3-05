@@ -18,7 +18,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from jarvis.monitoring.app import MainWindow  # noqa: E402
+from jarvis.monitoring.app import MainWindow, _REGISTRATION_GUIDANCE_PHASES  # noqa: E402
 
 
 def test_main_window_builds_offscreen(tmp_path: Path) -> None:
@@ -36,6 +36,10 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
         assert tabs.tabText(4) == "지연·어댑터"
         assert window._sample_button.text() == "시선 샘플 저장 (0/10)"
         assert window._sample_list.count() == 0
+        assert window._gaze_config.enable_3d_target_matching is False
+        assert window._gaze_config.require_3d_target_registration is False
+        assert window._active_calibration_model is None
+        assert window._register_target_button.text() == "물체 등록"
     finally:
         window.close()
         app.processEvents()
@@ -95,6 +99,32 @@ def test_hand_panel_renders_wrist_vectors_and_tracking_loss() -> None:
     finally:
         panel.deleteLater()
         app.processEvents()
+
+
+def test_target_registration_uses_auto_id(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        profiles_path=tmp_path / "profiles.json",
+        samples_path=tmp_path / "samples.json",
+    )
+    try:
+        assert window._next_target_id() == "target_001"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_registration_guidance_prompts_diagonal_and_depth_motion() -> None:
+    labels = [label for _end_ms, label in _REGISTRATION_GUIDANCE_PHASES]
+
+    assert len(labels) == 5
+    assert any("LEFT-UP" in label for label in labels)
+    assert any("RIGHT-DOWN" in label for label in labels)
+    assert any("LEFT-DOWN" in label for label in labels)
+    assert any("RIGHT-UP" in label for label in labels)
+    assert any("NEAR/FAR" in label for label in labels)
 
 
 def test_startup_logs_gesture_recognition_off() -> None:

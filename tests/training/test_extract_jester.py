@@ -49,8 +49,8 @@ def _write_dummy_frames(frames_dir: Path, count: int) -> None:
         cv2.imwrite(str(frames_dir / f"{i:05d}.jpg"), image)
 
 
-def _ref(frames_dir: Path, clip_id: str = "clip-a") -> JesterClipRef:
-    return JesterClipRef(clip_id=clip_id, frames_dir=frames_dir, our_label="swipe_down", split="train")
+def _ref(frames_dir: Path, clip_id: str = "clip-a", our_label: str = "swipe_down") -> JesterClipRef:
+    return JesterClipRef(clip_id=clip_id, frames_dir=frames_dir, our_label=our_label, split="train")
 
 
 def test_clip_kept_when_missing_fraction_within_tolerance(tmp_path: Path) -> None:
@@ -102,6 +102,26 @@ def test_zero_tolerance_reproduces_old_any_failure_excludes_clip_behavior(tmp_pa
 
     assert result.status == "too_many_missed_frames"
     assert observations == []
+
+
+@pytest.mark.parametrize("exempt_label", ["none", "doing_other_things"])
+def test_exempt_labels_ignore_missing_fraction_limit(tmp_path: Path, exempt_label: str) -> None:
+    """"none"·"doing_other_things"는 미검출 비율이 100%여도 제외되지 않는다.
+
+    둘 다 정의상 손이 안 보이는 장면이 많아 다른 클래스와 같은 기준을 적용하면
+    대부분 걸러진다(2026-07-20 실측: "none"은 validation 533개 중 17개=3.2%,
+    "doing_other_things"는 train 9592개 중 4454개=46.4%만 생존) — 미검출 프레임
+    자체는 IGNORE_INDEX로 마스킹되니 배제할 필요가 없다.
+    """
+    _write_dummy_frames(tmp_path, count=10)
+    landmarker = _StubLandmarker(missing_frame_ids=set(range(10)))  # 100% 미검출
+    result, observations, _ = _extract_clip(
+        landmarker, _ref(tmp_path, our_label=exempt_label), 0.0, max_missing_frame_fraction=0.3
+    )
+
+    assert result.status == "ok"
+    assert result.missing_frame_count == 10
+    assert len(observations) == 10
 
 
 def test_no_frames_short_circuits_before_missing_fraction_check(tmp_path: Path) -> None:

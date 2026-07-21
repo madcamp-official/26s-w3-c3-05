@@ -10,11 +10,16 @@ import pytest
 from jarvis.contracts.messages import GestureEstimate, GesturePhase, TargetEstimate
 from jarvis.gesture_fusion.alignment import AlignmentConfig
 from jarvis.gesture_fusion.fusion import CommitDecision, FusionConfig, FusionEngine, FusionScore
+from jarvis.gesture_fusion.model_protocol import (
+    DEFAULT_BACKGROUND_LABELS,
+    DEFAULT_GESTURE_LABELS,
+)
 from jarvis.gesture_fusion.intent import (
     CapabilityAction,
     GestureCapabilityMap,
     IntentConfig,
     assemble_intent,
+    validate_capability_map,
 )
 
 _REPO_MAP_PATH = Path(__file__).resolve().parents[3] / "configs" / "gesture_capability_map.json"
@@ -110,10 +115,99 @@ def test_same_gesture_maps_differently_per_device() -> None:
 def test_from_json_loads_repo_config() -> None:
     """configs/gesture_capability_map.json이 실제로 파싱 가능하고 필수 매핑을 담고 있다."""
     capability_map = GestureCapabilityMap.from_json(_REPO_MAP_PATH)
-    bulb_action = capability_map.lookup("room.bulb", "swipe_down")
+    bulb_action = capability_map.lookup("room.bulb", "slide_two_fingers_down")
     assert bulb_action is not None
     assert bulb_action.capability == "brightness"
     assert bulb_action.operation == "decrement"
+
+
+def test_repo_config_is_consistent_with_the_training_label_set() -> None:
+    """실제 저장소 config가 현재 라벨 집합과 맞는지 검사한다 — 이 커밋의 회귀 가드.
+
+    `validate_capability_map`(8b65e6c)은 있었지만 저장소 config에 대고 돌리는 곳이
+    없어서, 라벨에서 swipe 4종이 빠졌을 때 매핑 6개가 죽은 채로 남아도 아무도
+    실패하지 않았다(scroll·window_switch·brightness 세 capability가 어떤 제스처로도
+    도달 불가). 이 테스트가 그 연결을 만든다 — 라벨을 바꾸고 맵을 안 고치면 CI에서
+    바로 걸린다.
+
+    배경 label은 실제 배경 집합(`DEFAULT_BACKGROUND_LABELS`)을 넘겨 매핑 요구에서
+    제외한다. 기본값 `{"none"}`만 쓰면 drumming_fingers·doing_other_things에도
+    기기 동작을 요구하게 되는데, 이들은 "동작 없음"이 곧 의도다.
+    """
+    validate_capability_map(
+        GestureCapabilityMap.from_json(_REPO_MAP_PATH),
+        gesture_labels=DEFAULT_GESTURE_LABELS,
+        background_labels=DEFAULT_BACKGROUND_LABELS,
+    )
+
+
+def test_every_actionable_gesture_reaches_at_least_one_device() -> None:
+    """액션 가능한 7개 제스처가 전부 어딘가에 매핑돼 있어야 한다(문서화 겸 가드)."""
+    registered = GestureCapabilityMap.from_json(_REPO_MAP_PATH).registered_gestures()
+    actionable = set(DEFAULT_GESTURE_LABELS) - DEFAULT_BACKGROUND_LABELS
+    assert actionable == {
+        "rotate_clockwise",
+        "rotate_counter_clockwise",
+        "slide_two_fingers_up",
+        "slide_two_fingers_down",
+        "slide_two_fingers_left",
+        "slide_two_fingers_right",
+        "stop_sign",  # room.bulb 전원 토글 (2026-07-20 추가)
+    }
+    assert actionable <= registered
+
+
+def test_registered_gestures_collects_across_devices() -> None:
+    capability_map = _simple_map()
+    assert capability_map.registered_gestures() == {"swipe_down", "rotate_clockwise"}
+
+
+# --- validate_capability_map ---
+
+
+def test_validate_capability_map_passes_when_consistent() -> None:
+    capability_map = _simple_map()
+    validate_capability_map(
+        capability_map,
+        gesture_labels=("none", "swipe_down", "rotate_clockwise"),
+        background_labels=frozenset({"none"}),
+    )  # 예외 없이 통과해야 한다.
+
+
+def test_validate_capability_map_rejects_unknown_gesture() -> None:
+    """맵이 참조하는 gesture가 현재 라벨 집합에 없으면(라벨 삭제 후 맵 미갱신) 실패해야 한다.
+
+    2026-07-20 발견: gesture_capability_map.json이 라벨에서 빠진 swipe_up 등을
+    그대로 참조해도 이를 잡아내는 검증이 전혀 없었다.
+    """
+    capability_map = _simple_map()  # "swipe_down"을 참조
+    with pytest.raises(ValueError, match="swipe_down"):
+        validate_capability_map(
+            capability_map,
+            gesture_labels=("none", "rotate_clockwise"),  # swipe_down 없음
+            background_labels=frozenset({"none"}),
+        )
+
+
+def test_validate_capability_map_rejects_unmapped_non_background_label() -> None:
+    """배경이 아닌 라벨에 매핑이 하나도 없으면 실패해야 한다(신규 라벨 추가 후 매핑 누락 방지)."""
+    capability_map = _simple_map()
+    with pytest.raises(ValueError, match="drumming_fingers"):
+        validate_capability_map(
+            capability_map,
+            gesture_labels=("none", "swipe_down", "rotate_clockwise", "drumming_fingers"),
+            background_labels=frozenset({"none"}),
+        )
+
+
+def test_validate_capability_map_exempts_background_labels_from_mapping_requirement() -> None:
+    """배경 label은 매핑이 없어도(=동작 없음이 의도) 통과해야 한다."""
+    capability_map = _simple_map()
+    validate_capability_map(
+        capability_map,
+        gesture_labels=("none", "doing_other_things", "swipe_down", "rotate_clockwise"),
+        background_labels=frozenset({"none", "doing_other_things"}),
+    )  # 예외 없이 통과해야 한다.
 
 
 def test_from_json_ignores_underscore_keys(tmp_path: Path) -> None:

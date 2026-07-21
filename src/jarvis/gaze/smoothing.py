@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from itertools import islice
 import math
 
 import numpy as np
@@ -29,6 +30,10 @@ class SmoothedGaze:
     stability: float
     timestamp_ms: int
     frame_id: int
+    origin: Vector3 | None = None
+    """시선 광선의 평활화된 원점(mm 근사). 버퍼 안의 모든 프레임이 origin을
+    가지고 있을 때만 계산되고, 그렇지 않으면 이 프레임은 None이다(3D 삼각측량·
+    매칭에서만 쓰이며 각도 기반 경로는 이 값 없이도 그대로 동작한다)."""
 
 
 class GazeSmoother:
@@ -46,9 +51,16 @@ class GazeSmoother:
 
     def hold(self, timestamp_ms: int, frame_id: int) -> SmoothedGaze | None:
         """Return the last result during a short blink without updating the buffer."""
+        return self._hold_for(timestamp_ms, frame_id, self._config.blink_hold_ms)
+
+    def hold_tracking_loss(self, timestamp_ms: int, frame_id: int) -> SmoothedGaze | None:
+        """Return the last result during a short full face-tracking dropout."""
+        return self._hold_for(timestamp_ms, frame_id, self._config.tracking_loss_hold_ms)
+
+    def _hold_for(self, timestamp_ms: int, frame_id: int, hold_ms: int) -> SmoothedGaze | None:
         if self._last_result is None:
             return None
-        if timestamp_ms - self._last_result.timestamp_ms > self._config.blink_hold_ms:
+        if timestamp_ms - self._last_result.timestamp_ms > hold_ms:
             self.reset()
             return None
         self._last_result = SmoothedGaze(
@@ -56,6 +68,7 @@ class GazeSmoother:
             stability=self._last_result.stability,
             timestamp_ms=timestamp_ms,
             frame_id=frame_id,
+            origin=self._last_result.origin,
         )
         return self._last_result
 
@@ -82,7 +95,7 @@ class GazeSmoother:
         # every old frame has left the window.
         mean_direction = directions[0]
         alpha_range = self._config.ema_max_alpha - self._config.ema_min_alpha
-        for item in list(self._buffer)[1:]:
+        for item in islice(self._buffer, 1, None):
             alpha = self._config.ema_min_alpha + alpha_range * item.confidence
             blended = alpha * item.direction + (1.0 - alpha) * mean_direction
             blended_norm = float(np.linalg.norm(blended))
@@ -100,11 +113,29 @@ class GazeSmoother:
             if angle_deg < self._config.small_motion_deadzone_deg:
                 mean_direction = self._last_result.direction
 
+        mean_origin = self._smoothed_origin(weights, weight_sum)
+
         latest = self._buffer[-1]
         self._last_result = SmoothedGaze(
             direction=mean_direction,
             stability=stability,
             timestamp_ms=latest.timestamp_ms,
             frame_id=latest.frame_id,
+            origin=mean_origin,
         )
         return self._last_result
+
+    def _smoothed_origin(self, weights: Vector3, weight_sum: float) -> Vector3 | None:
+        """버퍼의 모든 프레임이 origin을 가질 때만 confidence-가중 평균을 반환한다.
+
+        일부 프레임에만 origin이 있으면 신뢰할 수 없는 부분 평균을 만들지 않고
+        None을 반환한다 — 이 프레임은 3D 매칭에서 제외되고 각도 기반 경로로만
+        처리된다(값을 지어내지 않는다, development-principles.md 1·2절).
+        """
+        origins = [item.origin for item in self._buffer]
+        if any(origin is None for origin in origins):
+            return None
+        stacked = np.stack([origin for origin in origins if origin is not None])
+        mean_origin = (stacked * weights[:, None]).sum(axis=0) / weight_sum
+        result: Vector3 = mean_origin
+        return result

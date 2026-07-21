@@ -45,6 +45,13 @@ class FaceObservation:
     left_eye_center_normalized: tuple[float, float] | None = None
     right_eye_center_normalized: tuple[float, float] | None = None
     eyes_open: bool = True
+    head_position_mm: Vector3 | None = None
+    """머리(얼굴 모델 원점)의 카메라 기준 3D 위치 근사값 — MediaPipe facial
+    transformation matrix의 translation 성분(`transform[:3, 3]`)에서 얻는다.
+    실제 눈금으로 검증된 계량 값이 아니라 MediaPipe의 표준 얼굴 모델 크기 가정에
+    기반한 근사치다(models/README.md 참고). 얻을 수 없으면 None이며, 3D 삼각측량
+    (calibration/triangulation.py)에서만 쓰이고 각도 기반 경로에는 영향을 주지
+    않는다."""
 
     def __post_init__(self) -> None:
         if self.timestamp_ms < 0 or self.frame_id < 0:
@@ -76,6 +83,11 @@ class FaceObservation:
                 continue
             if not all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in center):
                 raise ValueError(f"{name} must contain normalized coordinates within [0, 1]")
+        if self.head_position_mm is not None:
+            if self.head_position_mm.shape != (3,) or not np.all(
+                np.isfinite(self.head_position_mm)
+            ):
+                raise ValueError("head_position_mm must contain exactly three finite values")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +98,10 @@ class GazeVector:
     confidence: float
     timestamp_ms: int
     frame_id: int
+    origin: Vector3 | None = None
+    """시선 광선의 원점(카메라 기준 머리 위치, mm 근사) — FaceObservation의
+    head_position_mm을 그대로 옮긴 값. 없으면 None(3D 삼각측량에 쓰이지 않고
+    각도 기반 매칭으로만 처리된다)."""
 
     def __post_init__(self) -> None:
         if self.timestamp_ms < 0 or self.frame_id < 0:
@@ -97,6 +113,9 @@ class GazeVector:
         norm = float(np.linalg.norm(self.direction))
         if not math.isclose(norm, 1.0, abs_tol=1e-6):
             raise ValueError(f"direction must be a unit vector, got norm={norm}")
+        if self.origin is not None:
+            if self.origin.shape != (3,) or not np.all(np.isfinite(self.origin)):
+                raise ValueError("origin must contain exactly three finite values")
 
 
 def _rotate_2d(x: float, y: float, angle_deg: float) -> tuple[float, float]:
@@ -134,10 +153,15 @@ def compose_gaze_vector(
     if not observation.face_detected or confidence < config.minimum_tracking_confidence:
         return None
 
-    left_x, left_y = observation.left_iris_relative
-    right_x, right_y = observation.right_iris_relative
-    eye_offset_x = (left_x + right_x) / 2.0
-    eye_offset_y = (left_y + right_y) / 2.0
+    if observation.eyes_open:
+        left_x, left_y = observation.left_iris_relative
+        right_x, right_y = observation.right_iris_relative
+        eye_offset_x = (left_x + right_x) / 2.0
+        eye_offset_y = (left_y + right_y) / 2.0
+    else:
+        eye_offset_x = 0.0
+        eye_offset_y = 0.0
+        confidence *= config.head_only_confidence_scale
 
     # 머리가 기울어진(roll) 만큼 눈 오프셋을 head-upright 좌표계로 되돌린다.
     eye_offset_x, eye_offset_y = _rotate_2d(eye_offset_x, eye_offset_y, -observation.head_roll_deg)
@@ -145,8 +169,10 @@ def compose_gaze_vector(
     eye_yaw_offset_deg = eye_offset_x * config.max_eye_offset_deg
     eye_pitch_offset_deg = eye_offset_y * config.max_eye_offset_deg
 
-    total_yaw_deg = observation.head_yaw_deg + eye_yaw_offset_deg
-    total_pitch_deg = observation.head_pitch_deg + eye_pitch_offset_deg
+    total_yaw_deg = (
+        observation.head_yaw_deg * config.head_yaw_weight + eye_yaw_offset_deg
+    ) * config.horizontal_axis_sign
+    total_pitch_deg = observation.head_pitch_deg * config.head_pitch_weight + eye_pitch_offset_deg
 
     direction = _direction_from_yaw_pitch(total_yaw_deg, total_pitch_deg)
     norm = float(np.linalg.norm(direction))
@@ -159,4 +185,5 @@ def compose_gaze_vector(
         confidence=confidence,
         timestamp_ms=observation.timestamp_ms,
         frame_id=observation.frame_id,
+        origin=observation.head_position_mm,
     )

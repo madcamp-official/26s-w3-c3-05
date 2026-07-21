@@ -4,33 +4,44 @@
 interface-contract.md 공통 규칙)만 참조한다 — 라벨 문자열을 여기 다시 하드코딩하지
 않아, 라벨 집합이 바뀌면 이 파일이 자동으로 따라간다.
 
-`None`으로 매핑된 클래스는 학습셋에서 **제외**한다(포함하지 않음, "none"으로
-접지 않음) — 어느 쪽이 맞는지는 아직 결정되지 않았다(학습 파이프라인 인터뷰 기록).
-사용자가 나중에 이 테이블만 편집해 확정하면 된다: 코드·다른 파일은 손댈 필요 없다.
+2026-07-20 결정: 사용자가 지정한 8개 제스처(+배경 "none")만 학습한다 —
+swipe를 포함한 나머지 18개 Jester 클래스는 이번 라운드에서 제외("none"으로도
+뭉치지 않고 학습셋에서 아예 빠짐, `None`으로 매핑). README 8장 "지원 제스처"
+(swipe 4종)와는 다른 목록이라는 점을 인지하고 있음 — README는 이후 갱신 예정.
+라벨 문자열·순서는 `DEFAULT_GESTURE_LABELS`가 정의하고, 이 테이블은 Jester
+클래스명 ↔ 그 라벨(또는 제외)의 대응만 담는다.
+
+제외된 18개는 `training/extract/extract_jester.py`의 `build_manifest()`가
+애초에 추출 대상에서 뺀다 — 캐시에 이미 있는 클립(이전 27클래스 라운드에서
+저장됨)은 그대로 남지만 더는 학습에 쓰이지 않는다(ClipDataset이 라벨 불일치를
+잡아내지 않도록, 학습 전 `training.relabel_cache`로 캐시를 갱신해야 한다 —
+train/README.md 참고).
 """
 
 from __future__ import annotations
 
 from jarvis.gesture_fusion.model_protocol import DEFAULT_GESTURE_LABELS
 
-# 확정된 매핑만 채운다(README 8장 "지원 제스처"와 직접 대응). 나머지 19개는 아직
-# 미정이라 전부 제외(None)로 둔다 — TODO: 사용자가 "none"으로 접을지/뺄지 결정.
+# 지정된 8종 + 배경만 매핑한다. 나머지 18개는 None(학습 제외) — 캐시에서도,
+# 추출 대상에서도 빠진다.
 JESTER_TO_OUR_LABEL: dict[str, str | None] = {
-    "Swiping Up": "swipe_up",
-    "Swiping Down": "swipe_down",
-    "Swiping Left": "swipe_left",
-    "Swiping Right": "swipe_right",
+    "No gesture": "none",
     "Turning Hand Clockwise": "rotate_clockwise",
     "Turning Hand Counterclockwise": "rotate_counter_clockwise",
-    "No gesture": "none",
-    # --- TODO(사용자 결정 대기): 아래는 "none"으로 접을지 제외할지 미정 ---
-    "Doing other things": None,
+    "Sliding Two Fingers Up": "slide_two_fingers_up",
+    "Sliding Two Fingers Down": "slide_two_fingers_down",
+    "Sliding Two Fingers Left": "slide_two_fingers_left",
+    "Sliding Two Fingers Right": "slide_two_fingers_right",
+    "Drumming Fingers": "drumming_fingers",
+    "Doing other things": "doing_other_things",
+    "Stop Sign": "stop_sign",  # 정지 명령 (2026-07-20 추가) — 활짝 편 손바닥 정적 포즈
+    # --- 이번 라운드 제외 (README 공식 목록의 swipe 포함) ---
+    "Swiping Up": None,
+    "Swiping Down": None,
+    "Swiping Left": None,
+    "Swiping Right": None,
     "Pushing Hand Away": None,
     "Pulling Hand In": None,
-    "Sliding Two Fingers Left": None,
-    "Sliding Two Fingers Right": None,
-    "Sliding Two Fingers Down": None,
-    "Sliding Two Fingers Up": None,
     "Pushing Two Fingers Away": None,
     "Pulling Two Fingers In": None,
     "Rolling Hand Forward": None,
@@ -42,16 +53,14 @@ JESTER_TO_OUR_LABEL: dict[str, str | None] = {
     "Thumb Up": None,
     "Thumb Down": None,
     "Shaking Hand": None,
-    "Stop Sign": None,
-    "Drumming Fingers": None,
 }
 
-# 좌우반전 augmentation이 라벨을 스왑해야 하는 쌍(양방향). 회전은 거울상에서
-# 방향이 반대로 보이고(카메라 기준 시계방향 → 거울상에서는 반시계방향), swipe는
-# 좌우가 그대로 뒤바뀐다. 매핑에 없는 라벨(예: "none")은 반전해도 그대로다.
+# 좌우반전 augmentation이 라벨을 스왑해야 하는 쌍(양방향). 좌우가 그대로 뒤바뀌는
+# 제스처만 스왑한다: 두 손가락 슬라이드 left/right, 회전(카메라 기준 시계방향 →
+# 거울상에서 반시계방향). 매핑에 없는 라벨은 그대로다.
 FLIP_LABEL_SWAP: dict[str, str] = {
-    "swipe_left": "swipe_right",
-    "swipe_right": "swipe_left",
+    "slide_two_fingers_left": "slide_two_fingers_right",
+    "slide_two_fingers_right": "slide_two_fingers_left",
     "rotate_clockwise": "rotate_counter_clockwise",
     "rotate_counter_clockwise": "rotate_clockwise",
 }

@@ -43,3 +43,6 @@ artifacts/
 # Training pipeline (training/) — offline landmark cache, TensorBoard runs
 training/cache/
 training/runs/
+
+# 실험용 체크포인트(별도 경로로 학습한 A/B 결과물)
+training/experiments/

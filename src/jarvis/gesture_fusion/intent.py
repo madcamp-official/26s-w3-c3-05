@@ -84,6 +84,49 @@ class GestureCapabilityMap:
         """등록되지 않은 조합이면 `None`(호출자는 실행이 아니라 거부로 다뤄야 한다)."""
         return self._mapping.get(device_id, {}).get(gesture)
 
+    def registered_gestures(self) -> frozenset[str]:
+        """모든 기기에 걸쳐 매핑에 등장하는 gesture 문자열 전체(중복 제거)."""
+        return frozenset(
+            gesture for actions in self._mapping.values() for gesture in actions
+        )
+
+
+def validate_capability_map(
+    capability_map: GestureCapabilityMap,
+    gesture_labels: tuple[str, ...],
+    background_labels: frozenset[str] = frozenset({"none"}),
+) -> None:
+    """`capability_map`과 학습 라벨 집합(`gesture_labels`) 간 불변식을 검사한다.
+
+    `training.data.jester_labels.validate_mapping()`과 같은 목적의 검사를
+    gesture→capability 매핑에도 적용한다 — 지금까지는 아무 검증이 없어서, 라벨
+    집합이 바뀌어도(2026-07-20: swipe 제거·slide_two_fingers 추가) capability
+    map이 조용히 안 맞는 상태로 남을 수 있었다(development-principles.md
+    "no silent caps").
+
+    (1) `capability_map`이 참조하는 gesture 문자열은 전부 `gesture_labels`에
+        있어야 한다(오타·삭제된 라벨 방지 — 예: 라벨에서 뺀 "swipe_up"이 매핑에
+        그대로 남는 경우).
+    (2) 배경이 아닌 `gesture_labels` 전부가 최소 하나의 (device, gesture) 매핑을
+        가져야 한다(신규 라벨 추가 후 매핑을 깜빡하는 것 방지). 배경 label(기본
+        "none")은 "동작 없음"이 곧 의도이므로 이 요구에서 제외한다.
+    """
+    registered = capability_map.registered_gestures()
+    unknown = registered - set(gesture_labels)
+    if unknown:
+        raise ValueError(
+            f"gesture_capability_map.json이 존재하지 않는 gesture를 참조한다: {sorted(unknown)}. "
+            f"현재 라벨: {sorted(gesture_labels)}. 라벨이 바뀐 뒤 맵을 갱신하지 않은 상태일 수 있다."
+        )
+
+    unmapped = {label for label in gesture_labels if label not in background_labels} - registered
+    if unmapped:
+        raise ValueError(
+            f"gesture_capability_map.json에 매핑이 전혀 없는(배경 아닌) 라벨이 있다: "
+            f"{sorted(unmapped)}. 의도적으로 아직 기기 동작이 없다면 이 함수 호출부에서 "
+            "명시적으로 허용하거나 configs/gesture_capability_map.json에 매핑을 추가하라."
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class IntentConfig:

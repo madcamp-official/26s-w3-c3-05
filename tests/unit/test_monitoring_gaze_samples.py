@@ -48,11 +48,14 @@ def test_store_persists_snapshot_as_json(tmp_path: Path) -> None:
     sample = store.add(_snapshot())
 
     assert sample["gaze_direction"] == pytest.approx(
-        [0.1277105, 0.1493484, 0.9805322], abs=1e-3
+        [-0.1270695, 0.1472359, 0.9809052], abs=1e-3
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload[0]["head_pose_deg"]["pitch"] == -4.0
     assert payload[0]["left_iris_relative"] == [0.1, -0.2]
+    assert payload[0]["gaze_yaw_pitch_deg"]["yaw"] == pytest.approx(-7.4, abs=0.1)
+    assert payload[0]["target_label"] == "UNKNOWN"
+    assert payload[0]["nearest_target_range"] is None
 
 
 def test_store_enforces_capacity_across_reloads(tmp_path: Path) -> None:
@@ -72,9 +75,11 @@ def test_format_sample_shows_vector_head_and_target(tmp_path: Path) -> None:
     rendered = format_gaze_sample(store.add(_snapshot()))
 
     assert "#1 [1f]" in rendered
-    assert "gaze=(+0.128, +0.149, +0.981)" in rendered
+    assert "gaze=(-0.127, +0.147, +0.981)" in rendered
+    assert "raw_y/p=(-7.4, -8.5)" in rendered
+    assert "final_y/p=(-7.4, -8.5)" in rendered
     assert "head=(+3.0, -4.0, +1.0)" in rendered
-    assert "target=UNKNOWN P=0.00" in rendered
+    assert "판단=응시대상 없음 P=0.00" in rendered
 
 
 def test_window_averages_multiple_smoothed_frames(tmp_path: Path) -> None:
@@ -86,8 +91,30 @@ def test_window_averages_multiple_smoothed_frames(tmp_path: Path) -> None:
     assert sample["window_frame_count"] == 5
     assert sample["window_duration_ms"] == 132
     assert sample["gaze_direction"] == pytest.approx(
-        [0.1277105, 0.1493484, 0.9805322], abs=1e-3
+        [-0.1270695, 0.1472359, 0.9809052], abs=1e-3
     )
+    assert sample["raw_gaze_yaw_pitch_deg"] == pytest.approx(
+        {"yaw": -7.4, "pitch": -8.5}, abs=0.1
+    )
+    assert sample["calibration_applied"] is False
+    assert sample["face_metrics"] == pytest.approx(
+        {"center": [0.5, 0.3], "scale": 0.2}, abs=1e-6
+    )
+
+
+def test_not_enough_frames_error_includes_diagnostic_counts(tmp_path: Path) -> None:
+    store = GazeSampleStore(tmp_path / "samples.json")
+    snapshots = [_snapshot(1), _snapshot(2)]
+
+    with pytest.raises(ValueError) as exc_info:
+        store.add_window(snapshots, minimum_frames=3)
+
+    message = str(exc_info.value)
+    assert "not enough valid gaze frames: 2/3" in message
+    assert "history=2" in message
+    assert "face=2" in message
+    assert "smoothed=2" in message
+    assert "eyes_open=2" in message
 
 
 def test_clear_empties_memory_and_persisted_file(tmp_path: Path) -> None:

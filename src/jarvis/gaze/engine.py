@@ -14,7 +14,12 @@
 from __future__ import annotations
 
 from jarvis.contracts.messages import TargetEstimate
-from jarvis.gaze.classifier import ClassificationResult, DeviceGazeProfile, TargetClassifier
+from jarvis.gaze.classifier import (
+    ClassificationResult,
+    DeviceGazeProfile,
+    TargetClassifier,
+    TargetGeometry3D,
+)
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.features import FaceObservation, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockState, GazeLockStateMachine
@@ -44,8 +49,10 @@ class GazeTargetingEngine:
         """Cursor Control Mapper 게이트(README 6장 `Gaze Lock == laptop`)에서 쓴다."""
         return self._lock.is_locked_to(device_id)
 
-    def register_device(self, profile: DeviceGazeProfile) -> None:
-        self._classifier.register_profile(profile)
+    def register_device(
+        self, profile: DeviceGazeProfile, geometry_3d: TargetGeometry3D | None = None
+    ) -> None:
+        self._classifier.register_profile(profile, geometry_3d=geometry_3d)
 
     def unregister_device(self, device_id: str) -> None:
         self._classifier.unregister_profile(device_id)
@@ -65,11 +72,14 @@ class GazeTargetingEngine:
         반환한다 — 이때 target은 `config.UNKNOWN_TARGET`이고 probability·
         stability는 0.0이다(성공을 지어내지 않는다, development-principles.md 1절).
         """
-        gaze_vector = compose_gaze_vector(observation, self._config)
+        blink_hold = observation.face_detected and not observation.eyes_open
+        gaze_vector = None if blink_hold else compose_gaze_vector(observation, self._config)
         smoothed = (
-            self._smoother.hold(observation.timestamp_ms, observation.frame_id)
-            if observation.face_detected and not observation.eyes_open
-            else self._smoother.update(gaze_vector)
+            self._smoother.update(gaze_vector)
+            if gaze_vector is not None
+            else self._smoother.hold(observation.timestamp_ms, observation.frame_id)
+            if blink_hold
+            else self._smoother.hold_tracking_loss(observation.timestamp_ms, observation.frame_id)
         )
         self._last_smoothed_gaze = smoothed
 
@@ -89,7 +99,7 @@ class GazeTargetingEngine:
                 stability=0.0,
             )
 
-        classification = self._classifier.classify(smoothed.direction)
+        classification = self._classifier.classify(smoothed.direction, origin=smoothed.origin)
         self._lock.update(smoothed.timestamp_ms, classification)
 
         return TargetEstimate(

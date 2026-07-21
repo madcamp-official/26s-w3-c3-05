@@ -28,7 +28,12 @@ from jarvis.gesture_fusion.landmarks import HandObservation
 from jarvis.gesture_fusion.model_protocol import DEFAULT_GESTURE_LABELS, PHASE_LABELS
 from training.augment import flip_landmarks, time_warp
 from training.config import DEFAULT_TRAINING_CONFIG, TrainingConfig
-from training.data.clip_cache import CachedClip, load_clip
+from training.data.clip_cache import (
+    CachedClip,
+    load_clip,
+    load_gesture_label,
+    load_label_and_frame_counts,
+)
 
 from training.phase_labels import label_phases
 
@@ -40,6 +45,10 @@ IGNORE_INDEX = -100
 
 GESTURE_LABEL_TO_INDEX: dict[str, int] = {label: i for i, label in enumerate(DEFAULT_GESTURE_LABELS)}
 PHASE_TO_INDEX: dict[GesturePhase, int] = {phase: i for i, phase in enumerate(PHASE_LABELS)}
+
+# 손 미검출 프레임(0벡터)을 잡음이 아니라 정답 신호로 보는 유일한 라벨.
+# `__getitem__`의 IGNORE_INDEX 마스킹 예외 — 자세한 근거는 그 주석 참조.
+NO_SIGNAL_LABEL = DEFAULT_GESTURE_LABELS[0]  # "none"
 
 
 def _cached_clip_to_observations(clip: CachedClip) -> list[HandObservation]:
@@ -84,32 +93,92 @@ class ClipDataset(Dataset):  # type: ignore[type-arg]
     같은 캐시 포맷(`clip_cache.CachedClip`)을 쓰므로 이 클래스 하나로 두 단계 모두 처리한다.
     `roots`에 여러 경로를 주면(예: 파인튜닝의 사람 단위 split — 특정 person_id 폴더들만
     골라 train/val을 나눔) 모두 합쳐 하나의 데이터셋으로 다룬다.
+
+    `clip_paths`로 npz 파일 경로 리스트를 직접 주면 glob 대신 그 목록을 그대로 쓴다
+    (pooled 파인튜닝의 **클립 단위 무작위 split**용 — 사람 폴더를 가로질러 개별 클립을
+    train/val로 나눈다, `train.py`의 finetune pooled 모드 참조). `roots`와 `clip_paths`는
+    정확히 하나만 준다.
     """
 
     def __init__(
         self,
-        roots: Path | list[Path],
+        roots: Path | list[Path] | None = None,
         *,
+        clip_paths: list[Path] | None = None,
         gesture_config: GestureConfig = DEFAULT_GESTURE_CONFIG,
         training_config: TrainingConfig = DEFAULT_TRAINING_CONFIG,
         augment: bool = False,
         seed: int = 0,
     ) -> None:
-        root_list = [roots] if isinstance(roots, Path) else list(roots)
-        self._paths = sorted(p for root in root_list for p in root.glob("**/*.npz"))
-        if not self._paths:
-            raise ValueError(f"no cached clips found under {root_list}")
+        if (roots is None) == (clip_paths is None):
+            raise ValueError("provide exactly one of `roots` or `clip_paths`")
+        if clip_paths is not None:
+            self._paths = sorted(clip_paths)
+            if not self._paths:
+                raise ValueError("clip_paths is empty")
+        else:
+            assert roots is not None
+            root_list = [roots] if isinstance(roots, Path) else list(roots)
+            self._paths = sorted(p for root in root_list for p in root.glob("**/*.npz"))
+            if not self._paths:
+                raise ValueError(f"no cached clips found under {root_list}")
         self._gesture_config = gesture_config
         self._training_config = training_config
         self._augment = augment
         self._rng = np.random.default_rng(seed)
+        self._validate_labels()
+
+    def _validate_labels(self) -> None:
+        """캐시에 현재 라벨 집합 밖의 라벨이 있으면 즉시 실패한다.
+
+        캐시는 추출 시점의 **파생 라벨 문자열**을 담으므로, 라벨 매핑이나
+        `DEFAULT_GESTURE_LABELS`를 바꾸면 옛 라벨이 남아 있을 수 있다. 이를 학습
+        도중 `KeyError`로 터뜨리는 대신(원인·해결법을 알 수 없다) 데이터셋 생성
+        시점에 무엇이 어긋났고 어떻게 고치는지 함께 알린다.
+        """
+        unknown = {
+            label
+            for label in (load_gesture_label(path) for path in self._paths)
+            if label not in GESTURE_LABEL_TO_INDEX
+        }
+        if unknown:
+            raise ValueError(
+                f"캐시에 현재 라벨 집합 밖의 gesture_label이 있다: {sorted(unknown)}. "
+                f"현재 라벨: {sorted(GESTURE_LABEL_TO_INDEX)}. "
+                "라벨 매핑을 바꾼 뒤 캐시를 갱신하지 않은 상태다 — "
+                "`python -m training.relabel_cache`로 캐시 라벨을 현재 매핑에 맞춰라"
+                "(재추출 불필요: 랜드마크는 매핑과 무관하다)."
+            )
 
     def __len__(self) -> int:
         return len(self._paths)
 
     def gesture_labels(self) -> list[str]:
-        """전체 클립의 라벨만 모은다(feature 조립·augmentation 없이) — 클래스 가중치 계산용."""
-        return [load_clip(path).gesture_label for path in self._paths]
+        """전체 클립의 라벨만 모은다(feature 조립·augmentation 없이)."""
+        return [load_gesture_label(path) for path in self._paths]
+
+    def valid_frames_per_label(self) -> dict[str, int]:
+        """라벨별로 **loss에 실제 기여하는** 프레임 수를 센다 — 클래스 가중치 계산용.
+
+        클립 수가 아니라 프레임 수로 세는 이유: cross-entropy는 프레임마다 걸리는데
+        클립당 유효 프레임 수가 클래스별로 크게 다르다(실측: 대부분 90~98%가 유효한
+        반면 `doing_other_things`는 51.7%). 클립 수 기준으로 가중치를 잡으면 의도한
+        균등 분배가 무너진다 — 2026-07-20 실측으로 클래스별 실제 loss 비중이
+        0.87%~15.15%까지 벌어져 있었다(의도: 각 11.1%).
+
+        `__getitem__`의 마스킹 규칙과 정확히 같은 정의를 쓴다 — `NO_SIGNAL_LABEL`은
+        미검출 프레임도 유효하고, 나머지는 검출된 프레임만 유효하다. 두 곳이 어긋나면
+        가중치가 다시 조용히 왜곡되므로 규칙을 바꿀 때는 반드시 함께 고쳐야 한다.
+        (augmentation의 time_warp가 프레임 수를 바꾸지만 평균적으로는 rate 분포의
+        중심 근처라 비중 계산에 실질적 영향이 없다 — 난수에 의존하지 않기 위해
+        원본 프레임 수를 쓴다.)
+        """
+        counts: dict[str, int] = {}
+        for path in self._paths:
+            label, detected_frames, total_frames = load_label_and_frame_counts(path)
+            valid = total_frames if label == NO_SIGNAL_LABEL else detected_frames
+            counts[label] = counts.get(label, 0) + valid
+        return counts
 
     def __getitem__(self, index: int) -> tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
         clip = load_clip(self._paths[index])
@@ -136,9 +205,17 @@ class ClipDataset(Dataset):  # type: ignore[type-arg]
         # 붙여 학습하면 "신호 없음"을 특정 제스처로 가르치게 된다. 패딩 프레임과
         # 같은 방식(IGNORE_INDEX)으로 gesture/phase loss에서 제외한다(2026-07-20,
         # extract_jester.py가 클립 내 일부 미검출 프레임을 남기기 시작하면서 필요해짐).
+        #
+        # **`none`(NO_SIGNAL_LABEL)만 예외다**(2026-07-20). 이 클래스의 의미가 정확히
+        # "조작 의도가 없다"이고 그 대표적 관측이 손이 안 보이는 것이라, 미검출
+        # 프레임은 잡음이 아니라 그 클래스의 **정답 신호**다. 제외하면 `none` 클립의
+        # 89.3%(손이 한 프레임도 안 잡힘)가 통째로 loss 기여 0이 되어 — 실측: 유효
+        # 프레임이 전체의 4.4%뿐 — 클래스가 사실상 학습되지 않는다. 다른 클래스는
+        # 손이 보여야 정상이므로 미검출이 곧 추출 실패이고, 종전대로 제외한다.
         missing = ~clip.hand_detected
-        gesture_target[missing] = IGNORE_INDEX
-        phase_target[missing] = IGNORE_INDEX
+        if clip.gesture_label != NO_SIGNAL_LABEL:
+            gesture_target[missing] = IGNORE_INDEX
+            phase_target[missing] = IGNORE_INDEX
 
         return (
             torch.from_numpy(features).float(),

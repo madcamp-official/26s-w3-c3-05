@@ -299,17 +299,30 @@ class HandProbe:
         """
         if self._landmarker is None:
             return None
+        import cv2
+
+        rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB))
+        return self.process_rgb(rgb, timestamp_ms, frame_id)
+
+    def process_rgb(
+        self, rgb_frame: npt.NDArray[np.uint8], timestamp_ms: int, frame_id: int
+    ) -> HandSnapshot | None:
+        """Same as :meth:`process_bgr` for an already-converted RGB frame.
+
+        Lets a caller that feeds several probes (camera worker) convert the
+        frame once instead of once per probe.
+        """
+        if self._landmarker is None:
+            return None
         import time
 
-        import cv2
         from mediapipe import Image as MpImage
         from mediapipe import ImageFormat as MpImageFormat
         from mediapipe.tasks.python.vision import HandLandmarker
 
         assert isinstance(self._landmarker, HandLandmarker)
         started = time.monotonic()
-        rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB))
-        mp_image = MpImage(image_format=MpImageFormat.SRGB, data=rgb)
+        mp_image = MpImage(image_format=MpImageFormat.SRGB, data=rgb_frame)
         result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
         inference_ms = (time.monotonic() - started) * 1000.0
 
@@ -317,14 +330,15 @@ class HandProbe:
             return self._lost(timestamp_ms, frame_id, inference_ms)
 
         landmarks = result.hand_landmarks[0]
-        # z(깊이)는 단안 웹캠 추정값이라 노이즈가 커 버리고 x·y만 쓴다(config.LANDMARK_DIMS).
-        points = np.array([[lm.x, lm.y] for lm in landmarks], dtype=np.float64)
+        # z(깊이)는 단안 웹캠 추정값이라 노이즈가 커 모델은 x·y만 쓴다(config.LANDMARK_DIMS).
+        # z까지 담은 3D 배열을 만들되 모델 경로에 넘기는 ``points``는 앞 2열 슬라이스로
+        # 파생하고(x·y가 기존과 비트 단위 동일), z는 기울기 각도 계산에만 쓴다.
+        points_3d = np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float64)
+        points = points_3d[:, :2]
         if points.shape != (21, LANDMARK_DIMS):
             return self._lost(timestamp_ms, frame_id, inference_ms)
         # 기울기만 z에서 계산해 넘긴다(좌표는 2D 유지) — 화면 밖 회전은 z에만 있다.
-        tilt = palm_tilt_degrees(
-            np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float64), self._config
-        )
+        tilt = palm_tilt_degrees(points_3d, self._config)
 
         handedness, score = self._primary_handedness(result)
         raw = RawHandLandmarks(

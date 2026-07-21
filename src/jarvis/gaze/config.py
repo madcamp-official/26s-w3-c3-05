@@ -46,7 +46,19 @@ class GazeConfig:
     """
 
     # Gaze vector composition (README 7장 "시선 방향 벡터 합성")
-    max_eye_offset_deg: float = 30.0
+    max_eye_offset_deg: float = 45.0
+
+    head_yaw_weight: float = 0.25
+    """How strongly head yaw contributes to gaze yaw before iris correction."""
+
+    head_pitch_weight: float = 0.40
+    """How strongly head pitch contributes to gaze pitch before iris correction."""
+
+    head_only_confidence_scale: float = 0.45
+    """Confidence multiplier when iris/eyes are unavailable and only head pose is used."""
+
+    horizontal_axis_sign: float = -1.0
+    """Sign correction from camera/MediaPipe horizontal motion to yaw(+right)."""
     """홍채 상대 위치(-1..1)를 각도로 환산할 때 사용하는 눈 최대 회전각."""
 
     # Smoothing (README 7장에 정의되지 않은 구현 세부값 — gaze.md에 기록)
@@ -65,16 +77,109 @@ class GazeConfig:
     blink_hold_ms: int = 300
     """Short eye-closed intervals keep the last stable gaze instead of jumping."""
 
+    blink_recovery_hold_ms: int = 150
+    """Keep holding briefly after reopening eyes so unstable iris landmarks settle."""
+
+    max_valid_eye_offset: float = 0.55
+    """Reject iris offsets that jump to implausible eye-edge positions."""
+
+    iris_jump_threshold: float = 0.18
+    """Reject sudden frame-to-frame iris offset jumps before smoothing."""
+
+    tracking_loss_hold_ms: int = 800
+    """Briefly keep the last gaze during full face-landmarker dropouts."""
+
     small_motion_deadzone_deg: float = 5.0
     """Ignore tiny smoothed-gaze changes below this angle to reduce jitter."""
 
     UNKNOWN_TARGET: str = "UNKNOWN"
 
+    enable_3d_target_matching: bool = False
+    """Use triangulated 3D geometry for live matching.
+
+    Disabled by default for webcam demos: head translation from a monocular
+    face model is noisy, so registration may store 3D diagnostics while
+    classification stays on the more stable angle profile.
+    """
+
+    require_3d_target_registration: bool = False
+    """Reject look-to-register targets unless multi-ray 3D triangulation succeeds."""
+
+    # 3D triangulation (calibration/triangulation.py) — 10초 등록 동안 머리를
+    # 움직여 얻은 여러 시선 광선으로 물체의 실제 위치·크기를 추정할 때의 품질
+    # 기준. 기준을 만족하지 못하면 각도 기반(mean_direction + variance) 등록으로
+    # 자동 대체한다(documents/decisions.md 참고).
+    minimum_triangulation_baseline_mm: float = 40.0
+    """광선 원점(머리 위치)들의 강건한 퍼짐(중앙값 기준 90퍼센타일*2)의 최소값.
+
+    이 값보다 작으면 등록 중 머리가 충분히 움직이지 않은 것으로 보고 3D를
+    포기한다 — 원점이 거의 고정된 채 눈만 움직인 경우, 삼각측량이 카메라
+    바로 앞의 한 점으로 수렴해 버리는 것을 막는다.
+    """
+
+    minimum_triangulation_eigenvalue: float = 0.0025
+    """광선 방향들의 각도 다양성 하한(A 행렬의 최소 고유값 / 프레임 수).
+
+    baseline_mm만으로는 "원점은 퍼졌지만 물체가 멀어 광선이 여전히 거의
+    평행한" 경우를 잡지 못한다 — 이 값이 함께 낮으면 조건이 나쁜 것으로 본다.
+    합성 광선(다양한 baseline·거리 조합)으로 실측 없이 보정한 값이다: baseline
+    반경 150mm·거리 2000mm(스마트 전구 정도 거리) 조합은 고유값≈0.0057·위치
+    오차 26mm로 통과시키되, baseline 60~100mm·거리 2000~3000mm(고유값
+    0.0004~0.0025, 오차 35~300mm)는 거부한다 — 실제 카메라로 첫 통합 테스트를
+    할 때(README 16장 Day 1) 재보정이 필요할 수 있다.
+    """
+
+    maximum_triangulation_residual_mm: float = 35.0
+    """추정된 위치와 각 광선 사이 수직 거리의 RMS 상한 — 이보다 크면 광선들이
+    한 점에서 잘 수렴하지 않은 것으로 보고 3D를 포기한다. 깊이 방향 오조건은
+    residual만으로 잘 드러나지 않으므로(위 min_eigenvalue가 그 역할을 한다),
+    이 값은 주로 서로 다른 물체를 보는 등 명백히 어긋난 광선을 걸러내는
+    안전망이다."""
+
+    minimum_triangulation_frames: int = 20
+    """3D 삼각측량을 시도하기 위한 최소 유효 프레임 수."""
+
+    target_radius_floor_mm: float = 20.0
+    """등록된 물체의 유효 반경(radius_mm)이 이보다 작아지지 않도록 하는 하한.
+
+    이 반경은 실제로 측정한 물체 크기가 아니라 삼각측량 잔차에서 유도한
+    "판정 허용 오차"다 — 운 좋게 낮은 잔차가 나와도 비현실적으로 좁은 반경이
+    되지 않도록 막는다.
+    """
+
+    target_minimum_angular_variance_deg: float = 4.0
+
+    registration_min_spread_deg: float = 4.0
+    """Lower bound for angle-profile spread saved during look-to-register."""
+
+    registration_max_spread_deg: float = 8.0
+    """Upper bound for angle-profile spread saved during look-to-register."""
+    """3D 모드에서 계산한 각도 분산(atan(radius/depth)^2)의 하한(도).
+
+    각도 기반 등록의 기존 최소 퍼짐(4도, target_registration.py)과 맞춰,
+    3D 모드가 각도 모드보다 더 엄격하게(더 쉽게 UNKNOWN으로) 판정하지 않도록
+    한다.
+    """
+
+    registration_max_area_radius_deg: float = 6.0
+    """Runtime/storage cap for edge-loop target area radii."""
+
+    target_area_scale_flex: float = 0.25
+    """Allowed fractional target-area radius change from face-scale distance changes."""
+
+    target_motion_alignment_weight: float = 0.35
+    """Bonus weight for targets in the same direction as recent gaze motion."""
+
+    target_match_tolerance: float = 1.10
+    """Accept near-boundary target matches up to this normalized distance."""
+
     def __post_init__(self) -> None:
         if self.dwell_time_ms < 0 or self.target_lock_ttl_ms <= 0:
             raise ValueError("Gaze timing thresholds must be non-negative and TTL must be positive")
-        if self.blink_hold_ms < 0:
-            raise ValueError("blink_hold_ms must be non-negative")
+        if self.blink_hold_ms < 0 or self.blink_recovery_hold_ms < 0:
+            raise ValueError("blink hold thresholds must be non-negative")
+        if self.tracking_loss_hold_ms < 0:
+            raise ValueError("tracking_loss_hold_ms must be non-negative")
         if self.smoothing_window_frames <= 0:
             raise ValueError("smoothing_window_frames must be positive")
         probability_fields = {
@@ -82,6 +187,7 @@ class GazeConfig:
             "minimum_margin": self.minimum_margin,
             "unknown_probability_threshold": self.unknown_probability_threshold,
             "minimum_tracking_confidence": self.minimum_tracking_confidence,
+            "head_only_confidence_scale": self.head_only_confidence_scale,
             "ema_min_alpha": self.ema_min_alpha,
             "ema_max_alpha": self.ema_max_alpha,
         }
@@ -92,6 +198,20 @@ class GazeConfig:
             raise ValueError("ema_min_alpha must not exceed ema_max_alpha")
         if not math.isfinite(self.max_eye_offset_deg) or self.max_eye_offset_deg <= 0.0:
             raise ValueError("max_eye_offset_deg must be finite and positive")
+        for name, value in {
+            "max_valid_eye_offset": self.max_valid_eye_offset,
+            "iris_jump_threshold": self.iris_jump_threshold,
+        }.items():
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        for name, value in {
+            "head_yaw_weight": self.head_yaw_weight,
+            "head_pitch_weight": self.head_pitch_weight,
+        }.items():
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
+        if self.horizontal_axis_sign not in (-1.0, 1.0):
+            raise ValueError("horizontal_axis_sign must be either -1.0 or 1.0")
         if not math.isfinite(self.unknown_max_angle_deg) or not 0.0 < self.unknown_max_angle_deg <= 180.0:
             raise ValueError("unknown_max_angle_deg must be finite and within (0, 180]")
         if (
@@ -101,6 +221,53 @@ class GazeConfig:
             raise ValueError("small_motion_deadzone_deg must be finite and non-negative")
         if not self.UNKNOWN_TARGET:
             raise ValueError("UNKNOWN_TARGET must not be empty")
+        positive_mm_fields = {
+            "minimum_triangulation_baseline_mm": self.minimum_triangulation_baseline_mm,
+            "maximum_triangulation_residual_mm": self.maximum_triangulation_residual_mm,
+            "target_radius_floor_mm": self.target_radius_floor_mm,
+        }
+        for name, value in positive_mm_fields.items():
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive, got {value}")
+        if (
+            not math.isfinite(self.minimum_triangulation_eigenvalue)
+            or self.minimum_triangulation_eigenvalue <= 0.0
+        ):
+            raise ValueError("minimum_triangulation_eigenvalue must be finite and positive")
+        if self.minimum_triangulation_frames <= 0:
+            raise ValueError("minimum_triangulation_frames must be positive")
+        if (
+            not math.isfinite(self.target_minimum_angular_variance_deg)
+            or not 0.0 < self.target_minimum_angular_variance_deg <= 90.0
+        ):
+            raise ValueError("target_minimum_angular_variance_deg must be finite and within (0, 90]")
+        if (
+            not math.isfinite(self.registration_min_spread_deg)
+            or not math.isfinite(self.registration_max_spread_deg)
+            or not 0.0 < self.registration_min_spread_deg <= self.registration_max_spread_deg <= 90.0
+        ):
+            raise ValueError(
+                "registration spread bounds must be finite and satisfy 0 < min <= max <= 90"
+            )
+        if (
+            not math.isfinite(self.registration_max_area_radius_deg)
+            or not (
+                self.registration_min_spread_deg
+                <= self.registration_max_area_radius_deg
+                <= self.registration_max_spread_deg
+            )
+        ):
+            raise ValueError(
+                "registration_max_area_radius_deg must satisfy min_spread <= area <= max_spread"
+            )
+        for name, value in {
+            "target_area_scale_flex": self.target_area_scale_flex,
+            "target_motion_alignment_weight": self.target_motion_alignment_weight,
+        }.items():
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be finite and within [0, 1]")
+        if not math.isfinite(self.target_match_tolerance) or not 1.0 <= self.target_match_tolerance <= 2.0:
+            raise ValueError("target_match_tolerance must be finite and within [1, 2]")
 
 
 DEFAULT_GAZE_CONFIG = GazeConfig()

@@ -50,9 +50,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = [".", "src"]
 
 [tool.ruff]
-src = ["src", "tests"]
+src = ["src", "tests", "training"]
 line-length = 100
 
 [tool.mypy]

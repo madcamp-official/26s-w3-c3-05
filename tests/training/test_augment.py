@@ -48,8 +48,8 @@ def test_flip_negates_x_only() -> None:
 @pytest.mark.parametrize(
     ("label", "expected"),
     [
-        ("swipe_left", "swipe_right"),
-        ("swipe_right", "swipe_left"),
+        ("slide_two_fingers_left", "slide_two_fingers_right"),
+        ("slide_two_fingers_right", "slide_two_fingers_left"),
         ("rotate_clockwise", "rotate_counter_clockwise"),
         ("none", "none"),
     ],

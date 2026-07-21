@@ -63,10 +63,31 @@ def test_flickering_raw_phase_never_confirms() -> None:
 
 
 def test_onset_rejected_for_background_label() -> None:
-    spotter = GestureSpotter(_config(min_consecutive_frames=2, background_label="none"))
+    spotter = GestureSpotter(
+        _config(min_consecutive_frames=2, background_labels=frozenset({"none"}))
+    )
     for i in range(2):
         estimate = spotter.push(
             _prediction(GesturePhase.ONSET, gesture="none"), timestamp_ms=i * 10, frame_id=i
+        )
+    assert estimate.phase == GesturePhase.IDLE
+    assert spotter.state == GesturePhase.IDLE
+
+
+def test_onset_rejected_for_any_configured_background_label() -> None:
+    """배경 label이 여럿(예: "none" + "doing_other_things")이면 전부 거부돼야 한다.
+
+    2026-07-20 발견: background_label이 문자열 하나뿐이던 시절엔 "타겟 제스처가
+    아닌 동작"을 별도 label로 둔 학습 구성에서 그 label의 ONSET을 걸러내지 못했다.
+    """
+    spotter = GestureSpotter(
+        _config(min_consecutive_frames=2, background_labels=frozenset({"none", "doing_other_things"}))
+    )
+    for i in range(2):
+        estimate = spotter.push(
+            _prediction(GesturePhase.ONSET, gesture="doing_other_things"),
+            timestamp_ms=i * 10,
+            frame_id=i,
         )
     assert estimate.phase == GesturePhase.IDLE
     assert spotter.state == GesturePhase.IDLE

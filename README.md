@@ -147,18 +147,27 @@ JARVIS가 해결하려는 문제는 다음과 같다.
 JARVIS 실행
 → 카메라 위치 고정
 → 기기 추가
-→ 해당 기기를 2~3초 동안 바라봄 (고개보다는 눈짓 위주로 자연스럽게)
-→ 시선 방향 벡터 저장
+→ 해당 기기를 10초 동안 바라봄 (고개를 좌우·상하로 크게 움직이며 다양한 각도·자세로)
+→ 머리 이동(parallax)으로 물체의 3D 위치·유효 반경 삼각측량 시도
+   → 성공: 위치+반경 저장
+   → 실패(머리 이동 부족 등): 시선 방향 벡터 + 각도 분산으로 대체 저장
 → 제어 capability 등록
 ```
+
+2~3초·눈짓 위주로 보는 것만으로는 방향 하나만 나오고 실제 위치·거리를 알 수
+없다. 10초 동안 고개를 크게 움직이며 같은 물체를 봐야 서로 다른 위치에서 나온
+시선 광선들이 한 점(물체의 3D 위치)에서 수렴해 삼각측량이 가능해진다. 머리
+움직임이 부족하거나 광선이 잘 수렴하지 않으면(물체가 너무 멀어 광선이 거의
+평행한 경우 등) 항상 검증된 방향+분산 방식으로 조용히 대체된다 — 실패를 성공
+으로 포장하지 않는다.
 
 예:
 
 ```
 [전구 등록 시작]
-전구를 바라보세요
-3 · 2 · 1
-전구 시선방향 정보 등록 완료
+전구를 바라보며 고개를 천천히 좌우로 움직이세요
+10 · 9 · 8 · … · 1
+전구 위치 정보 등록 완료 (3D 위치 추정 성공)
 ```
 
 ## 5.2 기기 선택
@@ -269,7 +278,7 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 시선 방향 벡터 = 머리 회전(yaw, pitch) ⊕ 눈-머리 상대 오프셋
 ```
 
-이렇게 합성하면 고개를 많이 돌리고 눈은 거의 안 움직여서 만든 방향이든, 고개는 그대로 두고 눈만 움직여서 만든 방향이든, 물리적으로 같은 곳을 본 것이라면 거의 같은 벡터가 나온다. 등록 단계에서도 고개를 크게 돌리기보다 자연스러운 눈짓 위주로 보도록 안내해 등록·실사용 행동 차이를 최대한 줄인다.
+이렇게 합성하면 고개를 많이 돌리고 눈은 거의 안 움직여서 만든 방향이든, 고개는 그대로 두고 눈만 움직여서 만든 방향이든, 물리적으로 같은 곳을 본 것이라면 거의 같은 벡터가 나온다. 이 성질 덕분에 등록 단계에서 고개를 크게 움직여도(5.1절의 10초 3D 등록) 방향 자체는 실사용(눈짓 위주)과 여전히 일치한다 — 오히려 등록 중 머리를 크게 움직여야 서로 다른 위치에서 나온 시선 광선들이 물체의 실제 3D 위치로 수렴하는 삼각측량이 가능해진다(7장 "기기 등록 방식" 참고).
 
 ## 입력 신호 → 시선 방향 벡터
 
@@ -285,9 +294,53 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 
 위 신호들을 합성해 얻은 시선 방향 단위 벡터만 기기 등록·Target 추정에 사용한다. 원본 신호(홍채 위치, 머리 각도)는 합성 입력으로만 쓰고 그 자체를 등록·비교에 직접 사용하지 않는다.
 
+## 현재 구현 튜닝값 (2026-07-20)
+
+현재 데모/디버깅 기준값은 `src/jarvis/gaze/config.py`가 단일 기준이다.
+
+| 항목 | 현재값 | 의미 |
+| --- | ---: | --- |
+| `max_eye_offset_deg` | `45.0` | 홍채 상대 위치 `-1..1`을 눈 회전각으로 환산할 때의 최대 각도 |
+| `head_yaw_weight` | `0.25` | head yaw가 최종 gaze yaw에 들어가는 비중 |
+| `head_pitch_weight` | `0.40` | head pitch가 최종 gaze pitch에 들어가는 비중 |
+| `horizontal_axis_sign` | `-1.0` | 카메라 좌우/사용자 좌우 방향 보정 |
+| `head_only_confidence_scale` | `0.45` | 눈을 못 쓸 때 head-only gaze confidence 배율 |
+| `smoothing_window_frames` | `8` | confidence 가중 이동 평균에 쓰는 최근 프레임 수 |
+| `ema_min_alpha` / `ema_max_alpha` | `0.15` / `0.65` | 낮은/높은 confidence 프레임의 EMA 반영률 |
+| `blink_hold_ms` | `300` | 짧은 눈 감김 동안 마지막 안정 gaze 유지 시간 |
+| `blink_recovery_hold_ms` | `150` | 눈을 다시 뜬 직후 홍채 landmark 안정화 hold 시간 |
+| `iris_jump_threshold` | `0.18` | 프레임 간 홍채 offset jump 감지 기준 |
+| `max_valid_eye_offset` | `0.55` | 비현실적인 눈 가장자리 홍채 offset reject 기준 |
+| `small_motion_deadzone_deg` | `5.0` | 미세한 smoothed gaze 흔들림 흡수 각도 |
+| `unknown_probability_threshold` | `0.80` | target top-1 확률이 낮을 때 `UNKNOWN` reject |
+| `unknown_max_angle_deg` | `25.0` | 가장 가까운 등록 방향과도 너무 멀 때 `UNKNOWN` reject |
+| `target_match_tolerance` | `1.10` | 등록 반경 경계값을 살짝 넘는 gaze를 허용하는 정규화 거리 상한 |
+| `registration_min_spread_deg` / `registration_max_spread_deg` | `4.0` / `8.0` | 등록 target의 각도 profile spread 하한/상한 |
+| `registration_max_area_radius_deg` | `6.0` | edge-loop target area가 과하게 커졌을 때 런타임에서 적용하는 반경 cap |
+| `target_area_scale_flex` | `0.25` | 등록 당시 대비 얼굴 scale 변화에 따라 target area 반경을 ±25%까지 유동 조정 |
+| `minimum_triangulation_baseline_mm` | `40.0` | 3D 등록 시 머리 origin 이동량 최소 기준 |
+| `minimum_triangulation_eigenvalue` | `0.0025` | 3D 등록 시 gaze ray 방향 다양성 최소 기준 |
+| `maximum_triangulation_residual_mm` | `35.0` | 3D 등록 시 ray-교차 residual RMS 상한 |
+| `minimum_triangulation_frames` | `20` | 3D 등록 시 필요한 최소 유효 ray/frame 수 |
+| `target_radius_floor_mm` | `20.0` | 3D target 허용 반경이 비현실적으로 작아지지 않도록 하는 하한 |
+| `target_minimum_angular_variance_deg` | `4.0` | 3D 반경을 각도 분산으로 바꿀 때의 최소 각도 반경 |
+
+실험 중 조정 우선순위는 다음과 같다.
+
+1. 위/아래 고개 움직임이 덜 반영되면 `head_pitch_weight`를 조정한다.
+2. 좌/우 고개 움직임이 과하거나 부족하면 `head_yaw_weight`를 조정한다.
+3. 등록 target을 보고 있는데 경계에서 자주 `UNKNOWN`이 되면 `target_match_tolerance`를 조정한다.
+4. 사용자-카메라 거리가 바뀔 때만 target이 빡빡하거나 넓어지면 `target_area_scale_flex`를 조정한다.
+5. 안 보고 있는데 target으로 빨려 들어가면 `registration_max_area_radius_deg` 또는 등록 profile 자체를 다시 확인한다.
+
 ## 기기 등록 방식
 
-기기마다 사용자가 바라봤을 때의 시선 방향 벡터를 여러 프레임에 걸쳐 계산하고, 평균 방향과 그 주변 흔들림(분산)만 저장한다(raw 프레임은 계산 후 버림).
+기기마다 사용자가 10초간 다양한 각도·자세로 바라봤을 때의 시선 방향 벡터(과
+그 원점이 되는 머리의 카메라 기준 3D 위치)를 여러 프레임에 걸쳐 모은다. 등록
+중 머리가 충분히 움직였다면(parallax) 그 광선들을 삼각측량해 물체의 실제
+3D 위치와 유효 반경을 추정하고, 그렇지 않으면(머리 이동 부족, 광선이 거의
+평행, 잔차 과다) 기존의 평균 방향 + 각도 분산 방식으로 조용히 대체한다(raw
+프레임은 두 경우 모두 계산 후 버림).
 
 ```
 {
@@ -295,11 +348,15 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
   "gaze_profile": {
     "mean_direction": [0.12,-0.04,0.99],
     "variance": 0.015
+  },
+  "position_3d": {
+    "center_mm": [180.0, -40.0, 2100.0],
+    "radius_mm": 32.0
   }
 }
 ```
 
-`mean_direction`은 단위 벡터(크기 1)이므로 분산은 방향 벡터 하나의 흔들림 정도(각도 분산)로 축약된다.
+`mean_direction`은 단위 벡터(크기 1)이므로 분산은 방향 벡터 하나의 흔들림 정도(각도 분산)로 축약된다. `position_3d`는 삼각측량이 품질 기준을 만족했을 때만 채워지며, `radius_mm`은 물체의 실측 크기가 아니라 삼각측량 잔차에서 유도한 판정 허용 오차다 — 실제로 측정한 값이 아님을 감추지 않는다.
 
 ## Target 추정
 
@@ -319,6 +376,15 @@ Baseline:
 → Device classifier (유사도 + 등록 시 분산으로 정규화)
 → Unknown rejection (최고 유사도가 임계값 미만이면 무기기)
 ```
+
+`position_3d`가 등록된 기기는 Device classifier 단계에서 "유사도"를 다르게
+얻는다 — 등록 시 저장한 고정 방향과 비교하는 대신, 현재 머리 위치에서 그
+물체 중심까지의 방향을 매 프레임 새로 계산해 비교한다(머리가 등록 때와 다른
+곳으로 옮겨가도 정확하게 맞는다). 반경은 그 거리에서의 각도 크기
+(`atan(반경/거리)`)로 환산해 분산 대신 쓴다. 이렇게 하면 3D 등록·각도 등록
+기기가 섞여 있어도 같은 Unknown rejection 로직 하나로 처리된다. 이번
+프레임에 머리 위치를 못 구했거나(추적 손실 등) 물체에 `position_3d`가 없으면
+그 기기는 항상 기존 방향+분산 방식으로 비교된다.
 
 출력:
 

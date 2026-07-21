@@ -37,3 +37,69 @@ def test_rejects_empty_channels() -> None:
 def test_rejects_kernel_size_below_two() -> None:
     with pytest.raises(ValueError, match="kernel_size"):
         ModelConfig(feature_dim=10, kernel_size=1)
+
+
+# --- 배경 클래스 집합 ---
+
+
+def test_default_background_indices_cover_the_three_background_classes() -> None:
+    config = ModelConfig(feature_dim=10)
+    background = {config.gesture_labels[i] for i in config.background_indices}
+    assert background == {"none", "drumming_fingers", "doing_other_things"}
+
+
+def test_foreground_indices_are_the_actionable_gestures() -> None:
+    config = ModelConfig(feature_dim=10)
+    foreground = {config.gesture_labels[i] for i in config.foreground_indices}
+    assert foreground == {
+        "rotate_clockwise",
+        "rotate_counter_clockwise",
+        "slide_two_fingers_up",
+        "slide_two_fingers_down",
+        "slide_two_fingers_left",
+        "slide_two_fingers_right",
+        "stop_sign",
+    }
+
+
+def test_background_and_foreground_indices_partition_the_labels() -> None:
+    config = ModelConfig(feature_dim=10)
+    combined = set(config.background_indices) | set(config.foreground_indices)
+    assert combined == set(range(len(config.gesture_labels)))
+    assert not set(config.background_indices) & set(config.foreground_indices)
+
+
+def test_representative_background_is_index_zero() -> None:
+    config = ModelConfig(feature_dim=10)
+    assert config.background_indices[0] == 0
+
+
+def test_rejects_background_label_that_is_not_a_known_label() -> None:
+    """라벨을 개명하고 배경 집합을 안 고치면 그 동작이 조용히 전경이 되는 것을 막는다."""
+    with pytest.raises(ValueError, match="unknown label"):
+        ModelConfig(feature_dim=10, background_labels=frozenset({"none", "typo_gesture"}))
+
+
+def test_rejects_when_first_label_is_not_background() -> None:
+    with pytest.raises(ValueError, match="background label"):
+        ModelConfig(
+            feature_dim=10,
+            gesture_labels=("rotate_clockwise", "none"),
+            background_labels=frozenset({"none"}),
+        )
+
+
+def test_rejects_when_every_label_is_background() -> None:
+    with pytest.raises(ValueError, match="non-background"):
+        ModelConfig(
+            feature_dim=10,
+            gesture_labels=("none", "drumming_fingers"),
+            background_labels=frozenset({"none", "drumming_fingers"}),
+        )
+
+
+def test_reduced_label_sets_may_reuse_the_default_background_set() -> None:
+    """축소된 label 튜플(테스트·실험)에서 없는 배경 이름은 무시된다."""
+    config = ModelConfig(feature_dim=10, gesture_labels=("none", "rotate_clockwise"))
+    assert config.background_indices == (0,)
+    assert config.foreground_indices == (1,)

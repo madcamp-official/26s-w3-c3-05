@@ -50,19 +50,63 @@ class TrainingConfig:
     weight_decay: float = 1e-4
     """AdamW weight decay."""
 
+    lr_min_factor: float = 0.01
+    """코사인 학습률 스케줄의 최솟값을 `learning_rate`에 대한 비율로 정한다(2026-07-20
+    추가). 고정 LR로는 val macro-F1이 수렴 없이 진동만 하는 패턴이 관찰됐다
+    (documents/decisions.md 참조) — 매 epoch이 끝날 때마다
+    `CosineAnnealingLR(T_max=실제 epoch 상한)`로 `learning_rate` -> `learning_rate *
+    lr_min_factor`까지 감쇠시킨다. 1.0이면 감쇠 없음(상수 LR)과 동일하다."""
+
     max_epochs: int = 100
     """최대 epoch 수(early stopping으로 더 일찍 끝날 수 있음)."""
 
     early_stopping_patience: int = 10
     """검증 macro-F1이 이 epoch 수만큼 개선되지 않으면 학습을 멈춘다."""
 
+    # --- 웹캠 파인튜닝 pooled split (2026-07-21) ---
+    webcam_val_fraction: float = 0.1
+    """pooled 파인튜닝에서 **클립 단위 무작위** val로 뗄 비율.
+
+    `--stage finetune`에 `--train-persons`/`--val-persons`를 주지 않으면 pooled 모드로,
+    모든 `webcam/*` 클립을 사람 구분 없이 합쳐 이 비율만큼 무작위로 val에 뗀다
+    (나머지는 train). **person-split과 달리 같은 사람이 train·val 양쪽에 들어갈 수
+    있어 val 지표가 낙관적으로 편향된다** — "고정 사용자 대상" 목표에서만 쓰고,
+    early-stopping·상대비교 용도로만 해석한다(2026-07-21 결정: 팀 데모용, 새 사용자
+    일반화는 별도 주장하지 않음). person 인자를 주면 종전 person-split이 유지된다."""
+
+    webcam_split_seed: int = 0
+    """pooled 파인튜닝 클립 split의 난수 시드. 고정해 실행마다 같은 train/val 분할을 재현한다."""
+
     # --- Loss (documents/decisions.md 2026-07-19, 학습 파이프라인 인터뷰 결정) ---
     phase_loss_weight: float = 0.3
     """gesture loss 대비 phase loss 가중치. phase 라벨이 휴리스틱(노이즈 있음)이라 낮게 둔다."""
 
+    background_class_weight_scale: float = 1.0
+    """배경 클래스(`DEFAULT_BACKGROUND_LABELS`) 가중치에 곱하는 배수(2026-07-20 추가).
+
+    `compute_class_weights`는 9개 클래스 각각에 동등한 총 loss 기여를 주므로,
+    배경이 3개로 나뉘어 있으면 **배경 : 전경 = 3 : 6 = 1 : 2**가 된다. 배경을 하나로
+    합쳐 세는 것(1 : 6)에 비해 배경이 3배 강조된 셈인데, 이는 의도한 설계가 아니라
+    "학습은 세분화, 평가는 병합"(`collapse_background_probabilities`) 구조에서
+    자동으로 따라온 부작용이다.
+
+    오탐(배경을 제스처로 오인)을 줄이는 방향이라 유리할 수 있어 기본값은 1.0으로
+    두어 **기존 실험과의 연속성을 유지**하되, 이제 그 강조가 암묵적이지 않고 이
+    필드로 드러난다. `1/배경 클래스 수`(현재 3개이므로 약 0.333)로 두면 배경을 한
+    클래스로 합쳐 가중치를 계산한 것과 같은 1 : 6이 된다."""
+
     # --- Augmentation ---
-    flip_probability: float = 0.5
-    """샘플마다 좌우반전(+라벨 스왑)을 적용할 확률."""
+    flip_probability: float = 0.0
+    """샘플마다 좌우반전(+라벨 스왑)을 적용할 확률. 기본 0=끔(2026-07-21 A/B로 결정).
+
+    좌우반전은 slide_left↔right처럼 순수 in-plane 이동에는 기하학적으로 정확한
+    augmentation이지만, 회전(rotate_clockwise↔counter)에는 해가 된다. Jester
+    "Turning Hand"는 팔뚝축(out-of-plane) 회전이라 2D 좌우반전이 유효한 반대 회전을
+    만들지 못하는데도 라벨만 cw→ccw로 스왑해, 경계가 흐려진 '가짜 반대회전' 샘플로
+    학습시킨다. A/B 실측(10클래스, 동일 조건): flip 끄면 회전 F1 +0.033/+0.031,
+    상호혼동 3,465→3,034(-12%), 전체 배경합산 macro-F1 0.8196→0.8291. slide up/left가
+    소폭(-0.01) 내렸지만 순이득이 커 끈다. (더 정교하게는 회전 클립만 flip 제외하는
+    선택이 있으나, 그건 별도 검증이 필요해 지금은 전면 off로 둔다.)"""
 
     time_warp_probability: float = 0.5
     """샘플마다 시간축 속도 변형을 적용할 확률."""
@@ -99,12 +143,21 @@ class TrainingConfig:
             raise ValueError("learning_rate must be finite and positive")
         if not math.isfinite(self.weight_decay) or self.weight_decay < 0.0:
             raise ValueError("weight_decay must be finite and non-negative")
+        if not math.isfinite(self.lr_min_factor) or not (0.0 <= self.lr_min_factor <= 1.0):
+            raise ValueError("lr_min_factor must be finite and within [0, 1]")
         if self.max_epochs < 1:
             raise ValueError("max_epochs must be at least 1")
         if self.early_stopping_patience < 1:
             raise ValueError("early_stopping_patience must be at least 1")
+        if not math.isfinite(self.webcam_val_fraction) or not (0.0 < self.webcam_val_fraction < 1.0):
+            raise ValueError("webcam_val_fraction must be within (0, 1)")
         if not math.isfinite(self.phase_loss_weight) or self.phase_loss_weight < 0.0:
             raise ValueError("phase_loss_weight must be finite and non-negative")
+        if (
+            not math.isfinite(self.background_class_weight_scale)
+            or self.background_class_weight_scale <= 0.0
+        ):
+            raise ValueError("background_class_weight_scale must be finite and positive")
         for name, value in (
             ("flip_probability", self.flip_probability),
             ("time_warp_probability", self.time_warp_probability),

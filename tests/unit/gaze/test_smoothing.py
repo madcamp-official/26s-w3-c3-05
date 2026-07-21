@@ -71,6 +71,15 @@ def test_long_eye_closed_interval_expires_hold() -> None:
     assert smoother.hold(1_100, 100) is None
 
 
+def test_short_tracking_loss_holds_last_smoothed_gaze_longer_than_blink() -> None:
+    smoother = GazeSmoother(GazeConfig(blink_hold_ms=20, tracking_loss_hold_ms=200))
+    original = smoother.update(_vector(np.array([0.0, 0.0, 1.0]), frame_id=0))
+    held = smoother.hold_tracking_loss(1_100, 100)
+
+    assert original is not None and held is not None
+    np.testing.assert_allclose(held.direction, original.direction)
+
+
 def test_small_motion_deadzone_ignores_tiny_changes() -> None:
     smoother = GazeSmoother(GazeConfig(smoothing_window_frames=1, small_motion_deadzone_deg=5.0))
     first = smoother.update(_vector(np.array([0.0, 0.0, 1.0]), frame_id=0))

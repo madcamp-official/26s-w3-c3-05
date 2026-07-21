@@ -23,13 +23,22 @@ def test_every_default_gesture_label_is_reachable() -> None:
 
 
 def test_confirmed_mappings() -> None:
-    assert JESTER_TO_OUR_LABEL["Swiping Up"] == "swipe_up"
-    assert JESTER_TO_OUR_LABEL["Swiping Down"] == "swipe_down"
-    assert JESTER_TO_OUR_LABEL["Swiping Left"] == "swipe_left"
-    assert JESTER_TO_OUR_LABEL["Swiping Right"] == "swipe_right"
+    assert JESTER_TO_OUR_LABEL["No gesture"] == "none"
     assert JESTER_TO_OUR_LABEL["Turning Hand Clockwise"] == "rotate_clockwise"
     assert JESTER_TO_OUR_LABEL["Turning Hand Counterclockwise"] == "rotate_counter_clockwise"
-    assert JESTER_TO_OUR_LABEL["No gesture"] == "none"
+    assert JESTER_TO_OUR_LABEL["Sliding Two Fingers Up"] == "slide_two_fingers_up"
+    assert JESTER_TO_OUR_LABEL["Sliding Two Fingers Down"] == "slide_two_fingers_down"
+    assert JESTER_TO_OUR_LABEL["Sliding Two Fingers Left"] == "slide_two_fingers_left"
+    assert JESTER_TO_OUR_LABEL["Sliding Two Fingers Right"] == "slide_two_fingers_right"
+    assert JESTER_TO_OUR_LABEL["Drumming Fingers"] == "drumming_fingers"
+    assert JESTER_TO_OUR_LABEL["Doing other things"] == "doing_other_things"
+
+
+def test_excluded_mappings_are_none() -> None:
+    # 2026-07-20: swipe를 포함한 17개는 이번 라운드에서 제외(학습 대상 아님).
+    # (Stop Sign은 2026-07-20 stop_sign 전경 제스처로 추가돼 제외 목록에서 빠졌다.)
+    for jester_label in ("Swiping Up", "Swiping Down", "Swiping Left", "Swiping Right"):
+        assert JESTER_TO_OUR_LABEL[jester_label] is None
 
 
 def test_flip_swap_is_symmetric() -> None:
@@ -38,8 +47,8 @@ def test_flip_swap_is_symmetric() -> None:
 
 
 def test_swap_label_for_flip_round_trips() -> None:
-    assert swap_label_for_flip("swipe_left") == "swipe_right"
-    assert swap_label_for_flip("swipe_right") == "swipe_left"
+    assert swap_label_for_flip("slide_two_fingers_left") == "slide_two_fingers_right"
+    assert swap_label_for_flip("slide_two_fingers_right") == "slide_two_fingers_left"
     assert swap_label_for_flip("rotate_clockwise") == "rotate_counter_clockwise"
     assert swap_label_for_flip("rotate_counter_clockwise") == "rotate_clockwise"
 
@@ -49,6 +58,7 @@ def test_swap_label_for_flip_leaves_unmapped_label_unchanged() -> None:
 
 
 def test_validate_mapping_rejects_unreachable_label(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(JESTER_TO_OUR_LABEL, "No gesture", None)
+    # 출처가 하나뿐인 라벨을 골라 끊는다.
+    monkeypatch.setitem(JESTER_TO_OUR_LABEL, "Turning Hand Clockwise", None)
     with pytest.raises(ValueError, match="no Jester source"):
         validate_mapping()

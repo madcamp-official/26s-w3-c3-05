@@ -24,8 +24,14 @@ except ImportError as exc:  # pragma: no cover - only hit without the `ml`/`trai
 from training.dataset import IGNORE_INDEX
 
 
-def compute_class_weights(gesture_indices: list[int], num_classes: int) -> "torch.Tensor":
+def compute_class_weights(class_counts: dict[int, int] | list[int], num_classes: int) -> "torch.Tensor":
     """클래스 빈도 역수로 cross-entropy 가중치를 만든다.
+
+    `class_counts`는 `{클래스 index: 빈도}` 매핑이거나, 셀 대상 index들의 리스트다.
+    **빈도는 "loss에 실제로 기여하는 단위"로 세야 한다** — cross-entropy가 프레임마다
+    걸리므로 클립 수가 아니라 유효 프레임 수다(2026-07-20 수정,
+    `ClipDataset.valid_frames_per_label` 참조). 클립 수로 세면 클립당 유효 프레임
+    수의 클래스별 편차가 그대로 가중치 왜곡이 된다.
 
     이 학습셋에 아예 등장하지 않는 클래스(빈도 0)는 가중치 0으로 둔다 — 등장하지
     않는 클래스에 무한대 가중치를 지어내지 않는다. 가중치 합의 평균이 1이 되도록
@@ -33,7 +39,7 @@ def compute_class_weights(gesture_indices: list[int], num_classes: int) -> "torc
     """
     if num_classes < 1:
         raise ValueError("num_classes must be at least 1")
-    counts = Counter(gesture_indices)
+    counts = class_counts if isinstance(class_counts, dict) else Counter(class_counts)
     weights = torch.zeros(num_classes, dtype=torch.float32)
     for cls in range(num_classes):
         count = counts.get(cls, 0)

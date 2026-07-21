@@ -29,6 +29,31 @@ def test_compute_class_weights_all_absent_is_all_zero() -> None:
     assert torch.all(weights == 0.0)
 
 
+def test_compute_class_weights_accepts_count_mapping() -> None:
+    """빈도를 직접 넘기는 형태 — 클립 수가 아니라 유효 프레임 수로 세기 위함.
+
+    2026-07-20: cross-entropy가 프레임마다 걸리므로 빈도도 프레임 단위여야 한다
+    (`ClipDataset.valid_frames_per_label` 참조). index 리스트를 세는 형태와 같은
+    결과를 내야 한다.
+    """
+    from_list = compute_class_weights([0, 0, 1], num_classes=3)
+    from_mapping = compute_class_weights({0: 2, 1: 1}, num_classes=3)
+    assert torch.allclose(from_list, from_mapping)
+
+
+def test_compute_class_weights_equalizes_loss_share_across_classes() -> None:
+    """빈도 역수 가중치는 클래스별 총 loss 기여(가중치 x 빈도)를 같게 만든다.
+
+    train.py가 이 성질에 기대어 "각 클래스 균등"을 얻으므로, 빈도를 어떤 단위로
+    세느냐가 곧 어떤 단위가 균등해지느냐를 결정한다.
+    """
+    counts = {0: 100, 1: 400, 2: 25}
+    weights = compute_class_weights(counts, num_classes=3)
+    shares = [float(weights[cls]) * count for cls, count in counts.items()]
+    assert shares[0] == pytest.approx(shares[1])
+    assert shares[1] == pytest.approx(shares[2])
+
+
 def test_gesture_phase_loss_ignores_padded_frames() -> None:
     num_classes = 3
     weights = torch.ones(num_classes)
