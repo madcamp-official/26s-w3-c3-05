@@ -358,6 +358,44 @@ def _run_verify_target(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_ab_residual(args: argparse.Namespace) -> int:
+    """등록 시 저장된 1단계 원시 샘플로 Ridge residual A/B를 오프라인 평가한다.
+
+    leave-one-yaw-bin-out으로 raw / 현재 bin 보정표 / Ridge의 held-out 오차를
+    비교한다. 한 파일(한 target) 데이터는 그 물체 주변에서만 유효하다 —
+    전역 보정 판단은 여러 방향의 target 파일을 각각 평가해서 종합한다.
+    """
+    import numpy as np
+
+    from jarvis.gaze.config import GazeConfig
+    from jarvis.gaze.feature_profile import TargetFeatureSample
+    from jarvis.gaze.ridge_residual import evaluate_leave_one_bin_out
+
+    payload = json.loads(Path(args.samples).read_text(encoding="utf-8"))
+    samples = [
+        TargetFeatureSample.from_array(np.asarray(row, dtype=np.float64))
+        for row in payload["samples"]
+    ]
+    center = (float(payload["center_yaw_pitch"][0]), float(payload["center_yaw_pitch"][1]))
+    report = evaluate_leave_one_bin_out(
+        samples,
+        center,
+        GazeConfig(),
+        ridge_lambda=args.ridge_lambda,
+    )
+    print(f"target={payload.get('target_id')} samples={len(samples)} lambda={args.ridge_lambda}")
+    print("bin         n    raw      bin-table  ridge   (held-out median error, deg)")
+    for item in report.bins:
+        table = f"{item.bin_table_error_deg:6.2f}" if item.bin_table_error_deg is not None else "  n/a "
+        print(
+            f"{item.label:11s} {item.frame_count:4d} {item.raw_error_deg:6.2f}   "
+            f"{table}   {item.ridge_error_deg:6.2f}"
+        )
+    for line in report.verdict_lines:
+        print(f"- {line}")
+    return 0
+
+
 def _run_evaluate(args: argparse.Namespace) -> int:
     frames = _load_labeled_csv(Path(args.input))
     result = compute_target_selection_accuracy(frames, args.dataset_id, args.conditions)
@@ -425,6 +463,14 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--output", help="save this run's JSON here (for a later --compare)")
     verify.add_argument("--compare", help="earlier run's JSON to diff against (collection bug vs drift)")
     verify.set_defaults(handler=_run_verify_target)
+
+    ab_residual = subparsers.add_parser(
+        "ab-residual",
+        help="offline leave-one-bin-out A/B: raw vs bin table vs Ridge residual",
+    )
+    ab_residual.add_argument("samples", help="phase-1 raw sample JSON exported at registration")
+    ab_residual.add_argument("--ridge-lambda", type=float, default=1.0)
+    ab_residual.set_defaults(handler=_run_ab_residual)
 
     evaluate = subparsers.add_parser("evaluate", help="measure Target Selection Accuracy")
     evaluate.add_argument("--input", required=True)

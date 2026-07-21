@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import math
+from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 import numpy as np
 
@@ -29,6 +32,107 @@ class RegistrationPhase(StrEnum):
     COMPLETE = "COMPLETE"
 
 
+@dataclass(frozen=True, slots=True)
+class CoverageCondition:
+    """1단계 자세·거리 coverage 한 구간의 진행 상황."""
+
+    key: str
+    label: str
+    count: int
+    required: int
+
+    @property
+    def met(self) -> bool:
+        return self.count >= self.required
+
+
+class PoseCoverageTracker:
+    """1단계(중앙 응시 + 자세 스윕)의 조건 충족식 coverage 추적.
+
+    시간제(20초) 등록은 스윕이 한쪽에 치우쳐도 완료돼, 실제로 정면·왼쪽
+    보정점 없이 오른쪽 2개 bin만 저장된 등록이 발생했다(2026-07-22 실측).
+    이 추적기는 정면/좌/우/상/하/근/원 각 구간의 유효 프레임 수를 세고,
+    전부 최소 프레임을 채워야 완료로 판정한다.
+
+    near/far는 절대 face scale이 아니라 '정면 구간에서 관측한 기준 scale'
+    대비 배율로 판정한다 — 기준이 쌓이기 전(정면 10프레임 미만)에는 세지
+    않는다(지어내지 않는다). 정면을 먼저 수집하도록 안내가 유도한다.
+    """
+
+    _MINIMUM_REFERENCE_FRAMES = 10
+
+    def __init__(self, config: GazeConfig, minimum_frames: int) -> None:
+        if minimum_frames <= 0:
+            raise ValueError("minimum_frames must be positive")
+        self._config = config
+        self._minimum_frames = minimum_frames
+        self._counts: dict[str, int] = {
+            key: 0 for key in ("front", "left", "right", "up", "down", "near", "far")
+        }
+        self._front_scales: list[float] = []
+
+    @property
+    def reference_face_scale(self) -> float | None:
+        if len(self._front_scales) < self._MINIMUM_REFERENCE_FRAMES:
+            return None
+        return float(np.median(np.asarray(self._front_scales, dtype=np.float64)))
+
+    def add(self, sample: TargetFeatureSample) -> None:
+        config = self._config
+        if abs(sample.head_yaw) < config.coverage_yaw_front_threshold_deg:
+            self._counts["front"] += 1
+            self._front_scales.append(sample.face_scale)
+        if sample.head_yaw <= -config.coverage_yaw_side_threshold_deg:
+            self._counts["left"] += 1
+        if sample.head_yaw >= config.coverage_yaw_side_threshold_deg:
+            self._counts["right"] += 1
+        if sample.head_pitch >= config.coverage_pitch_threshold_deg:
+            self._counts["up"] += 1
+        if sample.head_pitch <= -config.coverage_pitch_threshold_deg:
+            self._counts["down"] += 1
+        reference = self.reference_face_scale
+        if reference is not None and reference > 0.0:
+            ratio = sample.face_scale / reference
+            if ratio >= config.coverage_scale_near_ratio:
+                self._counts["near"] += 1
+            if ratio <= config.coverage_scale_far_ratio:
+                self._counts["far"] += 1
+
+    def report(self) -> tuple[CoverageCondition, ...]:
+        labels = {
+            "front": "정면",
+            "left": "고개 왼쪽",
+            "right": "고개 오른쪽",
+            "up": "고개 위",
+            "down": "고개 아래",
+            "near": "가까이",
+            "far": "멀리",
+        }
+        return tuple(
+            CoverageCondition(
+                key=key,
+                label=labels[key],
+                count=count,
+                required=self._minimum_frames,
+            )
+            for key, count in self._counts.items()
+        )
+
+    def complete(self) -> bool:
+        return all(condition.met for condition in self.report())
+
+    def missing_labels(self) -> list[str]:
+        return [condition.label for condition in self.report() if not condition.met]
+
+    def progress(self) -> float:
+        """조건별 충족률 평균(0..1) — UI 진행 막대에 그대로 쓸 수 있다."""
+        report = self.report()
+        return float(
+            sum(min(1.0, condition.count / condition.required) for condition in report)
+            / len(report)
+        )
+
+
 class TargetRegistrationSession:
     def __init__(
         self,
@@ -44,11 +148,15 @@ class TargetRegistrationSession:
         minimum_confidence: float = 0.35,
         maximum_jump_deg: float = 18.0,
         config: GazeConfig = GazeConfig(),
+        coverage_min_frames: int = 0,
+        raw_sample_dir: str | Path | None = None,
     ) -> None:
         if center_duration_ms <= 0 or boundary_duration_ms <= 0 or minimum_valid_frames <= 0:
             raise ValueError("duration and frame count must be positive")
         if minimum_boundary_frames is not None and minimum_boundary_frames <= 0:
             raise ValueError("minimum boundary frame count must be positive")
+        if coverage_min_frames < 0:
+            raise ValueError("coverage_min_frames must be non-negative")
         self.target_id, self.name = target_id, name
         self.device_type, self.device_id = device_type, device_id
         self.center_duration_ms = center_duration_ms
@@ -72,6 +180,11 @@ class TargetRegistrationSession:
         self.rejected_low_confidence = 0
         self.rejected_jump = 0
         self.last_rejection_reason: str | None = None
+        # coverage_min_frames=0이면 기존 시간제 등록 그대로다(하위 호환).
+        self.coverage: PoseCoverageTracker | None = (
+            PoseCoverageTracker(config, coverage_min_frames) if coverage_min_frames > 0 else None
+        )
+        self._raw_sample_dir = Path(raw_sample_dir) if raw_sample_dir is not None else None
 
     @property
     def valid_frame_count(self) -> int:
@@ -123,6 +236,9 @@ class TargetRegistrationSession:
         duration = self.phase_duration_ms()
         time_progress = min(1.0, self.phase_elapsed_ms(timestamp_ms) / duration)
         if self.phase == RegistrationPhase.CENTER:
+            if self.coverage is not None:
+                # 조건 충족식 등록: 진행률은 시간이 아니라 coverage 충족률이다.
+                return self.coverage.progress()
             frame_progress = min(1.0, self.center_valid_frame_count / self.minimum_valid_frames)
         else:
             frame_progress = min(
@@ -181,6 +297,8 @@ class TargetRegistrationSession:
                 self._center_face_scales.append(face_scale)
             if feature_sample is not None:
                 self._center_feature_samples.append(feature_sample)
+                if self.coverage is not None:
+                    self.coverage.add(feature_sample)
         elif feature_sample is not None:
             self._boundary_feature_samples.append(feature_sample)
         self._advance_phase_if_ready(gaze.timestamp_ms)
@@ -197,6 +315,10 @@ class TargetRegistrationSession:
                 "not enough valid center frames: "
                 f"{self.center_valid_frame_count}/{self.minimum_valid_frames}"
             )
+        if self.coverage is not None and not self.coverage.complete():
+            raise ValueError(
+                "pose coverage incomplete: " + ", ".join(self.coverage.missing_labels())
+            )
         self.phase = RegistrationPhase.BOUNDARY
         self.phase_started_at_ms = timestamp_ms
 
@@ -204,6 +326,14 @@ class TargetRegistrationSession:
         if self.phase_started_at_ms is None:
             return
         elapsed_ms = self.phase_elapsed_ms(timestamp_ms)
+        if self.phase == RegistrationPhase.CENTER and self.coverage is not None:
+            # 조건 충족식: 시간과 무관하게 coverage가 다 차면 2단계로 넘어간다.
+            if (
+                self.coverage.complete()
+                and self.center_valid_frame_count >= self.minimum_valid_frames
+            ):
+                self.start_boundary(timestamp_ms)
+            return
         if (
             self.phase == RegistrationPhase.CENTER
             and elapsed_ms >= self.center_duration_ms
@@ -224,6 +354,12 @@ class TargetRegistrationSession:
             raise ValueError(
                 "not enough valid center frames: "
                 f"{self.center_valid_frame_count}/{self.minimum_valid_frames}"
+            )
+        if self.coverage is not None and not self.coverage.complete():
+            # 불완전한 coverage는 저장하지 않는다 — 오른쪽 bin 2개만 저장된
+            # 등록(2026-07-22)처럼 편향된 보정표를 만들지 않기 위함이다.
+            raise ValueError(
+                "pose coverage incomplete: " + ", ".join(self.coverage.missing_labels())
             )
         if self.boundary_valid_frame_count < self.minimum_boundary_frames:
             raise ValueError(
@@ -283,6 +419,7 @@ class TargetRegistrationSession:
             minimum_bin_samples=self.config.pose_correction_min_bin_samples,
             maximum_offset_deg=self.config.pose_correction_max_offset_deg,
         )
+        self._export_raw_samples((float(center[0]), float(center[1])), reference_head_yaw)
         return TargetRecord(
             target_id=self.target_id,
             name=self.name,
@@ -300,6 +437,45 @@ class TargetRegistrationSession:
             area_profile=area_profile,
             pose_correction=pose_correction,
         )
+    def _export_raw_samples(
+        self, center_yaw_pitch: tuple[float, float], reference_head_yaw: float | None
+    ) -> None:
+        """1단계 중앙 응시 원시 샘플을 JSON으로 남긴다(오프라인 A/B 학습용).
+
+        `raw_sample_dir`가 없으면 아무것도 하지 않는다. 파일명은 세션 시작
+        타임스탬프로 구분해 같은 target의 재등록 이력이 서로 덮어쓰지 않는다.
+        """
+        if self._raw_sample_dir is None:
+            return
+        self._raw_sample_dir.mkdir(parents=True, exist_ok=True)
+        path = self._raw_sample_dir / (
+            f"{self.target_id}_phase1_{self.started_at_ms or 0}.json"
+        )
+        payload = {
+            "target_id": self.target_id,
+            "name": self.name,
+            "started_at_ms": self.started_at_ms,
+            "center_yaw_pitch": list(center_yaw_pitch),
+            "reference_head_yaw_deg": reference_head_yaw,
+            "feature_names": [
+                "gaze_yaw",
+                "gaze_pitch",
+                "head_yaw",
+                "head_pitch",
+                "head_roll",
+                "face_scale",
+                "face_center_x",
+                "face_center_y",
+            ],
+            "samples": [
+                [float(value) for value in sample.as_array()]
+                for sample in self._center_feature_samples
+            ],
+        }
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
     def diagnostic_summary(self) -> str:
         """Human-readable counts explaining why registration frames were rejected."""
         return (
@@ -311,4 +487,9 @@ class TargetRegistrationSession:
             f"tracking_lost={self.rejected_tracking_lost}, "
             f"closed_eyes={self.rejected_closed_eyes}, "
             f"low_conf={self.rejected_low_confidence}, jump={self.rejected_jump}"
+            + (
+                f", coverage_missing=[{', '.join(self.coverage.missing_labels())}]"
+                if self.coverage is not None and not self.coverage.complete()
+                else ""
+            )
         )

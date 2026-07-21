@@ -215,6 +215,29 @@ class GazeConfig:
     """한 bin의 gaze 보정 오프셋 상한(도) — 오염된 등록이 시선을 원거리로
     순간이동시키지 않도록 막는다. 실측 편향은 head yaw 35도에서 약 4~8도였다."""
 
+    registration_coverage_min_frames: int = 30
+    """등록 1단계 자세·거리 coverage 조건별 최소 유효 프레임 수.
+
+    시간제(20초) 등록은 스윕이 한쪽에 치우쳐도 완료돼, 실제로 보정점이
+    오른쪽 2개뿐인 등록이 저장됐다(2026-07-22 실측). 조건 충족식 등록은
+    정면/좌/우/상/하/근/원 각 구간이 이 프레임 수를 채울 때까지 1단계를
+    끝내지 않는다."""
+
+    coverage_yaw_front_threshold_deg: float = 10.0
+    """|head yaw|가 이 값 미만이면 '정면' coverage 구간으로 센다."""
+
+    coverage_yaw_side_threshold_deg: float = 20.0
+    """head yaw가 ±이 값을 넘으면 '좌/우' coverage 구간으로 센다."""
+
+    coverage_pitch_threshold_deg: float = 12.0
+    """head pitch가 ±이 값을 넘으면 '상/하' coverage 구간으로 센다."""
+
+    coverage_scale_near_ratio: float = 1.15
+    """정면 기준 face scale 대비 이 배율 이상이면 '가까이' 구간으로 센다."""
+
+    coverage_scale_far_ratio: float = 0.87
+    """정면 기준 face scale 대비 이 배율 이하면 '멀리' 구간으로 센다."""
+
     target_settle_alignment_weight: float = 0.55
     """Overlap bonus for a target in the final settling direction of the iris."""
 
@@ -244,6 +267,19 @@ class GazeConfig:
             or self.candidate_grace_ms < 0
         ):
             raise ValueError("Gaze timing thresholds are invalid")
+        if self.registration_coverage_min_frames < 0:
+            raise ValueError("registration_coverage_min_frames must be non-negative")
+        if not (
+            0.0
+            < self.coverage_yaw_front_threshold_deg
+            <= self.coverage_yaw_side_threshold_deg
+            <= 90.0
+        ):
+            raise ValueError("coverage yaw thresholds must satisfy 0 < front <= side <= 90")
+        if not 0.0 < self.coverage_pitch_threshold_deg <= 90.0:
+            raise ValueError("coverage_pitch_threshold_deg must be within (0, 90]")
+        if not 0.0 < self.coverage_scale_far_ratio < 1.0 < self.coverage_scale_near_ratio:
+            raise ValueError("coverage scale ratios must satisfy 0 < far < 1 < near")
         if self.blink_hold_ms < 0 or self.blink_recovery_hold_ms < 0:
             raise ValueError("blink hold thresholds must be non-negative")
         if self.blink_pose_recovery_frames <= 0:

@@ -317,6 +317,26 @@ bin별로 "직후부터 OUT(등록 수집 문제)"과 "직후엔 IN이었다가 
 (`target_verification.py`). 판정은 런타임과 동일한 rescue 전용(min) 거리로
 계산하며, 표본 8프레임 미만 bin은 결론에서 제외한다.
 
+**등록 1단계는 시간제가 아니라 조건 충족식이다 (2026-07-22).** 시간제(20초)
+등록은 스윕이 한쪽에 치우쳐도 완료돼, 실제로 오른쪽 bin 2개만 저장된 등록이
+발생했다. `PoseCoverageTracker`(target_registration.py)가 정면/좌/우/상/하/
+근/원 7개 구간의 유효 프레임을 세고, 전 구간이
+`registration_coverage_min_frames`(기본 30)를 채워야 2단계로 넘어가며
+`finalize()`도 미달이면 거부한다. near/far는 정면 기준 face scale 대비
+배율(1.15x/0.87x)로 판정한다. 앱 상태줄이 구간별 `count/required ✓` 현황과
+부족 구간을 실시간 안내한다. 완료 시 1단계 원시 샘플이
+`data/calibration/raw_samples/<target>_phase1_<ts>.json`으로 저장된다.
+
+**Ridge residual 보정은 오프라인 A/B 전용이며 런타임에 연결되지 않았다.**
+`jarvis-gaze ab-residual <raw_samples.json>`이 leave-one-yaw-bin-out으로
+raw / 현재 bin 보정표 / Ridge(자세·문맥 6D → delta) held-out 오차를 비교한다.
+raw gaze는 입력에서 의도적으로 제외한다 — 단일 target 데이터에서 gaze를
+입력에 넣으면 정답이 `delta = center − gaze`라서 모델이 항상 물체 중심만
+출력하는 상수 예측기로 붕괴하고 leave-bin-out으로도 잡히지 않는다(단위
+테스트로 확인). residual MLP·Ridge는 2026-07-21에 제거된 이력이 있고 자세별
+편향이 세션 간 요동하므로(위), **같은 캡처 안의 A/B 통과만으로는 활성화하지
+않고 다른 세션 데이터로 재확인한 뒤 결정한다.**
+
 ### Labeled debugging sessions (2026-07-22)
 
 정확도 디버깅이 매번 "raw CSV를 밖에서 재합성"하는 일이 되지 않도록, 모니터링
@@ -386,6 +406,10 @@ bin별로 "직후부터 OUT(등록 수집 문제)"과 "직후엔 IN이었다가 
 | `pose_correction_bin_edges_deg` | `(-30, -20, -10, 10, 20, 30)` | Head-yaw bin boundaries for the pose-conditioned gaze correction learned from phase-1 samples. |
 | `pose_correction_min_bin_samples` | `8` | Bins with fewer phase-1 samples do not produce a correction point. |
 | `pose_correction_max_offset_deg` | `10.0` | Per-bin cap on the stored gaze correction offset. Measured bias was 4~8° at head yaw 35°. |
+| `registration_coverage_min_frames` | `30` | Condition-based phase 1: every pose/scale coverage bucket must reach this many valid frames before phase 2. |
+| `coverage_yaw_front_threshold_deg` / `coverage_yaw_side_threshold_deg` | `10` / `20` | Head-yaw bounds for the front and left/right coverage buckets. |
+| `coverage_pitch_threshold_deg` | `12` | Head-pitch bound for the up/down coverage buckets. |
+| `coverage_scale_near_ratio` / `coverage_scale_far_ratio` | `1.15` / `0.87` | Near/far buckets relative to the front-bucket median face scale. |
 
 Profiles saved before `boundary_polygon` existed continue to use the legacy ellipse for compatibility. Re-register the target to collect a real hull. The debug heatmap fills and outlines the stored polygon and the target list shows its hull vertex count.
 

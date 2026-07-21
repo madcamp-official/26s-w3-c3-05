@@ -1351,11 +1351,13 @@ class MainWindow(QMainWindow):
             self._log.warn("이미 기기 등록이 진행 중입니다")
             return
         self._registration = TargetRegistrationSession(
-            target_id, name, device_type, device_id, config=self._gaze_config
+            target_id, name, device_type, device_id, config=self._gaze_config,
+            coverage_min_frames=self._gaze_config.registration_coverage_min_frames,
+            raw_sample_dir=Path("data/calibration/raw_samples"),
         )
         self._registration_phase_marker = None
         self._set_registration_controls(active=True)
-        self._registration_step.setText("1/2 중앙 응시 + 고개 스윕 · 20초")
+        self._registration_step.setText("1/2 중앙 응시 + 고개 스윕 · 조건 충족까지")
         self._registration_progress.setValue(0)
         self._registration_progress.setFormat("1/2 중앙 응시 + 고개 스윕  %p%")
         self._registration_status.setText(
@@ -1427,14 +1429,31 @@ class MainWindow(QMainWindow):
             count = self._registration.boundary_valid_frame_count
             required = self._registration.minimum_boundary_frames
             title = "REGISTRATION 2/2 - TRACE BOUNDARY"
-        if elapsed_ms >= self._registration.phase_duration_ms() and count < required:
+        coverage = self._registration.coverage
+        coverage_active = phase == RegistrationPhase.CENTER and coverage is not None
+        if (
+            not coverage_active
+            and elapsed_ms >= self._registration.phase_duration_ms()
+            and count < required
+        ):
             label = "시간은 완료됐지만 유효 프레임이 부족합니다. 안내 자세를 유지해 주세요."
             video_label = "HOLD POSITION - NEED MORE VALID FRAMES"
-        status = (
-            f"{label}\n현재 구간 남은 시간 {remaining_s:0.1f}s · 유효 프레임 {count}/{required} · "
-            f"자세별 {self._registration.center_valid_frame_count} / 정밀 "
-            f"{self._registration.boundary_valid_frame_count}"
-        )
+        if coverage_active:
+            assert coverage is not None
+            # 조건 충족식 1단계: 시간 대신 구간별 수집 현황을 안내한다.
+            rows = "  ".join(
+                f"{item.label} {item.count}/{item.required}{'✓' if item.met else ''}"
+                for item in coverage.report()
+            )
+            missing = coverage.missing_labels()
+            hint = f"다음 구간을 채워주세요: {', '.join(missing)}" if missing else "모든 구간 완료!"
+            status = f"물체 중앙을 계속 바라보세요 — {hint}\n{rows}"
+        else:
+            status = (
+                f"{label}\n현재 구간 남은 시간 {remaining_s:0.1f}s · 유효 프레임 {count}/{required} · "
+                f"자세별 {self._registration.center_valid_frame_count} / 정밀 "
+                f"{self._registration.boundary_valid_frame_count}"
+            )
         if self._registration.last_rejection_reason is not None:
             status += f" · 현재 제외: {self._registration.last_rejection_reason}"
         self._registration_step.setText(step)
