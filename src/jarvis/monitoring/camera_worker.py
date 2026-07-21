@@ -63,12 +63,16 @@ class CameraWorker(QThread):
                 gaze_on = self._probe is not None and self._probe.available
                 hand_on = self._hand_probe is not None and self._hand_probe.available
                 if gaze_on or hand_on:
+                    import cv2
+
                     timestamp_ms = max(int((time.monotonic() - start) * 1000), last_timestamp_ms + 1)
                     last_timestamp_ms = timestamp_ms
+                    # 두 프로브가 같은 프레임을 쓰므로 BGR→RGB 변환은 여기서 한 번만 한다.
+                    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                     if gaze_on:
                         assert self._probe is not None
                         try:
-                            gaze = self._probe.process_bgr(image, timestamp_ms, frame_id)
+                            gaze = self._probe.process_rgb(rgb, timestamp_ms, frame_id)
                         except Exception as exc:  # noqa: BLE001 - a bad frame must not kill the thread
                             self.failed.emit(f"gaze 처리 오류: {exc}")
                             gaze = None
@@ -77,7 +81,7 @@ class CameraWorker(QThread):
                     if hand_on:
                         assert self._hand_probe is not None
                         try:
-                            hand = self._hand_probe.process_bgr(image, timestamp_ms, frame_id)
+                            hand = self._hand_probe.process_rgb(rgb, timestamp_ms, frame_id)
                         except Exception as exc:  # noqa: BLE001 - a bad frame must not kill the thread
                             self.failed.emit(f"hand 처리 오류: {exc}")
                             hand = None

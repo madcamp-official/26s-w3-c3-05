@@ -48,7 +48,7 @@ def test_store_persists_snapshot_as_json(tmp_path: Path) -> None:
     sample = store.add(_snapshot())
 
     assert sample["gaze_direction"] == pytest.approx(
-        [-0.1272606, 0.1368702, 0.9823804], abs=1e-3
+        [-0.1270695, 0.1472359, 0.9809052], abs=1e-3
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload[0]["head_pose_deg"]["pitch"] == -4.0
@@ -75,9 +75,9 @@ def test_format_sample_shows_vector_head_and_target(tmp_path: Path) -> None:
     rendered = format_gaze_sample(store.add(_snapshot()))
 
     assert "#1 [1f]" in rendered
-    assert "gaze=(-0.127, +0.137, +0.982)" in rendered
-    assert "raw_y/p=(-7.4, -7.9)" in rendered
-    assert "final_y/p=(-7.4, -7.9)" in rendered
+    assert "gaze=(-0.127, +0.147, +0.981)" in rendered
+    assert "raw_y/p=(-7.4, -8.5)" in rendered
+    assert "final_y/p=(-7.4, -8.5)" in rendered
     assert "head=(+3.0, -4.0, +1.0)" in rendered
     assert "판단=응시대상 없음 P=0.00" in rendered
 
@@ -91,10 +91,10 @@ def test_window_averages_multiple_smoothed_frames(tmp_path: Path) -> None:
     assert sample["window_frame_count"] == 5
     assert sample["window_duration_ms"] == 132
     assert sample["gaze_direction"] == pytest.approx(
-        [-0.1272606, 0.1368702, 0.9823804], abs=1e-3
+        [-0.1270695, 0.1472359, 0.9809052], abs=1e-3
     )
     assert sample["raw_gaze_yaw_pitch_deg"] == pytest.approx(
-        {"yaw": -7.4, "pitch": -7.9}, abs=0.1
+        {"yaw": -7.4, "pitch": -8.5}, abs=0.1
     )
     assert sample["calibration_applied"] is False
     assert sample["face_metrics"] == pytest.approx(

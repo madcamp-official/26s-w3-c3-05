@@ -294,6 +294,45 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 
 위 신호들을 합성해 얻은 시선 방향 단위 벡터만 기기 등록·Target 추정에 사용한다. 원본 신호(홍채 위치, 머리 각도)는 합성 입력으로만 쓰고 그 자체를 등록·비교에 직접 사용하지 않는다.
 
+## 현재 구현 튜닝값 (2026-07-20)
+
+현재 데모/디버깅 기준값은 `src/jarvis/gaze/config.py`가 단일 기준이다.
+
+| 항목 | 현재값 | 의미 |
+| --- | ---: | --- |
+| `max_eye_offset_deg` | `45.0` | 홍채 상대 위치 `-1..1`을 눈 회전각으로 환산할 때의 최대 각도 |
+| `head_yaw_weight` | `0.25` | head yaw가 최종 gaze yaw에 들어가는 비중 |
+| `head_pitch_weight` | `0.40` | head pitch가 최종 gaze pitch에 들어가는 비중 |
+| `horizontal_axis_sign` | `-1.0` | 카메라 좌우/사용자 좌우 방향 보정 |
+| `head_only_confidence_scale` | `0.45` | 눈을 못 쓸 때 head-only gaze confidence 배율 |
+| `smoothing_window_frames` | `8` | confidence 가중 이동 평균에 쓰는 최근 프레임 수 |
+| `ema_min_alpha` / `ema_max_alpha` | `0.15` / `0.65` | 낮은/높은 confidence 프레임의 EMA 반영률 |
+| `blink_hold_ms` | `300` | 짧은 눈 감김 동안 마지막 안정 gaze 유지 시간 |
+| `blink_recovery_hold_ms` | `150` | 눈을 다시 뜬 직후 홍채 landmark 안정화 hold 시간 |
+| `iris_jump_threshold` | `0.18` | 프레임 간 홍채 offset jump 감지 기준 |
+| `max_valid_eye_offset` | `0.55` | 비현실적인 눈 가장자리 홍채 offset reject 기준 |
+| `small_motion_deadzone_deg` | `5.0` | 미세한 smoothed gaze 흔들림 흡수 각도 |
+| `unknown_probability_threshold` | `0.80` | target top-1 확률이 낮을 때 `UNKNOWN` reject |
+| `unknown_max_angle_deg` | `25.0` | 가장 가까운 등록 방향과도 너무 멀 때 `UNKNOWN` reject |
+| `target_match_tolerance` | `1.10` | 등록 반경 경계값을 살짝 넘는 gaze를 허용하는 정규화 거리 상한 |
+| `registration_min_spread_deg` / `registration_max_spread_deg` | `4.0` / `8.0` | 등록 target의 각도 profile spread 하한/상한 |
+| `registration_max_area_radius_deg` | `6.0` | edge-loop target area가 과하게 커졌을 때 런타임에서 적용하는 반경 cap |
+| `target_area_scale_flex` | `0.25` | 등록 당시 대비 얼굴 scale 변화에 따라 target area 반경을 ±25%까지 유동 조정 |
+| `minimum_triangulation_baseline_mm` | `40.0` | 3D 등록 시 머리 origin 이동량 최소 기준 |
+| `minimum_triangulation_eigenvalue` | `0.0025` | 3D 등록 시 gaze ray 방향 다양성 최소 기준 |
+| `maximum_triangulation_residual_mm` | `35.0` | 3D 등록 시 ray-교차 residual RMS 상한 |
+| `minimum_triangulation_frames` | `20` | 3D 등록 시 필요한 최소 유효 ray/frame 수 |
+| `target_radius_floor_mm` | `20.0` | 3D target 허용 반경이 비현실적으로 작아지지 않도록 하는 하한 |
+| `target_minimum_angular_variance_deg` | `4.0` | 3D 반경을 각도 분산으로 바꿀 때의 최소 각도 반경 |
+
+실험 중 조정 우선순위는 다음과 같다.
+
+1. 위/아래 고개 움직임이 덜 반영되면 `head_pitch_weight`를 조정한다.
+2. 좌/우 고개 움직임이 과하거나 부족하면 `head_yaw_weight`를 조정한다.
+3. 등록 target을 보고 있는데 경계에서 자주 `UNKNOWN`이 되면 `target_match_tolerance`를 조정한다.
+4. 사용자-카메라 거리가 바뀔 때만 target이 빡빡하거나 넓어지면 `target_area_scale_flex`를 조정한다.
+5. 안 보고 있는데 target으로 빨려 들어가면 `registration_max_area_radius_deg` 또는 등록 profile 자체를 다시 확인한다.
+
 ## 기기 등록 방식
 
 기기마다 사용자가 10초간 다양한 각도·자세로 바라봤을 때의 시선 방향 벡터(과

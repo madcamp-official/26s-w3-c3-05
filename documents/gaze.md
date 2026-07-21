@@ -157,3 +157,88 @@ classifier의 Gaussian score·softmax·UNKNOWN 임계값 로직을 그대로 재
 `minimum_triangulation_baseline_mm=60`, `minimum_triangulation_eigenvalue=0.004`,
 `maximum_triangulation_residual_mm=35` — Day 1 통합 테스트에서 재보정 필요할 수 있음
 (config.py 필드 docstring에 근거 수치 기록).
+
+## Current Gaze Tuning Values (2026-07-20)
+
+This section records the actual values currently used by the gaze-target branch.
+The single source of truth is `src/jarvis/gaze/config.py`; README section 7 keeps a shorter summary.
+
+### Gaze vector composition
+
+| Setting | Current value | Meaning / when to adjust |
+| --- | ---: | --- |
+| `max_eye_offset_deg` | `45.0` | Converts iris offset `-1..1` into eye rotation degrees. Affects overall eye-motion sensitivity. |
+| `head_yaw_weight` | `0.25` | Weight of head yaw in final gaze yaw. Adjust when left/right head motion is too strong or too weak. |
+| `head_pitch_weight` | `0.40` | Weight of head pitch in final gaze pitch. Increase if up/down head motion is under-reflected; decrease if it dominates. |
+| `horizontal_axis_sign` | `-1.0` | Sign correction between camera/MediaPipe horizontal motion and user yaw direction. Check this if left/right is reversed. |
+| `head_only_confidence_scale` | `0.45` | Confidence multiplier when iris/eye data is unavailable and only head pose is used. |
+
+Current composition formula:
+
+```text
+eye_yaw_offset_deg   = mean_iris_x * max_eye_offset_deg
+eye_pitch_offset_deg = mean_iris_y * max_eye_offset_deg
+
+final_yaw_deg   = (head_yaw_deg * head_yaw_weight + eye_yaw_offset_deg) * horizontal_axis_sign
+final_pitch_deg =  head_pitch_deg * head_pitch_weight + eye_pitch_offset_deg
+```
+
+### Smoothing / blink / iris-jump handling
+
+| Setting | Current value | Meaning |
+| --- | ---: | --- |
+| `smoothing_window_frames` | `8` | Confidence-weighted moving average window. |
+| `ema_min_alpha` / `ema_max_alpha` | `0.15` / `0.65` | Low-confidence frames move slowly; high-confidence frames move faster. |
+| `blink_hold_ms` | `300` | Short eye-closed intervals hold the last stable gaze. |
+| `blink_recovery_hold_ms` | `150` | Brief hold after reopening eyes so iris landmarks can settle. |
+| `iris_jump_threshold` | `0.18` | Frame-to-frame iris-offset jump threshold. |
+| `max_valid_eye_offset` | `0.55` | Reject implausible eye-edge iris offsets. |
+| `tracking_loss_hold_ms` | `800` | Keep last gaze briefly during full face-landmarker dropouts. |
+| `small_motion_deadzone_deg` | `5.0` | Absorb tiny smoothed-gaze changes to reduce jitter. |
+
+Debug monitor policy: simple `iris jump` no longer freezes the vector completely; it lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames still hold the previous stable gaze.
+
+### Target matching / UNKNOWN rejection
+
+| Setting | Current value | Meaning |
+| --- | ---: | --- |
+| `unknown_probability_threshold` | `0.80` | Reject as `UNKNOWN` when top-1 target probability is too low. |
+| `unknown_max_angle_deg` | `25.0` | Reject as `UNKNOWN` when even the nearest registered direction is farther than this. |
+| `target_match_tolerance` | `1.10` | Near-boundary tolerance in normalized distance. Example: `8.5/8.0deg x1.06` is accepted; `26.1/8.0deg x3.26` is rejected. |
+| `minimum_probability` | `0.80` | Minimum probability for Gaze Lock candidate/hold. |
+| `minimum_margin` | `0.20` | Minimum top-1 vs top-2 margin for confident lock. |
+| `dwell_time_ms` | `500` | Required stable duration before lock. |
+| `target_lock_ttl_ms` | `1500` | Lock validity window while waiting for gesture. |
+
+### Registration / target profile
+
+| Setting | Current value | Meaning |
+| --- | ---: | --- |
+| `registration_min_spread_deg` | `4.0` | Minimum angular spread saved for a registered target. Prevents overly tiny target regions. |
+| `registration_max_spread_deg` | `8.0` | Maximum angular spread saved for a registered target. Prevents one target from swallowing too much space. |
+| `registration_max_area_radius_deg` | `6.0` | Runtime cap for edge-loop target area radius, even if an old JSON profile saved a larger area. |
+| `target_area_scale_flex` | `0.25` | Allows the target area radius to flex by ±25% from face-scale changes. If the user is closer than during registration, the apparent target area grows slightly; if farther, it shrinks slightly. |
+
+### 3D registration diagnostics
+
+| Setting | Current value | Meaning |
+| --- | ---: | --- |
+| `enable_3d_target_matching` | `False` | Default live matching remains angle-profile based for demo stability. 3D diagnostics/records may still be stored. |
+| `require_3d_target_registration` | `False` | If 3D triangulation fails, registration falls back to angle profile. |
+| `minimum_triangulation_baseline_mm` | `40.0` | Minimum head-origin movement during registration. |
+| `minimum_triangulation_eigenvalue` | `0.0025` | Minimum gaze-ray direction diversity. |
+| `maximum_triangulation_residual_mm` | `35.0` | Maximum RMS residual between estimated point and gaze rays. |
+| `minimum_triangulation_frames` | `20` | Minimum valid frame/ray count for 3D triangulation. |
+| `target_radius_floor_mm` | `20.0` | Lower bound for estimated target acceptance radius. |
+| `target_minimum_angular_variance_deg` | `4.0` | Minimum angular radius when converting 3D radius/depth into angular variance. |
+
+### Symptom-based adjustment guide
+
+- Up/down head motion barely changes `final_y/p` pitch: increase `head_pitch_weight`.
+- Up/down head motion dominates or flips targets too easily: decrease `head_pitch_weight`.
+- Left/right feels reversed: check `horizontal_axis_sign`.
+- Looking at a target but logs show near-boundary values such as `8.3/8.0deg x1.03 OUT`: check `target_match_tolerance`.
+- If target matching changes mostly when the user moves closer/farther from the camera: check `target_area_scale_flex`.
+- Not looking at a target but it is still selected: check duplicate target records, `registration_max_area_radius_deg`, and the saved target profile/area.
+- Blink causes vector spikes: check `blink_hold_ms`, `blink_recovery_hold_ms`, and `iris_jump_threshold`.
+- Vector freezes too much: `iris_jump_threshold` may be too low, or blink-recovery hold may be too aggressive.

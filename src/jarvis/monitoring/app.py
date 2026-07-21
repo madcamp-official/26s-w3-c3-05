@@ -307,6 +307,11 @@ class GazePanel(QScrollArea):
             if s.feature_sample is not None
             else "None"
         )
+        motion = (
+            f"dyaw={s.gaze_motion_delta_deg[0]:+.2f}  dpitch={s.gaze_motion_delta_deg[1]:+.2f}"
+            if s.gaze_motion_delta_deg is not None
+            else "None"
+        )
         est = s.target_estimate
         self._numeric.setText(
             f"face_detected : {s.face_detected}\n"
@@ -316,6 +321,7 @@ class GazePanel(QScrollArea):
             f"face_scale    : {s.face_scale if s.face_scale is not None else 'None'}\n"
             f"gaze vector   : {direction}\n"
             f"feature       : {feature}\n"
+            f"gaze motion   : {motion}\n"
             f"smoothing buf : {s.buffer_fill}/{s.buffer_capacity} frames\n"
             "── TargetEstimate (contract) ──────────────\n"
             f"target={est.target}  p={est.probability:.3f}  "

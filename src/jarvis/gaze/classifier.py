@@ -75,7 +75,7 @@ class ClassificationResult:
 
 def cosine_similarity(a: Vector3, b: Vector3) -> float:
     """두 단위 벡터의 코사인 유사도(내적)를 [-1, 1]로 clip해 반환한다."""
-    return float(np.clip(np.dot(a, b), -1.0, 1.0))
+    return min(1.0, max(-1.0, float(np.dot(a, b))))
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +226,7 @@ class TargetClassifier:
         *,
         current_face_scale: float | None = None,
         feature_sample: TargetFeatureSample | None = None,
+        gaze_motion_delta_deg: tuple[float, float] | None = None,
     ) -> ClassificationResult:
         """합성된 시선 방향 단위 벡터로부터 대상 기기를 추정한다.
 
@@ -245,7 +246,28 @@ class TargetClassifier:
             )
 
         if feature_sample is not None and (self._feature_profiles or self._area_profiles):
-            return self._classify_by_feature_profile(feature_sample, direction, origin)
+            return self._classify_by_feature_profile(
+                feature_sample,
+                direction,
+                origin,
+                current_face_scale,
+                gaze_motion_delta_deg,
+            )
+
+        return self._classify_by_direction_profile(direction, origin, current_face_scale)
+
+    def _classify_by_direction_profile(
+        self,
+        direction: Vector3,
+        origin: Vector3 | None,
+        current_face_scale: float | None = None,
+    ) -> ClassificationResult:
+        if not self._profiles:
+            return ClassificationResult(
+                target=self._config.UNKNOWN_TARGET,
+                probability=0.0,
+                second_best_probability=0.0,
+            )
 
         device_ids = list(self._profiles.keys())
         scores = np.empty(len(device_ids), dtype=np.float64)
@@ -306,8 +328,16 @@ class TargetClassifier:
         feature_sample: TargetFeatureSample,
         direction: Vector3 | None = None,
         origin: Vector3 | None = None,
+        current_face_scale: float | None = None,
+        gaze_motion_delta_deg: tuple[float, float] | None = None,
     ) -> ClassificationResult:
-        area_result = self._classify_by_area_profile(feature_sample, direction, origin)
+        area_result = self._classify_by_area_profile(
+            feature_sample,
+            direction,
+            origin,
+            current_face_scale,
+            gaze_motion_delta_deg,
+        )
         if area_result is not None:
             return area_result
         if not self._feature_profiles:
@@ -400,39 +430,95 @@ class TargetClassifier:
         feature_sample: TargetFeatureSample,
         direction: Vector3 | None,
         origin: Vector3 | None,
+        current_face_scale: float | None,
+        gaze_motion_delta_deg: tuple[float, float] | None = None,
     ) -> ClassificationResult | None:
         if not self._area_profiles:
             return None
-        candidates = [
-            (
-                profile.normalized_distance(
-                    feature_sample.gaze_yaw,
-                    feature_sample.gaze_pitch,
-                    self._config.registration_max_area_radius_deg,
-                ),
-                device_id,
-            )
-            for device_id, profile in self._area_profiles.items()
-            if profile.normalized_distance(
+        alignment_radius = max(
+            self._config.registration_min_spread_deg,
+            self._config.registration_max_area_radius_deg,
+        )
+        candidates = []
+        for device_id, profile in self._area_profiles.items():
+            normalized_distance = profile.normalized_distance(
                 feature_sample.gaze_yaw,
                 feature_sample.gaze_pitch,
                 self._config.registration_max_area_radius_deg,
+                self._area_radius_scale(device_id, current_face_scale),
             )
-            <= self._config.target_match_tolerance
-        ]
+            if normalized_distance > self._config.target_match_tolerance:
+                continue
+            center_distance_deg = math.hypot(
+                feature_sample.gaze_yaw - profile.center_yaw,
+                feature_sample.gaze_pitch - profile.center_pitch,
+            )
+            area_score = math.exp(-0.5 * normalized_distance**2)
+            alignment_score = math.exp(-0.5 * (center_distance_deg / alignment_radius) ** 2)
+            motion_alignment_score = self._motion_alignment_score(
+                feature_sample,
+                profile,
+                gaze_motion_delta_deg,
+            )
+            # 겹친 target에서는 단순 IN/OUT보다 "현재 시선 방향이 어느 중심을 더
+            # 향하는지"가 더 중요하다. 큰 허용영역이 작은/정확한 영역을 먹지 않도록
+            # 중심 방향 정렬 점수를 한 번 더 강하게 반영한다.
+            combined_score = area_score * alignment_score**2 * motion_alignment_score
+            candidates.append((combined_score, center_distance_deg, normalized_distance, device_id))
         if not candidates:
             return None
-        candidates.sort(key=lambda item: item[0])
-        best_device_id = candidates[0][1]
-        if len(candidates) > 1 and candidates[1][0] - candidates[0][0] <= 0.15:
-            device_ids = [candidates[0][1], candidates[1][1]]
+        candidates.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
+        best_device_id = candidates[0][3]
+        if len(candidates) > 1 and candidates[1][0] >= candidates[0][0] * 0.95:
+            device_ids = [candidates[0][3], candidates[1][3]]
             preferred = self._prefer_closer_3d_target(device_ids, 0, 1, direction, origin)
-            best_device_id = device_ids[preferred]
-        second = math.exp(-0.5 * candidates[1][0] ** 2) if len(candidates) > 1 else 0.0
-        best = math.exp(-0.5 * candidates[0][0] ** 2)
+            if preferred == 1:
+                candidates[0], candidates[1] = candidates[1], candidates[0]
+            best_device_id = candidates[0][3]
+        second = candidates[1][0] if len(candidates) > 1 else 0.0
+        best = candidates[0][0]
         total = best + second
         return ClassificationResult(
             target=best_device_id,
             probability=best / total if total > 0.0 else 1.0,
             second_best_probability=second / total if total > 0.0 else 0.0,
         )
+
+    def _motion_alignment_score(
+        self,
+        sample: TargetFeatureSample,
+        profile: TargetAreaProfile,
+        gaze_motion_delta_deg: tuple[float, float] | None,
+    ) -> float:
+        if gaze_motion_delta_deg is None:
+            return 1.0
+        motion_yaw, motion_pitch = gaze_motion_delta_deg
+        motion_norm = math.hypot(motion_yaw, motion_pitch)
+        if not math.isfinite(motion_norm) or motion_norm < 0.25:
+            return 1.0
+        target_yaw = profile.center_yaw - sample.gaze_yaw
+        target_pitch = profile.center_pitch - sample.gaze_pitch
+        target_norm = math.hypot(target_yaw, target_pitch)
+        if not math.isfinite(target_norm) or target_norm < 0.25:
+            return 1.0
+        cosine = (motion_yaw * target_yaw + motion_pitch * target_pitch) / (
+            motion_norm * target_norm
+        )
+        cosine = max(-1.0, min(1.0, cosine))
+        weight = self._config.target_motion_alignment_weight
+        return 1.0 + weight * max(0.0, cosine)
+
+    def _area_radius_scale(self, device_id: str, current_face_scale: float | None) -> float:
+        profile = self._profiles.get(device_id)
+        if (
+            profile is None
+            or profile.reference_face_scale is None
+            or current_face_scale is None
+            or current_face_scale <= 0.0
+        ):
+            return 1.0
+        ratio = current_face_scale / profile.reference_face_scale
+        if not math.isfinite(ratio) or ratio <= 0.0:
+            return 1.0
+        flex = self._config.target_area_scale_flex
+        return min(1.0 + flex, max(1.0 - flex, ratio))

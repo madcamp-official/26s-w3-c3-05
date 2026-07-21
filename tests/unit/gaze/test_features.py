@@ -154,6 +154,14 @@ def test_horizontal_axis_sign_maps_camera_left_to_positive_yaw() -> None:
     assert yaw > 0.0
 
 
+def test_default_head_pitch_has_stronger_vertical_response() -> None:
+    gaze = compose_gaze_vector(_observation(head_pitch_deg=20.0))
+
+    assert gaze is not None
+    _yaw, pitch = direction_to_yaw_pitch(gaze.direction)
+    assert pitch == pytest.approx(8.0)
+
+
 def test_face_not_detected_returns_none() -> None:
     assert compose_gaze_vector(_observation(face_detected=False)) is None
 

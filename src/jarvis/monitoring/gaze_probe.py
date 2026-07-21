@@ -150,6 +150,7 @@ class GazeSnapshot:
     reject_reason: str | None
     device_details: tuple[DeviceGazeDetail, ...]
     feature_sample: TargetFeatureSample | None
+    gaze_motion_delta_deg: tuple[float, float] | None
     feature_details: tuple[FeatureProfileDetail, ...]
     area_details: tuple[AreaProfileDetail, ...]
 
@@ -319,6 +320,7 @@ def _area_details(
 ) -> tuple[AreaProfileDetail, ...]:
     if sample is None:
         return tuple()
+    profiles = classifier.profiles
     details = [
         AreaProfileDetail(
             device_id=device_id,
@@ -326,6 +328,11 @@ def _area_details(
                 sample.gaze_yaw,
                 sample.gaze_pitch,
                 config.registration_max_area_radius_deg,
+                _area_radius_scale(
+                    profiles.get(device_id),
+                    sample.face_scale,
+                    config,
+                ),
             ),
             tolerance=config.target_match_tolerance,
             is_selected=device_id == selected_target,
@@ -333,6 +340,20 @@ def _area_details(
         for device_id, profile in classifier.area_profiles.items()
     ]
     return tuple(sorted(details, key=lambda item: item.normalized_distance))
+
+
+def _area_radius_scale(
+    profile: DeviceGazeProfile | None,
+    current_face_scale: float,
+    config: GazeConfig,
+) -> float:
+    if profile is None or profile.reference_face_scale is None or current_face_scale <= 0.0:
+        return 1.0
+    ratio = current_face_scale / profile.reference_face_scale
+    if not math.isfinite(ratio) or ratio <= 0.0:
+        return 1.0
+    flex = config.target_area_scale_flex
+    return min(1.0 + flex, max(1.0 - flex, ratio))
 
 
 def _device_details(
@@ -408,6 +429,7 @@ def evaluate(
     calibration_model: GazeCalibrationModel | None = None,
     previous_iris_offset: tuple[float, float] | None = None,
     last_closed_eye_ms: int | None = None,
+    previous_feature_sample: TargetFeatureSample | None = None,
 ) -> GazeSnapshot:
     """Run one observation through the full pipeline, capturing every stage.
 
@@ -478,6 +500,7 @@ def evaluate(
     classify_origin: tuple[float, float, float] | None = None
     current_face_scale = _face_scale(observation)
     feature_sample: TargetFeatureSample | None = None
+    gaze_motion_delta_deg: tuple[float, float] | None = None
     if smoothed is None:
         result = ClassificationResult(
             target=config.UNKNOWN_TARGET, probability=0.0, second_best_probability=0.0
@@ -505,11 +528,17 @@ def evaluate(
                 float(smoothed.origin[2]),
             )
         feature_sample = _feature_sample(observation, classify_direction, current_face_scale)
+        if feature_sample is not None and previous_feature_sample is not None:
+            gaze_motion_delta_deg = (
+                feature_sample.gaze_yaw - previous_feature_sample.gaze_yaw,
+                feature_sample.gaze_pitch - previous_feature_sample.gaze_pitch,
+            )
         result = classifier.classify(
             smoothed.direction,
             origin=smoothed.origin,
             current_face_scale=current_face_scale,
             feature_sample=feature_sample,
+            gaze_motion_delta_deg=gaze_motion_delta_deg,
         )
         lock.update(smoothed.timestamp_ms, result)
         estimate = TargetEstimate(
@@ -565,6 +594,7 @@ def evaluate(
         reject_reason=_reject_reason(result, details, config, profile_details),
         device_details=details,
         feature_sample=feature_sample,
+        gaze_motion_delta_deg=gaze_motion_delta_deg,
         feature_details=profile_details,
         area_details=area_details,
         lock_state=lock.state,
@@ -603,6 +633,7 @@ class GazeProbe:
         self._calibration_model = calibration_model
         self._previous_iris_offset: tuple[float, float] | None = None
         self._last_closed_eye_ms: int | None = None
+        self._previous_feature_sample: TargetFeatureSample | None = None
         self._profile_count = self._load_profiles(profiles_path)
 
     def _load_profiles(self, profiles_path: Path | None) -> int:
@@ -710,16 +741,28 @@ class GazeProbe:
         """
         if self._adapter is None:
             return None
-        import time
-
         import cv2
+
+        rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB))
+        return self.process_rgb(rgb, timestamp_ms, frame_id)
+
+    def process_rgb(
+        self, rgb_frame: npt.NDArray[np.uint8], timestamp_ms: int, frame_id: int
+    ) -> GazeSnapshot | None:
+        """Same as :meth:`process_bgr` for an already-converted RGB frame.
+
+        Lets a caller that feeds several probes (camera worker) convert the
+        frame once instead of once per probe.
+        """
+        if self._adapter is None:
+            return None
+        import time
 
         from jarvis.gaze.landmarks import FaceLandmarkerAdapter
 
         assert isinstance(self._adapter, FaceLandmarkerAdapter)
         started = time.monotonic()
-        rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB))
-        observation = self._adapter.process(rgb, timestamp_ms, frame_id)
+        observation = self._adapter.process(rgb_frame, timestamp_ms, frame_id)
         snapshot = evaluate(
             observation,
             smoother=self._smoother,
@@ -731,11 +774,14 @@ class GazeProbe:
             calibration_model=self._calibration_model,
             previous_iris_offset=self._previous_iris_offset,
             last_closed_eye_ms=self._last_closed_eye_ms,
+            previous_feature_sample=self._previous_feature_sample,
         )
         if observation.face_detected and not observation.eyes_open:
             self._last_closed_eye_ms = observation.timestamp_ms
         if snapshot.raw_gaze_direction is not None:
             self._previous_iris_offset = _iris_offset(observation)
+        if snapshot.feature_sample is not None:
+            self._previous_feature_sample = snapshot.feature_sample
         return snapshot
 
     def close(self) -> None:

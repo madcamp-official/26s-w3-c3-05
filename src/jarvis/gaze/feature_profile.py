@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import numpy.typing as npt
@@ -113,13 +114,32 @@ class TargetFeatureProfile:
 
     @property
     def inverse_covariance(self) -> npt.NDArray[np.float64]:
-        covariance = self.covariance_array
-        return np.linalg.pinv(covariance)
+        return _mahalanobis_operands(self)[1]
 
     def mahalanobis_distance(self, sample: TargetFeatureSample) -> float:
-        delta = sample.as_array() - self.mean_array
-        distance_sq = float(delta.T @ self.inverse_covariance @ delta)
+        mean, inverse_covariance = _mahalanobis_operands(self)
+        delta = sample.as_array() - mean
+        distance_sq = float(delta.T @ inverse_covariance @ delta)
         return math.sqrt(max(0.0, distance_sq))
+
+
+@lru_cache(maxsize=256)
+def _mahalanobis_operands(
+    profile: TargetFeatureProfile,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Cache the mean vector and pseudo-inverse covariance per (immutable) profile.
+
+    `pinv` runs an SVD; recomputing it for every frame × every registered target
+    dominated the whole pure pipeline (>50% of `evaluate()` time). The profile is
+    a frozen, hashable dataclass, so the pair is computed once per registration.
+    Returned arrays are shared — marked read-only so a caller cannot corrupt the
+    cache in place.
+    """
+    mean = np.asarray(profile.mean, dtype=np.float64)
+    inverse = np.linalg.pinv(np.asarray(profile.covariance, dtype=np.float64))
+    mean.setflags(write=False)
+    inverse.setflags(write=False)
+    return mean, inverse
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +167,11 @@ class TargetAreaProfile:
             raise ValueError("target area profile sample_count must be positive")
 
     def normalized_distance(
-        self, gaze_yaw: float, gaze_pitch: float, max_radius_deg: float | None = None
+        self,
+        gaze_yaw: float,
+        gaze_pitch: float,
+        max_radius_deg: float | None = None,
+        radius_scale: float = 1.0,
     ) -> float:
         radius_yaw = (
             min(self.radius_yaw, max_radius_deg)
@@ -157,15 +181,26 @@ class TargetAreaProfile:
         radius_pitch = (
             min(self.radius_pitch, max_radius_deg) if max_radius_deg is not None else self.radius_pitch
         )
+        radius_yaw *= radius_scale
+        radius_pitch *= radius_scale
         return math.hypot(
             (gaze_yaw - self.center_yaw) / radius_yaw,
             (gaze_pitch - self.center_pitch) / radius_pitch,
         )
 
     def contains(
-        self, gaze_yaw: float, gaze_pitch: float, max_radius_deg: float | None = None
+        self,
+        gaze_yaw: float,
+        gaze_pitch: float,
+        max_radius_deg: float | None = None,
+        radius_scale: float = 1.0,
     ) -> bool:
-        return self.normalized_distance(gaze_yaw, gaze_pitch, max_radius_deg) <= 1.0
+        return self.normalized_distance(
+            gaze_yaw,
+            gaze_pitch,
+            max_radius_deg,
+            radius_scale,
+        ) <= 1.0
 
 
 def build_area_profile(
