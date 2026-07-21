@@ -71,6 +71,42 @@ def test_tracking_loss_is_surfaced_not_faked() -> None:
     assert snapshot.target_estimate.stability == 0.0
 
 
+def test_camera_pose_warning_flags_large_roll() -> None:
+    smoother, classifier, lock, config = _fresh()
+
+    snapshot = evaluate(
+        _observation(yaw=0.0, pitch=0.0, detected=True),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+    rolled = FaceObservation(
+        timestamp_ms=33,
+        frame_id=1,
+        left_iris_relative=(0.0, 0.0),
+        right_iris_relative=(0.0, 0.0),
+        head_yaw_deg=0.0,
+        head_pitch_deg=0.0,
+        head_roll_deg=-44.0,
+        eye_tracking_confidence=1.0,
+        face_tracking_confidence=1.0,
+        face_detected=True,
+        eyes_open=True,
+    )
+    rolled_snapshot = evaluate(
+        rolled,
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+
+    assert snapshot.camera_pose_warning is None
+    assert rolled_snapshot.camera_pose_warning is not None
+    assert "head roll -44deg" in rolled_snapshot.camera_pose_warning
+
+
 def test_short_face_dropout_uses_recovering_hold() -> None:
     smoother, classifier, lock, config = _fresh()
     first = evaluate(

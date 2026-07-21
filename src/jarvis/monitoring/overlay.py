@@ -265,6 +265,8 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
         ),
         (f"stability  {stability:.2f}" if stability is not None else "stability  --", grey),
     ]
+    if snapshot.camera_pose_warning:
+        lines.append(("CAMERA POSE CHANGED / re-register", (60, 180, 255)))
     _text_block(frame, lines, (8, h - 6 - 20 * len(lines) - 6))
     return frame
 

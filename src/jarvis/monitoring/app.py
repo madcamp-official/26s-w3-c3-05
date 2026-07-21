@@ -321,6 +321,7 @@ class GazePanel(QScrollArea):
             f"face_detected : {s.face_detected}\n"
             f"head (deg)    : yaw {s.head_yaw_deg:+7.2f}  pitch {s.head_pitch_deg:+7.2f}  "
             f"roll {s.head_roll_deg:+7.2f}\n"
+            f"pose warning  : {s.camera_pose_warning or 'None'}\n"
             f"iris L / R    : {s.left_iris_relative}  /  {s.right_iris_relative}\n"
             f"face_scale    : {s.face_scale if s.face_scale is not None else 'None'}\n"
             f"gaze vector   : {direction}\n"
@@ -924,6 +925,7 @@ class MainWindow(QMainWindow):
         self._registration_points: list[tuple[float, float]] = []
         self._registration_calibration_features: list[tuple[float, ...]] = []
         self._registration_phase_index: int | None = None
+        self._last_camera_pose_warning: str | None = None
         self._target_list = QListWidget()
         self._register_target_button = QPushButton()
         self._probe = GazeProbe(
@@ -1131,6 +1133,14 @@ class MainWindow(QMainWindow):
             self._gaze_history.popleft()
         self._video.set_gaze(snapshot)
         self._gaze_panel.update_snapshot(snapshot)
+        if (
+            snapshot.camera_pose_warning
+            and snapshot.camera_pose_warning != self._last_camera_pose_warning
+        ):
+            self._log.warn(snapshot.camera_pose_warning)
+            self._last_camera_pose_warning = snapshot.camera_pose_warning
+        elif snapshot.camera_pose_warning is None:
+            self._last_camera_pose_warning = None
         self._latency.record(LatencyStage.CAPTURE_TO_INFERENCE, snapshot.inference_ms)
         if self._registration is not None:
             smoothed = self._smoothed_from_snapshot(snapshot)

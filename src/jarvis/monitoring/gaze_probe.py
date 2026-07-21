@@ -154,6 +154,7 @@ class GazeSnapshot:
     gaze_motion_delta_deg: tuple[float, float] | None
     feature_details: tuple[FeatureProfileDetail, ...]
     area_details: tuple[AreaProfileDetail, ...]
+    camera_pose_warning: str | None
 
     # 2e — gaze lock state machine
     lock_state: GazeLockState
@@ -418,6 +419,29 @@ def _device_details(
     return tuple(details)
 
 
+def _camera_pose_warning(
+    classifier: TargetClassifier,
+    current_face_scale: float | None,
+    head_roll_deg: float,
+) -> str | None:
+    reference_scales = [
+        profile.reference_face_scale
+        for profile in classifier.profiles.values()
+        if profile.reference_face_scale is not None and profile.reference_face_scale > 0.0
+    ]
+    warnings: list[str] = []
+    if reference_scales and current_face_scale is not None and current_face_scale > 0.0:
+        reference = float(np.median(np.asarray(reference_scales, dtype=np.float64)))
+        ratio = current_face_scale / reference
+        if math.isfinite(ratio) and (ratio < 0.70 or ratio > 1.30):
+            warnings.append(f"face scale x{ratio:.2f}")
+    if abs(head_roll_deg) > 30.0:
+        warnings.append(f"head roll {head_roll_deg:+.0f}deg")
+    if not warnings:
+        return None
+    return "camera/user pose changed: " + ", ".join(warnings) + " — re-register targets"
+
+
 def evaluate(
     observation: FaceObservation,
     *,
@@ -606,6 +630,11 @@ def evaluate(
         gaze_motion_delta_deg=gaze_motion_delta_deg,
         feature_details=profile_details,
         area_details=area_details,
+        camera_pose_warning=_camera_pose_warning(
+            classifier,
+            current_face_scale,
+            observation.head_roll_deg,
+        ),
         lock_state=lock.state,
         locked_device=lock.locked_device,
         is_confident=_is_confident(result, config),
