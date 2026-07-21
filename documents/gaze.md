@@ -327,13 +327,34 @@ bin별로 "직후부터 OUT(등록 수집 문제)"과 "직후엔 IN이었다가 
   target n번. 라벨을 안 고르면 그 구간은 집계에서 제외된다.
 - `data/diagnostics/session_*.jsonl`에 프레임별 파이프라인 전 단계(관측값,
   raw/smoothed gaze, target별 area 거리·보정 적용 여부, 분류 결과·탈락 사유,
-  lock 상태)가 남는다. 헤더에 당시 GazeConfig와 target 프로필(보정 테이블
-  포함)이 통째로 들어가므로 세션 파일 하나로 분석이 완결된다.
-- `jarvis-gaze report <session.jsonl>`이 라벨×head-yaw bin별 정확도, in-area
-  비율, 실측 편향 vs 저장된 pose 보정 대조표를 출력하고, 편향이 3도 이상
-  어긋난 bin과 보정 커버리지 밖(외삽) bin을 경고로 표시한다.
+  lock 상태)가 남는다. v2부터 눈 뜸 비율/사용자 기준선, 얼굴 중심·크기,
+  실제 gaze ray 원점, smoothing 버퍼, 시선 속도·가속도·settle 상태도 함께
+  기록한다. 헤더에 당시 GazeConfig와 target 프로필(보정 테이블 포함)이 통째로
+  들어가므로 세션 파일 하나로 분석이 완결된다. 원본 카메라 이미지는 저장하지
+  않는다.
+- F9로 녹화를 끝내면 같은 실시간 탭 아래의 분석 창에 결과가 자동으로 뜬다.
+  **최근 세션 분석**은 앱을 다시 실행한 뒤 마지막 JSONL을 다시 읽을 때 쓴다.
+- `jarvis-gaze report <session.jsonl>`도 같은 결과를 출력한다. 라벨별 전체
+  정확도와 head-yaw 보정 대조뿐 아니라 head pitch, 등록 대비 얼굴 크기,
+  화면 내 얼굴 x/y 구간별 정확도·UNKNOWN·no-gaze·in-area 비율을 보여 준다.
+  편향이 3도 이상 어긋난 구간, 보정 커버리지 밖, 전체보다 정확도가 20%p 이상
+  낮은 자세/거리 구간은 경고하고, 실패 원인별 대표 프레임을 최대 6개 표시한다.
 - 구현: `monitoring/session_recorder.py`(기록), `gaze/session_report.py`(집계),
   `AreaProfileDetail.used_gaze_*`(area 판정에 실제 쓰인 보정 전/후 gaze 노출).
+
+권장 측정은 target 하나당 최소 세 구간이다. 각 구간에서 콤보 또는 숫자키로
+정답을 먼저 고른다.
+
+1. 중앙 응시 5초: 정면 자세의 기준 정확도와 blink/no-gaze 비율 확인.
+2. 같은 target 응시 10초: 고개 좌우·상하, 몸의 좌우, 카메라와의 거리를 천천히
+   바꿔 자세/거리별 성능 저하 구간 확인.
+3. `0` 라벨 10초: 등록 물체 사이와 바깥을 보며 false positive 확인.
+
+해석할 때는 숫자 하나를 바로 조정하지 않는다. `in-area%`가 낮으면 gaze/등록
+영역 문제, `in-area%`는 높은데 정확도가 낮으면 후보 순위·confidence 문제,
+`no-gaze%`가 높으면 face/iris/blink 입력 문제다. 얼굴 크기 비율 한 구간에서만
+무너지면 거리 보정, head pitch/yaw 한 구간에서만 무너지면 pose 보정 데이터를
+먼저 다시 수집한다. 대표 실패 프레임 번호로 같은 JSONL의 원시 값을 대조한다.
 
 ### Target matching / UNKNOWN rejection
 

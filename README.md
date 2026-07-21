@@ -343,6 +343,13 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 벡터로 전환한다. 디버깅 화면의 `gaze source`가 `head+iris`, `held`, `head-only`,
 `tracking-hold`, `tracking-lost` 중 현재 경로를 표시한다.
 
+정확도 문제는 실시간 탭의 라벨된 진단 세션으로 재현한다. F9로 녹화를 시작하고
+`0`(응시 대상 없음) 또는 `1`~`9`(등록 순서의 target)로 실제 정답을 표시한 뒤
+F9로 끝내면, 앱 안에 head pose·얼굴 위치·등록 대비 얼굴 크기별 정확도와 대표
+실패 프레임이 자동으로 표시된다. 세션 숫자값은 `data/diagnostics/session_*.jsonl`
+에 저장되며 이미지 프레임은 저장하지 않는다. CLI에서는
+`jarvis-gaze report <session.jsonl>`로 같은 분석을 다시 볼 수 있다.
+
 실험 중 조정 우선순위는 다음과 같다.
 
 1. 위/아래 고개 움직임이 덜 반영되면 `head_pitch_weight`를 조정한다.
