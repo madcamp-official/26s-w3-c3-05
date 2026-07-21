@@ -369,6 +369,16 @@ def _run_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_report(args: argparse.Namespace) -> int:
+    from jarvis.gaze.session_report import build_report, format_report, load_session
+
+    path = Path(args.session)
+    session = load_session(path)
+    report = build_report(session, path=path, bin_width_deg=args.bin_width)
+    print(format_report(report))
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jarvis-gaze")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -422,10 +432,22 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--conditions", required=True)
     evaluate.add_argument("--output")
     evaluate.set_defaults(handler=_run_evaluate)
+
+    report = subparsers.add_parser(
+        "report",
+        help="aggregate a labeled monitoring session (JSONL) into an accuracy/bias report",
+    )
+    report.add_argument("session", help="session .jsonl recorded by the monitoring app")
+    report.add_argument("--bin-width", type=float, default=10.0, help="head-yaw bin width (deg)")
+    report.set_defaults(handler=_run_report)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Windows 콘솔(cp949)이 표현 못 하는 문자가 리포트에 섞여도 크래시 대신
+    # 대체 문자로 출력한다.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     args = _build_parser().parse_args(argv)
     try:
         return int(args.handler(args))

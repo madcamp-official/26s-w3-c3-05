@@ -317,6 +317,24 @@ bin별로 "직후부터 OUT(등록 수집 문제)"과 "직후엔 IN이었다가 
 (`target_verification.py`). 판정은 런타임과 동일한 rescue 전용(min) 거리로
 계산하며, 표본 8프레임 미만 bin은 결론에서 제외한다.
 
+### Labeled debugging sessions (2026-07-22)
+
+정확도 디버깅이 매번 "raw CSV를 밖에서 재합성"하는 일이 되지 않도록, 모니터링
+앱에 라벨된 세션 레코더를 붙였다.
+
+- 모니터링 앱 실시간 탭에서 **F9**로 녹화 시작/종료. 녹화 중 숫자키로 정답
+  라벨을 표시한다: `0` = 아무것도 안 봄(기대 결과 UNKNOWN), `1`~`9` = 등록
+  target n번. 라벨을 안 고르면 그 구간은 집계에서 제외된다.
+- `data/diagnostics/session_*.jsonl`에 프레임별 파이프라인 전 단계(관측값,
+  raw/smoothed gaze, target별 area 거리·보정 적용 여부, 분류 결과·탈락 사유,
+  lock 상태)가 남는다. 헤더에 당시 GazeConfig와 target 프로필(보정 테이블
+  포함)이 통째로 들어가므로 세션 파일 하나로 분석이 완결된다.
+- `jarvis-gaze report <session.jsonl>`이 라벨×head-yaw bin별 정확도, in-area
+  비율, 실측 편향 vs 저장된 pose 보정 대조표를 출력하고, 편향이 3도 이상
+  어긋난 bin과 보정 커버리지 밖(외삽) bin을 경고로 표시한다.
+- 구현: `monitoring/session_recorder.py`(기록), `gaze/session_report.py`(집계),
+  `AreaProfileDetail.used_gaze_*`(area 판정에 실제 쓰인 보정 전/후 gaze 노출).
+
 ### Target matching / UNKNOWN rejection
 
 | Setting | Current value | Meaning |

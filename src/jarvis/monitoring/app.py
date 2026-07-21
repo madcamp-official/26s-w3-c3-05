@@ -35,10 +35,11 @@ from typing import Any, cast
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QPixmap
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -65,6 +66,7 @@ from jarvis.gaze.smoothing import SmoothedGaze
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
+from jarvis.monitoring.session_recorder import GazeSessionRecorder, NO_TARGET_LABEL
 from jarvis.monitoring.gesture_source import GestureSource, UntrainedGestureSource
 from jarvis.monitoring.hand_probe import HandProbe, HandSnapshot
 from jarvis.monitoring.messages import MessageLevel, MessageLog
@@ -1021,6 +1023,8 @@ class MainWindow(QMainWindow):
         self._sample_store = GazeSampleStore(
             samples_path or Path("data/evaluation/gaze_samples.json")
         )
+        self._session_recorder = GazeSessionRecorder()
+        self._session_label: str | None = None
         self._gaze_config = GazeConfig(
             enable_3d_target_matching=False,
             require_3d_target_registration=False,
@@ -1106,6 +1110,27 @@ class MainWindow(QMainWindow):
             self._sample_list.addItem(format_gaze_sample(sample))
         layout.addWidget(self._sample_list)
         self._refresh_sample_button()
+
+        # 라벨된 디버깅 세션 녹화: F9 시작/종료, 숫자키 0=아무것도 안 봄,
+        # 1..9=등록 target n번을 정답 라벨로 표시. jarvis-gaze report가 집계한다.
+        session_controls = QHBoxLayout()
+        self._session_record_button = QPushButton("세션 녹화 시작 (F9)")
+        self._session_record_button.clicked.connect(self._toggle_session_recording)
+        self._session_label_combo = QComboBox()
+        self._session_label_combo.currentIndexChanged.connect(self._on_session_label_changed)
+        self._session_status = QLabel("세션 녹화 대기")
+        self._session_status.setStyleSheet(_MONO)
+        session_controls.addWidget(self._session_record_button)
+        session_controls.addWidget(self._session_label_combo, 1)
+        session_controls.addWidget(self._session_status, 1)
+        layout.addLayout(session_controls)
+        QShortcut(QKeySequence("F9"), self, self._toggle_session_recording)
+        for digit in range(10):
+            QShortcut(
+                QKeySequence(str(digit)),
+                self,
+                lambda index=digit: self._select_session_label_by_digit(index),
+            )
         self._registration_step = QLabel("2단계 물체 등록: 대기")
         self._registration_step.setStyleSheet("font-weight:700; color:#8b949e;")
         layout.addWidget(self._registration_step)
@@ -1223,6 +1248,8 @@ class MainWindow(QMainWindow):
             self._gaze_history.popleft()
         self._video.set_gaze(snapshot)
         self._gaze_panel.update_snapshot(snapshot)
+        if self._session_recorder.recording:
+            self._session_recorder.record(snapshot, self._session_label)
         if (
             snapshot.camera_pose_warning
             and snapshot.camera_pose_warning != self._last_camera_pose_warning
@@ -1545,6 +1572,78 @@ class MainWindow(QMainWindow):
                 f" spread={record.spread.yaw:.1f}/{record.spread.pitch:.1f}"
                 f"{scale_label}{feature_label}{area_label}"
             )
+        self._refresh_session_labels()
+
+    def _refresh_session_labels(self) -> None:
+        """세션 라벨 콤보를 등록 target 목록과 동기화한다(선택 유지)."""
+        current = self._session_label
+        combo = self._session_label_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("라벨 없음 (집계 제외)", None)
+        combo.addItem("0: 아무것도 안 봄", NO_TARGET_LABEL)
+        for index, record in enumerate(self._target_registry.records, start=1):
+            prefix = f"{index}: " if index <= 9 else ""
+            combo.addItem(f"{prefix}{record.name} [{record.target_id}]", record.target_id)
+        restored = combo.findData(current)
+        combo.setCurrentIndex(restored if restored >= 0 else 0)
+        combo.blockSignals(False)
+        self._session_label = combo.currentData()
+
+    def _on_session_label_changed(self) -> None:
+        self._session_label = self._session_label_combo.currentData()
+        self._update_session_status()
+
+    def _select_session_label_by_digit(self, digit: int) -> None:
+        """숫자키 라벨 선택: 0=아무것도 안 봄, 1..9=등록 target n번."""
+        target_value = (
+            NO_TARGET_LABEL
+            if digit == 0
+            else (
+                self._target_registry.records[digit - 1].target_id
+                if digit - 1 < len(self._target_registry.records)
+                else None
+            )
+        )
+        if target_value is None:
+            return
+        index = self._session_label_combo.findData(target_value)
+        if index >= 0:
+            self._session_label_combo.setCurrentIndex(index)
+
+    def _toggle_session_recording(self) -> None:
+        if self._session_recorder.recording:
+            summary = self._session_recorder.stop()
+            path = self._session_recorder.path
+            self._log.info(
+                f"세션 녹화 종료: {path} — {summary['frames']} frames, "
+                f"labels {summary['labels']}"
+            )
+            self._session_record_button.setText("세션 녹화 시작 (F9)")
+            self._update_session_status()
+            return
+        path = Path("data/diagnostics") / time.strftime("session_%Y%m%d_%H%M%S.jsonl")
+        self._session_recorder.start(
+            path,
+            config=self._gaze_config,
+            targets=self._target_registry.records,
+        )
+        self._log.info(f"세션 녹화 시작: {path} (숫자키로 정답 라벨 표시)")
+        self._session_record_button.setText("세션 녹화 종료 (F9)")
+        self._update_session_status()
+
+    def _update_session_status(self) -> None:
+        label = self._session_label if self._session_label is not None else "(없음)"
+        if self._session_recorder.recording:
+            self._session_status.setText(
+                f"REC {self._session_recorder.frame_count} frames | label: {label}"
+            )
+            self._session_status.setStyleSheet(
+                "font-family:Consolas,monospace; font-size:12px; color:#f85149;"
+            )
+        else:
+            self._session_status.setText(f"세션 녹화 대기 | label: {label}")
+            self._session_status.setStyleSheet(_MONO)
 
     def _save_gaze_sample(self) -> None:
         if self._latest_gaze is None:
@@ -1588,8 +1687,11 @@ class MainWindow(QMainWindow):
         self._sidebar.poll()
         self._messages.refresh()
         self._latency_panel.refresh()
+        self._update_session_status()
 
     def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt override name
+        if self._session_recorder.recording:
+            self._session_recorder.stop()
         if self._camera is not None:
             self._camera.stop()
         super().closeEvent(event)  # type: ignore[arg-type]

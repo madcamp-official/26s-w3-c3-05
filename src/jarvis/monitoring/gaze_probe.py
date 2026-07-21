@@ -108,6 +108,11 @@ class AreaProfileDetail:
     radius_yaw: float
     radius_pitch: float
     boundary_polygon: tuple[tuple[float, float], ...]
+    # area 판정에 실제 사용된 gaze — pose 보정이 rescue로 채택됐으면 보정값,
+    # 아니면 원시 gaze 그대로. 세션 레코더가 보정 적용 여부를 남길 때 쓴다.
+    used_gaze_yaw: float = math.nan
+    used_gaze_pitch: float = math.nan
+    correction_applied: bool = False
 
     @property
     def range_status(self) -> str:
@@ -389,24 +394,30 @@ def _area_details(
 ) -> tuple[AreaProfileDetail, ...]:
     if sample is None:
         return tuple()
-    details = [
-        AreaProfileDetail(
-            device_id=device_id,
-            # classify()의 area 판정과 동일한 rescue 전용(min) 보정 거리 —
-            # 그러지 않으면 디버그 패널이 실동작과 어긋난다.
-            normalized_distance=classifier.area_distance_and_gaze(
-                device_id, profile, sample
-            )[0],
-            tolerance=config.target_match_tolerance,
-            is_selected=device_id == selected_target,
-            center_yaw=profile.center_yaw,
-            center_pitch=profile.center_pitch,
-            radius_yaw=profile.radius_yaw,
-            radius_pitch=profile.radius_pitch,
-            boundary_polygon=profile.boundary_polygon,
+    details = []
+    for device_id, profile in classifier.area_profiles.items():
+        # classify()의 area 판정과 동일한 rescue 전용(min) 보정 거리 —
+        # 그러지 않으면 디버그 패널이 실동작과 어긋난다.
+        normalized_distance, used_yaw, used_pitch = classifier.area_distance_and_gaze(
+            device_id, profile, sample
         )
-        for device_id, profile in classifier.area_profiles.items()
-    ]
+        details.append(
+            AreaProfileDetail(
+                device_id=device_id,
+                normalized_distance=normalized_distance,
+                tolerance=config.target_match_tolerance,
+                is_selected=device_id == selected_target,
+                center_yaw=profile.center_yaw,
+                center_pitch=profile.center_pitch,
+                radius_yaw=profile.radius_yaw,
+                radius_pitch=profile.radius_pitch,
+                boundary_polygon=profile.boundary_polygon,
+                used_gaze_yaw=used_yaw,
+                used_gaze_pitch=used_pitch,
+                correction_applied=(used_yaw, used_pitch)
+                != (sample.gaze_yaw, sample.gaze_pitch),
+            )
+        )
     return tuple(sorted(details, key=lambda item: item.normalized_distance))
 
 
