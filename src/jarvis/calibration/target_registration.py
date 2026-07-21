@@ -70,6 +70,7 @@ class TargetRegistrationSession:
         self.rejected_closed_eyes = 0
         self.rejected_low_confidence = 0
         self.rejected_jump = 0
+        self.last_rejection_reason: str | None = None
 
     @property
     def valid_frame_count(self) -> int:
@@ -144,12 +145,17 @@ class TargetRegistrationSession:
             return False
         if gaze is None:
             self.rejected_tracking_lost += 1
+            self.last_rejection_reason = "face/gaze tracking unavailable"
             return False
         if not eyes_open:
             self.rejected_closed_eyes += 1
+            self.last_rejection_reason = "eyes classified closed"
             return False
         if confidence < self.minimum_confidence:
             self.rejected_low_confidence += 1
+            self.last_rejection_reason = (
+                f"tracking confidence {confidence:.2f} < {self.minimum_confidence:.2f}"
+            )
             return False
         if self.started_at_ms is None:
             self.started_at_ms = gaze.timestamp_ms
@@ -165,8 +171,10 @@ class TargetRegistrationSession:
             previous_yaw, previous_pitch = samples[-1]
             if math.hypot(yaw - previous_yaw, pitch - previous_pitch) > self.maximum_jump_deg:
                 self.rejected_jump += 1
+                self.last_rejection_reason = "gaze jumped too far between frames"
                 return False
         samples.append((yaw, pitch))
+        self.last_rejection_reason = None
         if accepted_phase == RegistrationPhase.CENTER:
             if face_scale is not None and math.isfinite(face_scale) and face_scale > 0.0:
                 self._center_face_scales.append(face_scale)

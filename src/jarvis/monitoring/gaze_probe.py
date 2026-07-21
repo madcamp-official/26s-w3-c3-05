@@ -193,6 +193,7 @@ class GazeSnapshot:
     gaze_settle_age_ms: int | None = None
     gaze_motion_history_valid: bool = False
     gaze_source: str = "unavailable"
+    gaze_source_reason: str | None = None
 
     @property
     def tracking_lost(self) -> bool:
@@ -520,6 +521,11 @@ def evaluate(
     )
     jumpy_iris = unstable_iris is not None and unstable_iris.startswith("iris jump")
     hold_gaze = blink_hold or (unstable_iris is not None and not jumpy_iris)
+    gaze_source_reason: str | None = None
+    if blink_hold:
+        gaze_source_reason = "eyes classified closed"
+    elif unstable_iris is not None:
+        gaze_source_reason = unstable_iris
     raw_gaze_vector = None if hold_gaze else compose_gaze_vector(observation, config)
     if raw_gaze_vector is not None and jumpy_iris:
         raw_gaze_vector = GazeVector(
@@ -554,6 +560,7 @@ def evaluate(
     else:
         smoothed = smoother.hold_tracking_loss(observation.timestamp_ms, observation.frame_id)
         gaze_source = "tracking-hold" if smoothed is not None else "tracking-lost"
+        gaze_source_reason = "face or tracking confidence unavailable"
 
     raw_gaze_direction: tuple[float, float, float] | None = None
     raw_gaze_confidence: float | None = None
@@ -761,6 +768,9 @@ def evaluate(
         gaze_settle_age_ms=gaze_settle_age_ms,
         gaze_motion_history_valid=motion_history_valid,
         gaze_source=gaze_source,
+        gaze_source_reason=(
+            gaze_source_reason if gaze_source != "head+iris" else None
+        ),
     )
 
 

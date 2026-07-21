@@ -254,7 +254,8 @@ class GazePanel(QScrollArea):
             source_status = "  ·  얼굴 추적 손실"
             status_color = "#f85149"
         elif s.gaze_source == "head-only":
-            source_status = "  ·  HEAD ONLY (눈/홍채 사용 불가)"
+            reason = f": {s.gaze_source_reason}" if s.gaze_source_reason else ""
+            source_status = f"  ·  HEAD ONLY{reason}"
             status_color = "#d29922"
         elif s.gaze_source in {"held", "tracking-hold"}:
             source_status = "  ·  이전 gaze 유지"
@@ -396,6 +397,7 @@ class GazePanel(QScrollArea):
             f"face_scale    : {s.face_scale if s.face_scale is not None else 'None'}\n"
             f"gaze vector   : {direction}\n"
             f"gaze source   : {s.gaze_source}\n"
+            f"source reason : {s.gaze_source_reason or 'None'}\n"
             "vector model  : geometric head + iris, head-only fallback\n"
             f"feature       : {feature}\n"
             f"gaze delta    : {motion}\n"
@@ -1299,7 +1301,18 @@ class MainWindow(QMainWindow):
     def _update_registration_guidance(self, timestamp_ms: int) -> None:
         assert self._registration is not None
         if self._registration.started_at_ms is None:
-            self._registration_status.setText("등록 대기: 얼굴과 시선이 안정적으로 잡히길 기다리는 중")
+            reason = self._registration.last_rejection_reason
+            reason_text = reason or "waiting for the first valid face + iris frame"
+            self._registration_status.setText(
+                "등록 대기: 첫 유효 시선 프레임을 기다리는 중 · "
+                f"현재 차단 원인: {reason_text} · "
+                f"{self._registration.diagnostic_summary()}"
+            )
+            self._video.set_registration_guidance(
+                "REGISTRATION WAITING",
+                f"BLOCKED: {reason_text.upper()}",
+                0.0,
+            )
             return
         phase = self._registration.phase
         if phase == RegistrationPhase.COMPLETE:
@@ -1344,6 +1357,8 @@ class MainWindow(QMainWindow):
             f"자세별 {self._registration.center_valid_frame_count} / 정밀 "
             f"{self._registration.boundary_valid_frame_count}"
         )
+        if self._registration.last_rejection_reason is not None:
+            status += f" · 현재 제외: {self._registration.last_rejection_reason}"
         self._registration_step.setText(step)
         self._registration_progress.setValue(round(progress * 1000))
         self._registration_progress.setFormat(f"{step}  %p%")

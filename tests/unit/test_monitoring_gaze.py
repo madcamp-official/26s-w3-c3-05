@@ -106,6 +106,7 @@ def test_detected_face_without_usable_iris_starts_with_head_only_vector() -> Non
     assert snapshot.tracking_lost is False
     assert snapshot.gaze_unavailable is False
     assert snapshot.gaze_source == "head-only"
+    assert snapshot.gaze_source_reason == "eyes classified closed"
     assert snapshot.gaze_direction is not None
     assert snapshot.gaze_confidence == pytest.approx(config.head_only_confidence_scale)
 

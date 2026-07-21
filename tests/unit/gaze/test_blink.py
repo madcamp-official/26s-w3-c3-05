@@ -45,3 +45,11 @@ def test_both_eyes_must_close_before_gaze_is_held() -> None:
 
     assert detector.update(0.25, 0.25)
     assert not detector.update(0.08, 0.09)
+
+
+def test_naturally_narrow_open_eyes_do_not_latch_closed_forever() -> None:
+    detector = AdaptiveBlinkDetector()
+
+    assert detector.update(0.10, 0.11)
+    assert not detector.update(0.03, 0.03)
+    assert detector.update(0.10, 0.11)

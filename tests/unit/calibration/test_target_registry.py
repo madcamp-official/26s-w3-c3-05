@@ -120,6 +120,7 @@ def test_registration_diagnostics_count_rejected_frames() -> None:
     assert not session.add(_gaze(2, 0.0), 0.1)
     assert session.add(_gaze(3, 0.0), 1.0)
     assert not session.add(_gaze(4, 30.0), 1.0)
+    assert session.last_rejection_reason == "gaze jumped too far between frames"
 
     assert session.diagnostic_summary() == (
         "phase=CENTER, seen=5, center=1, boundary=0, "
@@ -170,6 +171,7 @@ def test_registration_rejects_closed_eyes() -> None:
         "lamp", "desk lamp", "LIGHT", "device-1", minimum_valid_frames=1
     )
     assert not session.add(_gaze(0, 0.0), 1.0, eyes_open=False)
+    assert session.last_rejection_reason == "eyes classified closed"
     with pytest.raises(ValueError, match="not enough"):
         session.finalize()
 

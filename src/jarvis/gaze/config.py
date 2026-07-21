@@ -84,7 +84,11 @@ class GazeConfig:
     """Keep holding briefly after reopening eyes so unstable iris landmarks settle."""
 
     eye_closed_ratio_threshold: float = 0.12
-    """Absolute eyelid-height/eye-width floor used by adaptive blink detection."""
+    """Twice the collapsed-eye guard used by adaptive blink detection.
+
+    Normal eye opening is learned per user even when it is below this value;
+    half this value remains a hard guard against a fully collapsed eyelid.
+    """
 
     blink_close_ratio: float = 0.68
     """Close when eye openness falls below this fraction of the personal baseline."""

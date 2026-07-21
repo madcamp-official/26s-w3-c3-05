@@ -350,7 +350,8 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
         (f"stability  {stability:.2f}" if stability is not None else "stability  --", grey),
     ]
     if snapshot.gaze_source != "head+iris":
-        lines.append((f"SOURCE  {snapshot.gaze_source}", (80, 190, 230)))
+        reason = f" ({snapshot.gaze_source_reason})" if snapshot.gaze_source_reason else ""
+        lines.append((f"SOURCE  {snapshot.gaze_source}{reason}", (80, 190, 230)))
     if snapshot.camera_pose_warning:
         lines.append(("CAMERA POSE CHANGED / re-register", (60, 180, 255)))
     _text_block(frame, lines, (8, h - 6 - 20 * len(lines) - 6))
