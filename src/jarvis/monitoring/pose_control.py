@@ -23,7 +23,7 @@ from jarvis.runtime_protocol.adapters.windows import InputKey, InputSink, MouseB
 # 스크롤 이벤트는 매 프레임 나온다(30fps). 그대로 보내면 초당 30틱이라 너무 빠르므로
 # 이 간격으로 솎아낸다. 값이 커지면 스크롤이 느려지고, 작아지면 걷잡을 수 없어진다.
 SCROLL_INTERVAL_MS = 60
-SCROLL_TICKS = 1
+SCROLL_TICKS = 2  # 한 스크롤 스텝당 이동량. 2 = 기존 대비 스크롤 이동 속도 2배
 
 
 def _transition_key() -> InputKey:
