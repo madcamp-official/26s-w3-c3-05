@@ -1329,6 +1329,7 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
+        tabs.addTab(self._build_gaze_recognition_tab(), "시선 인식")
         tabs.addTab(self._build_gaze_tab(), "Gaze 파이프라인")
         tabs.addTab(self._build_hand_tab(), "손 추적")
         tabs.addTab(self._build_pipeline_tab(), "파이프라인")
@@ -1469,12 +1470,25 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.addWidget(self._control_toggle_live)
         layout.addWidget(split)
+        return container
+
+    def _build_gaze_recognition_tab(self) -> QWidget:
+        """시선 샘플 저장 + 물체(Target) 등록 UI를 모은 탭.
+
+        자체 카메라 뷰(`_gaze_video`)에 gaze·등록 가이드 오버레이를 그린다 — 실시간
+        탭의 손/제스처 뷰(`_video`)와 분리해, 등록 중 물체 테두리를 따라가는 화면을
+        이 탭에서 본다. 프레임은 `_on_frame`이 두 뷰에 fan-out한다.
+        """
+        self._gaze_video = VideoView()
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.addWidget(self._gaze_video, 1)
         self._sample_button = QPushButton()
         self._sample_button.clicked.connect(self._save_gaze_sample)
         self._clear_samples_button = QPushButton("샘플 초기화")
         self._clear_samples_button.clicked.connect(self._clear_gaze_samples)
         self._target_heatmap_toggle = QCheckBox("Target heatmap / 물체 영역 표시")
-        self._target_heatmap_toggle.toggled.connect(self._video.set_target_heatmap_visible)
+        self._target_heatmap_toggle.toggled.connect(self._gaze_video.set_target_heatmap_visible)
         self._gaze_regression_toggle = QCheckBox("Use MLP gaze-vector calibration")
         self._gaze_regression_toggle.setToolTip(
             "등록 데이터로 학습된 residual MLP를 final yaw/pitch에 적용합니다. "
@@ -1689,8 +1703,9 @@ class MainWindow(QMainWindow):
 
     def _on_frame(self, frame: Frame) -> None:
         self._video.show_frame(frame)
-        # 파인튜닝 탭의 웹캠 뷰에도 같은 프레임을 뿌린다(Qt 시그널 fan-out — 각 VideoView가
-        # 자기 복사본에 그리므로 서로 간섭하지 않는다).
+        # 시선 인식 탭·파인튜닝 탭의 웹캠 뷰에도 같은 프레임을 뿌린다(Qt 시그널 fan-out —
+        # 각 VideoView가 자기 복사본에 그리므로 서로 간섭하지 않는다).
+        self._gaze_video.show_frame(frame)
         self._finetune_panel.video.show_frame(frame)
 
     def _on_gaze(self, snapshot: object) -> None:
@@ -1700,7 +1715,7 @@ class MainWindow(QMainWindow):
         cutoff_ms = snapshot.timestamp_ms - 500
         while self._gaze_history and self._gaze_history[0].timestamp_ms < cutoff_ms:
             self._gaze_history.popleft()
-        self._video.set_gaze(snapshot)
+        self._gaze_video.set_gaze(snapshot)
         self._gaze_panel.update_snapshot(snapshot)
         if (
             snapshot.camera_pose_warning
@@ -1789,7 +1804,7 @@ class MainWindow(QMainWindow):
             f"'{name}' 2단계 등록 시작 — 1/2 중앙점 MLP 보정: "
             "물체 중앙의 한 점만 보면서 얼굴/몸을 좌상·우하·좌하·우상·근거리/원거리로 이동"
         )
-        self._video.set_registration_guidance(
+        self._gaze_video.set_registration_guidance(
             "REGISTRATION 1/2 - CENTER CALIBRATION",
             "KEEP EYES ON ONE CENTER POINT",
             0.0,
@@ -1805,7 +1820,7 @@ class MainWindow(QMainWindow):
             self._registration_step.setText("2/2 물체 영역 확정 완료")
             self._registration_progress.setValue(1000)
             self._registration_progress.setFormat("등록 데이터 처리 중  %p%")
-            self._video.set_registration_guidance(
+            self._gaze_video.set_registration_guidance(
                 "REGISTRATION COMPLETE", "BUILDING TARGET PROFILE", 1.0
             )
             return
@@ -1847,7 +1862,7 @@ class MainWindow(QMainWindow):
         self._registration_progress.setValue(round(progress * 1000))
         self._registration_progress.setFormat(f"{step}  %p%")
         self._registration_status.setText(status)
-        self._video.set_registration_guidance(title, video_label, progress)
+        self._gaze_video.set_registration_guidance(title, video_label, progress)
         marker = (phase, phase_index)
         if marker != self._registration_phase_marker:
             previous_phase = (
@@ -2037,7 +2052,7 @@ class MainWindow(QMainWindow):
             "background:#161b22; color:#8b949e; border:1px solid #30363d;"
             " border-radius:6px; padding:8px; font-weight:600;"
         )
-        self._video.clear_registration_guidance()
+        self._gaze_video.clear_registration_guidance()
 
     def _describe_triangulation_outcome(self, record: TargetRecord) -> str:
         """3D 위치 추정이 성공했는지, 실패했다면 왜 각도 모드로 대체됐는지를
@@ -2189,6 +2204,7 @@ class MainWindow(QMainWindow):
     def _on_camera_failed(self, message: str) -> None:
         self._log.error(message)
         self._video._show_placeholder("NO CAMERA")
+        self._gaze_video._show_placeholder("NO CAMERA")
 
     def _on_tick(self) -> None:
         # 인식 스트림은 _on_hand에서 프레임마다(12fps로 솎아) 직접 찍는다 — 여기선 안 건드림.

@@ -50,14 +50,15 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
     try:
         tabs = window.centralWidget()
         assert tabs is not None
-        # six tabs: 실시간 / Gaze 파이프라인 / 손 추적 / 파이프라인 / 지연·어댑터 / 파인튜닝
-        assert tabs.count() == 6
+        # seven tabs: 실시간 / 시선 인식 / Gaze 파이프라인 / 손 추적 / 파이프라인 / 지연·어댑터 / 파인튜닝
+        assert tabs.count() == 7
         assert tabs.tabText(0) == "실시간"
-        assert tabs.tabText(1) == "Gaze 파이프라인"
-        assert tabs.tabText(2) == "손 추적"
-        assert tabs.tabText(3) == "파이프라인"
-        assert tabs.tabText(4) == "지연·어댑터"
-        assert tabs.tabText(5) == "파인튜닝"
+        assert tabs.tabText(1) == "시선 인식"
+        assert tabs.tabText(2) == "Gaze 파이프라인"
+        assert tabs.tabText(3) == "손 추적"
+        assert tabs.tabText(4) == "파이프라인"
+        assert tabs.tabText(5) == "지연·어댑터"
+        assert tabs.tabText(6) == "파인튜닝"
         assert window._sample_button.text() == "시선 샘플 저장 (0/10)"
         assert window._sample_list.count() == 0
         assert window._gaze_config.enable_3d_target_matching is False
@@ -287,13 +288,13 @@ def test_registration_ui_starts_in_center_phase_and_can_cancel(tmp_path: Path) -
         assert "1/2" in window._registration_step.text()
         assert window._cancel_registration_button.isEnabled()
         assert not window._register_target_button.isEnabled()
-        assert window._video._registration_guide is not None
+        assert window._gaze_video._registration_guide is not None
 
         window._cancel_target_registration()
         assert window._registration is None
         assert window._cancel_registration_button.isEnabled() is False
         assert window._register_target_button.isEnabled()
-        assert window._video._registration_guide is None
+        assert window._gaze_video._registration_guide is None
     finally:
         window.close()
         app.processEvents()
