@@ -49,3 +49,7 @@ training/runs/
 
 # 실험용 체크포인트(별도 경로로 학습한 A/B 결과물)
 training/experiments/
+
+# 동작 클립(.npz)은 어디에 두든 커밋하지 않는다 — cache 밖 백업 폴더(잘못 녹화분
+# 격리 등) 포함. training/cache/가 이미 캐시를 덮지만, 백업/임시 경로도 함께 막는다.
+training/**/*.npz
