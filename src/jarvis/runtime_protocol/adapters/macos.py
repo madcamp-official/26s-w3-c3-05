@@ -204,12 +204,45 @@ class MacOSInputSink:
         import Quartz
 
         current = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
-        target = (current.x + dx, current.y + dy)
+        # 목표를 전체 화면 경계로 클램프한다. CGEventGetLocation은 직전에 **설정한** 좌표를
+        # 되돌려주므로(하드웨어 클램프 반영 안 됨), 클램프하지 않으면 같은 방향 이동이
+        # 누적돼 커서 논리 위치가 화면 밖으로 무한정 드리프트한다(실측: y가 -4482까지) —
+        # 화면 밖으로 나가면 Dock·핫코너가 트리거되지 않고, 반대로 움직여도 그만큼
+        # "되감아야" 화면에 돌아온다.
+        min_x, min_y, max_x, max_y = self._desktop_bounds()
+        tx = min(max(current.x + dx, min_x), max_x - 1)
+        ty = min(max(current.y + dy, min_y), max_y - 1)
+        target = (tx, ty)
         event_type = Quartz.kCGEventLeftMouseDragged if dragging else Quartz.kCGEventMouseMoved
         event = Quartz.CGEventCreateMouseEvent(
             None, event_type, target, Quartz.kCGMouseButtonLeft
         )
         self._post(event)
+
+    def _desktop_bounds(self) -> tuple[float, float, float, float]:
+        """활성 디스플레이 전체를 감싸는 경계 (min_x, min_y, max_x, max_y). 전역 top-left 좌표.
+
+        디스플레이 구성은 자주 안 바뀌므로 한 번 계산해 캐싱한다.
+        """
+        cached = getattr(self, "_desktop_bounds_cache", None)
+        if cached is not None:
+            return cached
+        import Quartz
+
+        err, ids, count = Quartz.CGGetActiveDisplayList(16, None, None)
+        if err != 0 or not count:
+            b = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
+            cached = (b.origin.x, b.origin.y, b.origin.x + b.size.width, b.origin.y + b.size.height)
+        else:
+            bounds = [Quartz.CGDisplayBounds(did) for did in ids[:count]]
+            cached = (
+                min(b.origin.x for b in bounds),
+                min(b.origin.y for b in bounds),
+                max(b.origin.x + b.size.width for b in bounds),
+                max(b.origin.y + b.size.height for b in bounds),
+            )
+        self._desktop_bounds_cache = cached
+        return cached
 
     def switch_window(self, forward: bool, repeat: int) -> None:
         """Cmd+Tab (forward) / Cmd+Shift+Tab (backward)로 창을 전환한다.
