@@ -99,6 +99,7 @@ def _target_record() -> TargetRecord:
         device_id=TARGET_ID,
         area_profile=_area_profile(),
         pose_correction=_pose_correction(),
+        reference_face_scale=0.2,
     )
 
 
@@ -193,6 +194,14 @@ def test_report_aggregates_accuracy_per_label(tmp_path: Path) -> None:
     assert target.bins and target.bins[0].frame_count == 6
     assert target.bins[0].in_area_percent == pytest.approx(100.0)
     assert target.bins[0].stored_offset_yaw == pytest.approx(0.0)
+    assert set(target.axis_slices) == {
+        "head_pitch",
+        "face_scale_ratio",
+        "face_x",
+        "face_y",
+    }
+    assert target.axis_slices["face_scale_ratio"][0].frame_count == 6
+    assert target.closed_eye_frames == 0
 
     # 같은 방향을 보는 "none" 라벨은 UNKNOWN이 아니므로 정확도가 낮게 잡힌다 —
     # 라벨별 기대값(UNKNOWN)이 분리 집계되는지 확인.
@@ -202,6 +211,8 @@ def test_report_aggregates_accuracy_per_label(tmp_path: Path) -> None:
     rendered = format_report(report)
     assert "monitor" in rendered
     assert "head yaw bin" in rendered
+    assert "face scale / registered scale" in rendered
+    assert "representative failures" in rendered
 
 
 def test_report_warns_when_measured_bias_diverges_from_stored_offset(tmp_path: Path) -> None:

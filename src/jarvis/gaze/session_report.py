@@ -51,7 +51,7 @@ class SessionData:
     def target_record(self, target_id: str) -> dict[str, Any] | None:
         for record in self.header.get("targets", []):
             if record["target_id"] == target_id:
-                return record
+                return dict(record)
         return None
 
 
@@ -124,6 +124,38 @@ class BinStats:
 
 
 @dataclass(frozen=True, slots=True)
+class SliceStats:
+    """한 관측 축의 구간별 판정 성능."""
+
+    lower: float
+    upper: float
+    frame_count: int
+    accuracy_percent: float
+    unknown_percent: float
+    no_gaze_percent: float
+    in_area_percent: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class FailureExample:
+    """같은 실패를 수백 줄 나열하지 않고 원인별 한 프레임만 보존한다."""
+
+    frame_id: int
+    timestamp_ms: int
+    predicted: str
+    reason: str
+    gaze_source: str
+    feature_gaze: tuple[float, float] | None
+    head: tuple[float, float, float]
+    face_center: tuple[float, float] | None
+    face_scale: float | None
+    eyes_open: bool | None
+    eye_open_ratio: tuple[float | None, float | None] | None
+    area_normalized_distance: float | None
+    feature_normalized_distance: float | None
+
+
+@dataclass(frozen=True, slots=True)
 class LabelReport:
     label: str
     display_name: str
@@ -135,6 +167,10 @@ class LabelReport:
     lock_completions: int
     max_dwell_ms: int
     warnings: list[str]
+    axis_slices: dict[str, list[SliceStats]]
+    failure_examples: list[FailureExample]
+    source_reasons: dict[str, int]
+    closed_eye_frames: int
 
     @property
     def accuracy_percent(self) -> float:
@@ -203,6 +239,33 @@ def build_report(
             correction=correction,
         )
         warnings = _bin_warnings(label, bins, correction)
+        reference_face_scale = (
+            float(record["reference_face_scale"])
+            if record and record.get("reference_face_scale")
+            else None
+        )
+        axis_slices = _build_axis_slices(
+            label_frames,
+            label=label,
+            tolerance=tolerance,
+            reference_face_scale=reference_face_scale,
+        )
+        warnings.extend(
+            _axis_warnings(
+                axis_slices,
+                overall_accuracy=_percent(
+                    classified.get(
+                        UNKNOWN_TARGET if label == NO_TARGET_LABEL else label,
+                        0,
+                    ),
+                    len(label_frames),
+                ),
+            )
+        )
+        source_reasons = Counter(
+            str(frame["gaze"].get("source_reason") or "(none)")
+            for frame in label_frames
+        )
 
         lock_completions = 0
         max_dwell_ms = 0
@@ -226,6 +289,12 @@ def build_report(
                 lock_completions=lock_completions,
                 max_dwell_ms=max_dwell_ms,
                 warnings=warnings,
+                axis_slices=axis_slices,
+                failure_examples=_failure_examples(label_frames, label=label),
+                source_reasons=dict(source_reasons),
+                closed_eye_frames=sum(
+                    1 for frame in label_frames if frame["obs"].get("eyes_open") is False
+                ),
             )
         )
 
@@ -238,6 +307,209 @@ def build_report(
         gaze_sources=dict(gaze_sources),
         labels=label_reports,
     )
+
+
+def _face_center(frame: dict[str, Any]) -> tuple[float, float] | None:
+    stored = frame["obs"].get("face_center")
+    if stored is not None:
+        return float(stored[0]), float(stored[1])
+    centers = [
+        center
+        for center in (frame["obs"].get("eye_l"), frame["obs"].get("eye_r"))
+        if center is not None
+    ]
+    if not centers:
+        return None
+    return (
+        sum(float(center[0]) for center in centers) / len(centers),
+        sum(float(center[1]) for center in centers) / len(centers),
+    )
+
+
+def _axis_value(
+    frame: dict[str, Any],
+    axis: str,
+    reference_face_scale: float | None,
+) -> float | None:
+    if axis == "head_pitch":
+        return float(frame["obs"]["head"][1])
+    if axis in {"face_x", "face_y"}:
+        center = _face_center(frame)
+        return center[0 if axis == "face_x" else 1] if center is not None else None
+    if axis == "face_scale_ratio":
+        current = frame["obs"].get("face_scale")
+        if current is None or reference_face_scale is None or reference_face_scale <= 0.0:
+            return None
+        return float(current) / reference_face_scale
+    raise ValueError(f"unsupported report axis: {axis}")
+
+
+def _build_axis_slices(
+    frames: list[dict[str, Any]],
+    *,
+    label: str,
+    tolerance: float,
+    reference_face_scale: float | None,
+) -> dict[str, list[SliceStats]]:
+    widths = {
+        "head_pitch": 10.0,
+        "face_scale_ratio": 0.20,
+        "face_x": 0.10,
+        "face_y": 0.10,
+    }
+    expected = UNKNOWN_TARGET if label == NO_TARGET_LABEL else label
+    result: dict[str, list[SliceStats]] = {}
+    for axis, width in widths.items():
+        grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for frame in frames:
+            value = _axis_value(frame, axis, reference_face_scale)
+            if value is not None and math.isfinite(value):
+                grouped[int(math.floor(value / width))].append(frame)
+        slices: list[SliceStats] = []
+        for index in sorted(grouped):
+            members = grouped[index]
+            target_rows = [
+                frame["targets"].get(label)
+                for frame in members
+                if label != NO_TARGET_LABEL
+            ]
+            scored = [row for row in target_rows if row is not None]
+            slices.append(
+                SliceStats(
+                    lower=index * width,
+                    upper=(index + 1) * width,
+                    frame_count=len(members),
+                    accuracy_percent=_percent(
+                        sum(1 for frame in members if frame["cls"]["target"] == expected),
+                        len(members),
+                    ),
+                    unknown_percent=_percent(
+                        sum(
+                            1
+                            for frame in members
+                            if frame["cls"]["target"] == UNKNOWN_TARGET
+                        ),
+                        len(members),
+                    ),
+                    no_gaze_percent=_percent(
+                        sum(1 for frame in members if frame["gaze"].get("feature") is None),
+                        len(members),
+                    ),
+                    in_area_percent=(
+                        _percent(
+                            sum(
+                                1
+                                for row in scored
+                                if float(row["area_nd"]) <= tolerance
+                            ),
+                            len(scored),
+                        )
+                        if scored
+                        else None
+                    ),
+                )
+            )
+        if slices:
+            result[axis] = slices
+    return result
+
+
+def _axis_warnings(
+    axes: dict[str, list[SliceStats]],
+    *,
+    overall_accuracy: float,
+) -> list[str]:
+    labels = {
+        "head_pitch": "head pitch",
+        "face_scale_ratio": "등록 대비 얼굴 크기",
+        "face_x": "화면 내 얼굴 x",
+        "face_y": "화면 내 얼굴 y",
+    }
+    warnings: list[str] = []
+    for axis, slices in axes.items():
+        for item in slices:
+            if item.frame_count < 10:
+                continue
+            if item.accuracy_percent + 20.0 <= overall_accuracy:
+                warnings.append(
+                    f"{labels[axis]} {item.lower:.2f}..{item.upper:.2f}: "
+                    f"정확도 {item.accuracy_percent:.0f}% (전체 {overall_accuracy:.0f}%)"
+                )
+            elif item.no_gaze_percent >= 50.0:
+                warnings.append(
+                    f"{labels[axis]} {item.lower:.2f}..{item.upper:.2f}: "
+                    f"시선 산출 실패 {item.no_gaze_percent:.0f}%"
+                )
+    return warnings
+
+
+def _failure_examples(
+    frames: list[dict[str, Any]],
+    *,
+    label: str,
+    limit: int = 6,
+) -> list[FailureExample]:
+    expected = UNKNOWN_TARGET if label == NO_TARGET_LABEL else label
+    examples: list[FailureExample] = []
+    seen_reasons: set[str] = set()
+    for frame in frames:
+        predicted = str(frame["cls"]["target"])
+        if predicted == expected:
+            continue
+        if frame["gaze"].get("feature") is None:
+            reason = "no-gaze: " + str(
+                frame["gaze"].get("source_reason") or frame["gaze"].get("source")
+            )
+        elif predicted == UNKNOWN_TARGET:
+            reason = _reject_reason_key(frame["cls"].get("reject"))
+        else:
+            reason = f"misclassified as {predicted}"
+        if reason in seen_reasons:
+            continue
+        seen_reasons.add(reason)
+        target_detail = frame.get("targets", {}).get(label, {})
+        feature_gaze = frame["gaze"].get("feature")
+        center = _face_center(frame)
+        eye_ratio = frame["obs"].get("eye_open_ratio")
+        head = frame["obs"]["head"]
+        examples.append(
+            FailureExample(
+                frame_id=int(frame["frame"]),
+                timestamp_ms=int(frame["t"]),
+                predicted=predicted,
+                reason=reason,
+                gaze_source=str(frame["gaze"].get("source", "unavailable")),
+                feature_gaze=(
+                    (float(feature_gaze[0]), float(feature_gaze[1]))
+                    if feature_gaze is not None
+                    else None
+                ),
+                head=(float(head[0]), float(head[1]), float(head[2])),
+                face_center=center,
+                face_scale=(
+                    float(frame["obs"]["face_scale"])
+                    if frame["obs"].get("face_scale") is not None
+                    else None
+                ),
+                eyes_open=frame["obs"].get("eyes_open"),
+                eye_open_ratio=(
+                    (eye_ratio[0], eye_ratio[1]) if eye_ratio is not None else None
+                ),
+                area_normalized_distance=(
+                    float(target_detail["area_nd"])
+                    if target_detail.get("area_nd") is not None
+                    else None
+                ),
+                feature_normalized_distance=(
+                    float(target_detail["feature_nd"])
+                    if target_detail.get("feature_nd") is not None
+                    else None
+                ),
+            )
+        )
+        if len(examples) >= limit:
+            break
+    return examples
 
 
 def _build_bins(
@@ -395,6 +667,18 @@ def format_report(report: SessionReport) -> str:
         )
         if label.no_gaze_frames:
             lines.append(f"no-gaze frames: {label.no_gaze_frames}")
+        lines.append(
+            f"eyes closed: {label.closed_eye_frames} "
+            f"({_percent(label.closed_eye_frames, label.frame_count):.0f}%)"
+        )
+        source_reasons = ", ".join(
+            f"{reason} x{count}"
+            for reason, count in sorted(
+                label.source_reasons.items(), key=lambda item: -item[1]
+            )
+        )
+        if source_reasons:
+            lines.append(f"gaze source reasons: {source_reasons}")
         if label.reject_reasons:
             reasons = ", ".join(
                 f"{reason} x{count}"
@@ -440,6 +724,61 @@ def format_report(report: SessionReport) -> str:
                     f"{item.frame_count:>5} {item.accuracy_percent:>5.0f} "
                     f"{item.unknown_percent:>6.0f} {in_area:>9} {corr:>6} "
                     f"{bias:>13} {stored:>13}{coverage_mark}"
+                )
+        axis_titles = {
+            "head_pitch": "head pitch (deg)",
+            "face_scale_ratio": "face scale / registered scale",
+            "face_x": "face center x",
+            "face_y": "face center y",
+        }
+        for axis, slices in label.axis_slices.items():
+            lines.append(f"-- {axis_titles[axis]} --")
+            lines.append(
+                f"{'range':>15} {'n':>5} {'acc%':>6} {'UNK%':>6} "
+                f"{'no-gaze%':>9} {'in-area%':>9}"
+            )
+            for slice_item in slices:
+                in_area = (
+                    f"{slice_item.in_area_percent:.0f}"
+                    if slice_item.in_area_percent is not None
+                    else "--"
+                )
+                lines.append(
+                    f"{slice_item.lower:+7.2f}..{slice_item.upper:+6.2f} "
+                    f"{slice_item.frame_count:>5} {slice_item.accuracy_percent:>6.0f} "
+                    f"{slice_item.unknown_percent:>6.0f} "
+                    f"{slice_item.no_gaze_percent:>9.0f} "
+                    f"{in_area:>9}"
+                )
+        if label.failure_examples:
+            lines.append("representative failures:")
+            for failure in label.failure_examples:
+                gaze = (
+                    f"({failure.feature_gaze[0]:+.1f},{failure.feature_gaze[1]:+.1f})"
+                    if failure.feature_gaze is not None
+                    else "--"
+                )
+                face = (
+                    f"({failure.face_center[0]:.2f},{failure.face_center[1]:.2f})"
+                    if failure.face_center is not None
+                    else "--"
+                )
+                scale = (
+                    f"{failure.face_scale:.3f}"
+                    if failure.face_scale is not None
+                    else "--"
+                )
+                area = (
+                    f"x{failure.area_normalized_distance:.2f}"
+                    if failure.area_normalized_distance is not None
+                    else "--"
+                )
+                lines.append(
+                    f"  frame {failure.frame_id} t={failure.timestamp_ms} "
+                    f"pred={failure.predicted} reason={failure.reason} "
+                    f"source={failure.gaze_source} gaze={gaze} "
+                    f"head=({failure.head[0]:+.1f},{failure.head[1]:+.1f},"
+                    f"{failure.head[2]:+.1f}) face={face} scale={scale} area={area}"
                 )
         for warning in label.warnings:
             lines.append(f"[warn] {warning}")
