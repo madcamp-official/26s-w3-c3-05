@@ -32,7 +32,12 @@ from jarvis.gesture_fusion import (
     HandFeatureExtractor,
     feature_dimension,
 )
-from jarvis.gesture_fusion.model_protocol import GestureModel, SlidingFeatureWindow
+from jarvis.gesture_fusion.model_protocol import (
+    EXPECTED_INPUT_FPS,
+    FrameRateLimiter,
+    GestureModel,
+    SlidingFeatureWindow,
+)
 from jarvis.gesture_fusion.spotting import DEFAULT_SPOTTER_CONFIG, GestureSpotter, SpotterConfig
 from jarvis.monitoring.gesture_source import RecognizedGesture
 
@@ -80,6 +85,7 @@ class GestureProbe:
         gesture_config: GestureConfig | None = None,
         spotter_config: SpotterConfig = DEFAULT_SPOTTER_CONFIG,
         model: GestureModel | None = None,
+        target_fps: float | None = EXPECTED_INPUT_FPS,
     ) -> None:
         self._config = gesture_config or DEFAULT_GESTURE_CONFIG
         self._model_asset_path = model_asset_path
@@ -91,6 +97,11 @@ class GestureProbe:
         self._window: SlidingFeatureWindow | None = None
         self._available = False
         self._status_text = "gesture 프로브 미시작"
+        # 인식 feed를 학습 cadence(EXPECTED_INPUT_FPS)로 솎는다 — 웹캠 30fps를 그대로
+        # 넣으면 12fps로 학습된 모델과 velocity·receptive field가 어긋난다. None이면
+        # 솎지 않는다(모든 프레임 처리 — 순수 `_advance` 테스트는 이 경로를 안 탄다).
+        self._rate_limiter = FrameRateLimiter(target_fps) if target_fps else None
+        self._last_snapshot: GestureSnapshot | None = None
 
     @property
     def available(self) -> bool:
@@ -150,6 +161,11 @@ class GestureProbe:
         """
         if self._landmarker is None or self._model is None or self._window is None:
             return None
+        # 학습 cadence로 프레임을 솎는다 — 채택 안 된 프레임은 landmarker(비용 큼)조차
+        # 돌리지 않고 직전 스냅샷을 그대로 돌려준다. MediaPipe VIDEO 모드는 더 큰 프레임
+        # 간격(≈83ms)을 그냥 낮은 fps로 처리하므로 문제없다.
+        if self._rate_limiter is not None and not self._rate_limiter.should_accept(timestamp_ms):
+            return self._last_snapshot
         import cv2
 
         from jarvis.gesture_fusion.mediapipe_hands import MediaPipeHandLandmarker
@@ -159,6 +175,7 @@ class GestureProbe:
         rgb = cast("npt.NDArray[np.uint8]", cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB))
         observation = self._landmarker.process(rgb, timestamp_ms, frame_id)
         snapshot = self._advance(observation, started)
+        self._last_snapshot = snapshot
         return snapshot
 
     def _advance(self, observation: HandObservation, started: float) -> GestureSnapshot:

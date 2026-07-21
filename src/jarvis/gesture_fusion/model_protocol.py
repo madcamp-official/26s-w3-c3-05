@@ -75,6 +75,15 @@ DEFAULT_BACKGROUND_LABELS: frozenset[str] = frozenset(
     }
 )
 
+# 모델이 가정하는 입력 프레임레이트(fps). Jester 사전학습이 12fps 프레임 시퀀스라
+# TCN의 고정 receptive field(프레임 수)가 그 cadence에서 특정 실시간 길이를 덮도록
+# 학습됐다. 따라서 (1) 웹캠 파인튜닝 클립은 저장 전 이 fps로 리샘플하고
+# (`training.augment.resample_clip_to_fps`), (2) 실시간 인식도 이 fps로 프레임을
+# 솎아 feed해야(`FrameRateLimiter`) velocity·receptive field가 정합한다. 학습·추론
+# cadence가 어긋나면 두 선택지 중 최악이 되므로 한 곳에서 정의해 공유한다.
+# 값은 Jester 추출 fps(`training/extract/extract_jester.py`의 _FPS)와 같아야 한다.
+EXPECTED_INPUT_FPS: float = 12.0
+
 
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
@@ -328,3 +337,44 @@ class SlidingFeatureWindow:
         if len(self._buffer) > self.window_size:
             self._buffer.pop(0)
         return np.stack(self._buffer, axis=0)
+
+
+@dataclass(slots=True)
+class FrameRateLimiter:
+    """스트림을 목표 fps로 솎는 causal 게이트 — 실시간 인식을 학습 cadence에 맞춘다.
+
+    파인튜닝 클립이 `EXPECTED_INPUT_FPS`로 정규화되면(웹캠 30fps → 리샘플) 추론도 같은
+    fps로 feed해야 velocity·receptive field가 정합한다. 매 프레임을 파이프라인에 넣는
+    대신, 직전 채택 프레임과 target 간격(`1000/target_fps` ms) 이상 벌어졌을 때만
+    채택한다. 미래 프레임을 못 보므로 보간이 아니라 **솎기**(causal)이며, velocity는
+    실제 dt로 계산되므로 격자 지터(예: 30fps에서 66~99ms)에 강건하다.
+
+    `SlidingFeatureWindow`와 같은 feed 계층 유틸이라 여기(torch-free 경계)에 둔다 —
+    모니터·런타임 인식 경로가 공유하고, mediapipe·torch 없이 단위 테스트할 수 있다.
+    """
+
+    target_fps: float
+    _last_accepted_ms: int | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.target_fps) or self.target_fps <= 0.0:
+            raise ValueError("target_fps must be finite and positive")
+
+    def reset(self) -> None:
+        """다음 프레임을 무조건 채택하도록 상태를 비운다(추적 세션 경계 등에서)."""
+        self._last_accepted_ms = None
+
+    def should_accept(self, timestamp_ms: int) -> bool:
+        """이 프레임을 인식 파이프라인에 넣을지 판정한다. **채택(True) 시 상태를 갱신한다.**
+
+        첫 프레임은 항상 채택한다. 이후에는 직전 채택 이후 target 간격 이상 지났을
+        때만 채택해 유효 프레임레이트를 `target_fps` 이하로 유지한다.
+        """
+        interval_ms = 1000.0 / self.target_fps
+        if (
+            self._last_accepted_ms is None
+            or timestamp_ms - self._last_accepted_ms >= interval_ms
+        ):
+            self._last_accepted_ms = timestamp_ms
+            return True
+        return False

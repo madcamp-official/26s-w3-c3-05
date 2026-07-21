@@ -103,3 +103,63 @@ def time_warp(clip: CachedClip, rate: float) -> CachedClip:
         ),
         timestamp_ms=new_timestamps.astype(np.int64),
     )
+
+
+def resample_clip_to_fps(clip: CachedClip, target_fps: float) -> CachedClip:
+    """클립을 target fps로 리샘플한다 — augmentation이 아니라 **fps 정규화**다.
+
+    `time_warp`와의 결정적 차이: `time_warp`는 새 timestamp를 **원본 평균 간격**으로
+    재생성해 클립 duration 자체를 바꾼다(같은 동작을 다른 속도로 = 속도 증강). 여기서는
+    **duration을 보존**하고 프레임 간격만 target fps(`1000/target_fps` ms)로 바꾼다.
+    그래야 causal 미분(velocity/acceleration)이 fps에 불변으로 유지되고, TCN의 고정
+    receptive field(프레임 수)가 pretrain(Jester 12fps)과 **같은 실시간 길이**를 덮는다.
+
+    30fps 웹캠 클립을 12fps로 내리는 것이 대표 용도다(29프레임이 0.97초 대신 2.42초를
+    덮게 해 느린 회전이 잘리지 않음). 실시간 인식도 같은 target fps로 다운샘플해야
+    정합이 완성된다(`gesture_probe`의 frame decimation).
+
+    프레임 수는 하드코딩한 원본 fps가 아니라 **실제 클립 duration**에서 뽑는다 — 웹캠
+    fps가 흔들리기 때문이다. 2프레임 미만이거나 duration이 0이면 원본을 그대로 반환한다.
+    """
+    if target_fps <= 0.0:
+        raise ValueError("target_fps must be positive")
+    original_length = len(clip)
+    if original_length < 2:
+        return clip
+    duration_ms = float(clip.timestamp_ms[-1] - clip.timestamp_ms[0])
+    if duration_ms <= 0.0:
+        return clip
+
+    target_interval_ms = 1000.0 / target_fps
+    # N 프레임은 (N-1) 간격을 이룬다: N = duration/간격 + 1.
+    new_length = max(2, int(round(duration_ms / target_interval_ms)) + 1)
+    if new_length == original_length:
+        return clip
+
+    old_index = np.linspace(0.0, original_length - 1, num=original_length)
+    new_index = np.linspace(0.0, original_length - 1, num=new_length)
+    # timestamp를 **target 간격**으로 균일 재생성(Jester 12fps 격자와 동일) — 이 한 줄이
+    # time_warp(원본 간격 재사용)와 갈리는 지점이다.
+    new_timestamps = (
+        clip.timestamp_ms[0] + np.arange(new_length, dtype=np.float64) * target_interval_ms
+    )
+
+    return replace(
+        clip,
+        landmarks=_resample(clip.landmarks, old_index, new_index),
+        wrist_position=_resample(clip.wrist_position, old_index, new_index),
+        palm_scale=_resample(clip.palm_scale.reshape(-1, 1), old_index, new_index).reshape(-1),
+        detection_confidence=_resample(
+            clip.detection_confidence.reshape(-1, 1), old_index, new_index
+        ).reshape(-1),
+        handedness_score=_resample(
+            clip.handedness_score.reshape(-1, 1), old_index, new_index
+        ).reshape(-1),
+        hand_detected=(
+            _resample(
+                clip.hand_detected.astype(np.float64).reshape(-1, 1), old_index, new_index
+            ).reshape(-1)
+            >= 0.5
+        ),
+        timestamp_ms=new_timestamps.astype(np.int64),
+    )

@@ -9,7 +9,7 @@ import pytest
 
 from jarvis.gesture_fusion.config import HAND_LANDMARK_COUNT, LANDMARK_DIMS
 from jarvis.gesture_fusion.landmarks import HandObservation
-from training.augment import flip_landmarks, time_warp
+from training.augment import flip_landmarks, resample_clip_to_fps, time_warp
 from training.data.clip_cache import observations_to_cached_clip
 
 
@@ -128,3 +128,83 @@ def test_time_warp_rejects_non_positive_rate() -> None:
         time_warp(clip, rate=0.0)
     with pytest.raises(ValueError):
         time_warp(clip, rate=-1.0)
+
+
+# --- resample_clip_to_fps: fps 정규화 (augmentation 아님) ---
+#
+# 웹캠 30fps 클립을 pretrain(Jester 12fps)에 정합시키는 저장 직전 변환. time_warp와
+# 달리 duration을 보존하고 프레임 간격만 target fps로 바꾼다.
+
+_MEAN_X_VEL_30FPS = 0.01 / (33 / 1000.0)  # _observation의 프레임당 0.01, 33ms 간격
+
+
+def _mean_x_velocity(clip: object) -> float:
+    """랜드마크 x의 평균 velocity(단위/초) — 실제 dt로 나눈 causal 미분."""
+    xs = clip.landmarks[:, 0, 0]  # type: ignore[attr-defined]
+    ts_s = clip.timestamp_ms.astype(np.float64) / 1000.0  # type: ignore[attr-defined]
+    return float(np.mean(np.diff(xs) / np.diff(ts_s)))
+
+
+def test_resample_downsamples_30fps_to_12fps_frame_count() -> None:
+    clip = _clip("slide_two_fingers_up", length=31, fps_interval_ms=33)  # ~1초, 30fps
+    resampled = resample_clip_to_fps(clip, target_fps=12.0)
+    # ~1초를 12fps로 → 약 12~13프레임
+    assert 11 <= len(resampled) <= 14
+    assert len(resampled) < len(clip)
+
+
+def test_resample_uses_target_interval_timestamps_not_original() -> None:
+    """이 설계의 정의적 테스트 — 간격이 원본(33ms)이 아니라 target(83.3ms)이어야 한다.
+
+    time_warp를 그대로 쓰면 원본 간격이 남아 velocity가 부풀려진다. 이 테스트가 그
+    회귀를 막는다.
+    """
+    clip = _clip("slide_two_fingers_up", length=31, fps_interval_ms=33)
+    resampled = resample_clip_to_fps(clip, target_fps=12.0)
+    mean_interval = float(np.mean(np.diff(resampled.timestamp_ms)))
+    assert abs(mean_interval - 1000.0 / 12.0) < 2.0  # ≈83.3ms
+
+    # 같은 프레임 수로 줄여도 time_warp는 원본 간격(~33ms)을 유지한다(다른 의미).
+    warped = time_warp(clip, rate=len(clip) / len(resampled))
+    warped_interval = float(np.mean(np.diff(warped.timestamp_ms)))
+    assert abs(warped_interval - 33.0) < 5.0
+    assert mean_interval > warped_interval * 2  # 확실히 다른 스케일
+
+
+def test_resample_preserves_velocity() -> None:
+    """duration 보존 + target 간격 timestamp라 units/초 velocity가 유지돼야 한다."""
+    clip = _clip("slide_two_fingers_up", length=31, fps_interval_ms=33)
+    resampled = resample_clip_to_fps(clip, target_fps=12.0)
+    assert abs(_mean_x_velocity(resampled) - _MEAN_X_VEL_30FPS) < 0.02 * _MEAN_X_VEL_30FPS
+
+
+def test_resample_preserves_duration() -> None:
+    clip = _clip("slide_two_fingers_up", length=31, fps_interval_ms=33)
+    resampled = resample_clip_to_fps(clip, target_fps=12.0)
+    original_duration = int(clip.timestamp_ms[-1] - clip.timestamp_ms[0])
+    new_duration = int(resampled.timestamp_ms[-1] - resampled.timestamp_ms[0])
+    assert abs(new_duration - original_duration) < 1000.0 / 12.0  # 1프레임 이내
+
+
+def test_resample_preserves_missing_frame_region() -> None:
+    clip = _clip("slide_two_fingers_up", length=31)
+    hand_detected = np.ones(31, dtype=np.bool_)
+    hand_detected[12:20] = False
+    clip = replace(clip, hand_detected=hand_detected)
+    resampled = resample_clip_to_fps(clip, target_fps=12.0)
+    assert not np.all(resampled.hand_detected)
+    assert np.any(resampled.hand_detected)
+
+
+def test_resample_noop_when_already_target_fps() -> None:
+    clip = _clip("slide_two_fingers_up", length=13, fps_interval_ms=83)  # 이미 ~12fps
+    resampled = resample_clip_to_fps(clip, target_fps=12.0)
+    assert len(resampled) == len(clip)
+
+
+def test_resample_rejects_non_positive_fps() -> None:
+    clip = _clip("slide_two_fingers_up", length=10)
+    with pytest.raises(ValueError):
+        resample_clip_to_fps(clip, target_fps=0.0)
+    with pytest.raises(ValueError):
+        resample_clip_to_fps(clip, target_fps=-12.0)

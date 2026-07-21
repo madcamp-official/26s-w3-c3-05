@@ -145,3 +145,44 @@ def test_default_background_labels_are_real_labels() -> None:
 def test_representative_background_is_label_index_zero() -> None:
     """spotting.py가 배경 판정에 `DEFAULT_GESTURE_LABELS[0]`을 쓰는 규약과 맞아야 한다."""
     assert DEFAULT_GESTURE_LABELS[0] in DEFAULT_BACKGROUND_LABELS
+
+
+# --- FrameRateLimiter: 추론 feed를 학습 cadence로 솎기 ---
+
+
+def test_frame_rate_limiter_accepts_first_frame() -> None:
+    from jarvis.gesture_fusion.model_protocol import FrameRateLimiter
+
+    limiter = FrameRateLimiter(target_fps=12.0)
+    assert limiter.should_accept(0) is True
+
+
+def test_frame_rate_limiter_skips_frames_closer_than_interval() -> None:
+    """30fps(33ms) 스트림을 12fps(83ms)로 솎으면 일부 프레임이 skip돼야 한다."""
+    from jarvis.gesture_fusion.model_protocol import FrameRateLimiter
+
+    limiter = FrameRateLimiter(target_fps=12.0)
+    accepted = [ts for ts in range(0, 1000, 33) if limiter.should_accept(ts)]
+    # 1초 스트림 → 약 12프레임 채택(30fps 30프레임에서 솎임)
+    assert 11 <= len(accepted) <= 13
+    # 채택된 프레임 간격은 target(83ms) 이상
+    assert all(b - a >= 83 for a, b in zip(accepted, accepted[1:], strict=False))
+
+
+def test_frame_rate_limiter_reset_reaccepts() -> None:
+    from jarvis.gesture_fusion.model_protocol import FrameRateLimiter
+
+    limiter = FrameRateLimiter(target_fps=12.0)
+    assert limiter.should_accept(0) is True
+    assert limiter.should_accept(10) is False  # 10ms < 83ms
+    limiter.reset()
+    assert limiter.should_accept(20) is True  # reset 후 무조건 채택
+
+
+def test_frame_rate_limiter_rejects_invalid_fps() -> None:
+    from jarvis.gesture_fusion.model_protocol import FrameRateLimiter
+
+    with pytest.raises(ValueError, match="target_fps"):
+        FrameRateLimiter(target_fps=0.0)
+    with pytest.raises(ValueError, match="target_fps"):
+        FrameRateLimiter(target_fps=float("nan"))

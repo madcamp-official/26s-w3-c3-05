@@ -141,3 +141,18 @@ def test_probe_source_reports_probe_availability() -> None:
     source = ProbeGestureSource(GestureProbe(model_asset_path=None))
     assert source.available is False
     assert isinstance(source.status_text, str)
+
+
+def test_probe_defaults_to_expected_input_fps_rate_limiter() -> None:
+    """추론은 기본적으로 학습 cadence(EXPECTED_INPUT_FPS)로 프레임을 솎아야 한다."""
+    from jarvis.gesture_fusion.model_protocol import EXPECTED_INPUT_FPS
+
+    probe = GestureProbe(model_asset_path=None)
+    assert probe._rate_limiter is not None
+    assert probe._rate_limiter.target_fps == EXPECTED_INPUT_FPS
+
+
+def test_probe_rate_limiter_can_be_disabled() -> None:
+    """target_fps=None이면 솎지 않는다(모든 프레임 처리)."""
+    probe = GestureProbe(model_asset_path=None, target_fps=None)
+    assert probe._rate_limiter is None
