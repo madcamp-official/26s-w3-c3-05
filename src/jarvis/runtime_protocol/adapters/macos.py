@@ -41,6 +41,8 @@ _SCROLL_UNIT_LINE = 1
 _KEYCODE_TAB = 0x30
 _KEYCODE_COMMAND = 0x37
 _KEYCODE_SHIFT = 0x38
+_KEYCODE_CONTROL = 0x3B
+_KEYCODE_ARROW_UP = 0x7E  # Mission Control 기본 단축키 Ctrl+↑ 의 방향키
 _KEYCODE_F11 = 0x67  # 바탕화면 표시
 
 
@@ -87,8 +89,12 @@ class MacOSInputSink:
 
         F11(바탕화면) 같은 표준 키는 일반 키보드 이벤트로, 볼륨·재생 같은 미디어 키는
         시스템 정의 이벤트로 보낸다 — 미디어 키는 표준 keycode 경로로는 OS가 인식하지
-        않기 때문에 경로가 갈린다.
+        않기 때문에 경로가 갈린다. Mission Control은 표준 keycode 하나로는 안 열리므로
+        기본 단축키(Ctrl+↑)를 조합 키로 합성한다.
         """
+        if key is InputKey.MISSION_CONTROL:
+            self._tap_mission_control()
+            return
         if key is InputKey.SHOW_DESKTOP:
             import Quartz
 
@@ -97,6 +103,28 @@ class MacOSInputSink:
                 self._post(event)
             return
         self._tap_media_key(key)
+
+    def _tap_mission_control(self) -> None:
+        """Mission Control을 연다 — 기본 단축키 Ctrl+↑ 를 합성한다.
+
+        `switch_window`의 Cmd+Tab과 같은 구조: Control을 누른 채 방향키 위를 한 번
+        누른다. Quartz 키 이벤트에 Control 플래그를 실어 보내며, 모디파이어를
+        down/up으로 감싼다. (F3(Mission Control 키)도 같은 동작을 하지만 keycode가
+        키보드 배열·시스템 설정에 더 민감해 문서화된 조합 단축키를 쓴다.)
+        """
+        import Quartz
+
+        flags = Quartz.kCGEventFlagMaskControl
+
+        def key(code: int, key_down: bool, event_flags: int) -> None:
+            event = Quartz.CGEventCreateKeyboardEvent(None, code, key_down)
+            Quartz.CGEventSetFlags(event, event_flags)
+            self._post(event)
+
+        key(_KEYCODE_CONTROL, True, flags)
+        key(_KEYCODE_ARROW_UP, True, flags)
+        key(_KEYCODE_ARROW_UP, False, flags)
+        key(_KEYCODE_CONTROL, False, 0)
 
     def _tap_media_key(self, key: InputKey) -> None:
         """미디어 키 하나를 누름→뗌으로 전송한다.
