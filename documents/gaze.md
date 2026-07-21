@@ -309,6 +309,14 @@ gaze와 보정 gaze 중 **area 거리가 더 작은 쪽을 채택**한다
 `maximum_bin_iqr_deg`(기본 4°)보다 넓으면 그 bin을 버린다 — 스윕 실측에서
 |head yaw| ≤ 30° bin은 IQR 1~2°, 그 밖은 9~30°였다.
 
+**재등록-검증 루프는 `jarvis-gaze verify-target`으로 돌린다.** 재등록 직후
+`--label after-registration --output <a.json>`으로 응시 스윕을 1회 재검증하고,
+시간이 지나거나 자세·조명이 바뀐 뒤 `--compare <a.json>`으로 다시 실행하면
+bin별로 "직후부터 OUT(등록 수집 문제)"과 "직후엔 IN이었다가 OUT(세션
+드리프트 — 세션 시작 재보정/온라인 편향 추정 필요)"을 갈라 판정해 준다
+(`target_verification.py`). 판정은 런타임과 동일한 rescue 전용(min) 거리로
+계산하며, 표본 8프레임 미만 bin은 결론에서 제외한다.
+
 ### Target matching / UNKNOWN rejection
 
 | Setting | Current value | Meaning |

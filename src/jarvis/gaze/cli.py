@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import sys
 import time
 from dataclasses import asdict
@@ -217,6 +218,141 @@ def _run_diagnose_composition(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_verify_target(args: argparse.Namespace) -> int:
+    """재등록-검증 루프의 한 회차: 등록된 target을 응시 스윕으로 재검증한다.
+
+    사용법: 재등록 **직후** `--label after-registration --output <a.json>`으로
+    1회, 시간이 지나거나 자세·조명이 바뀐 뒤 `--compare <a.json>`으로 1회 더
+    실행한다. 직후부터 OUT이면 등록 수집 문제, 직후엔 IN인데 나중에 OUT이면
+    세션 드리프트다(target_verification.py 판정 문구 참고).
+    """
+    import datetime as _datetime
+
+    from jarvis.calibration.registry import TargetRegistry
+    from jarvis.gaze.classifier import TargetClassifier
+    from jarvis.gaze.config import GazeConfig
+    from jarvis.gaze.direction import direction_to_yaw_pitch
+    from jarvis.gaze.feature_profile import TargetFeatureSample
+    from jarvis.gaze.smoothing import GazeSmoother
+    from jarvis.gaze.features import compose_gaze_vector
+    from jarvis.gaze.target_verification import (
+        compare_verifications,
+        verify_target_samples,
+    )
+
+    config = GazeConfig()
+    registry = TargetRegistry(Path(args.profiles))
+    records = registry.records
+    if not records:
+        raise RuntimeError(f"no registered targets in {args.profiles}")
+    if args.target_id:
+        record = registry.get(args.target_id)
+        if record is None:
+            known = ", ".join(item.target_id for item in records)
+            raise RuntimeError(f"unknown target '{args.target_id}' (registered: {known})")
+    elif len(records) == 1:
+        record = records[0]
+    else:
+        known = ", ".join(item.target_id for item in records)
+        raise RuntimeError(f"multiple targets registered ({known}) — pass target_id")
+
+    classifier = TargetClassifier(config)
+    for item in records:
+        classifier.register_profile(
+            item.to_profile(),
+            geometry_3d=item.to_geometry_3d(),
+            feature_profile=item.feature_profile,
+            area_profile=item.area_profile,
+            pose_correction=item.pose_correction,
+        )
+    area_profile = classifier.area_profiles.get(record.target_id)
+    if area_profile is None:
+        raise RuntimeError(f"'{record.target_id}' has no traced area profile — re-register it")
+
+    print(
+        f"'{record.name}' 중앙 한 점에서 눈을 떼지 말고 고개만 움직이세요.\n"
+        f"  좌로 끝까지 → 우로 끝까지 → 위·아래 → 카메라 가까이·멀리.\n"
+        f"{args.duration_seconds:.0f}초 캡처합니다. 먼저 끝나면 Ctrl+C."
+    )
+    smoother = GazeSmoother(config)
+    samples: list[TargetFeatureSample] = []
+    deadline = time.monotonic() + args.duration_seconds
+    last_printed_ms = -args.interval_ms
+    try:
+        for observation in _observation_stream(Path(args.model), args.camera_index):
+            if not observation.eyes_open:
+                continue
+            gaze_vector = compose_gaze_vector(observation, config)
+            smoothed = smoother.update(gaze_vector)
+            if smoothed is None:
+                continue
+            left_eye = observation.left_eye_center_normalized
+            right_eye = observation.right_eye_center_normalized
+            if left_eye is None or right_eye is None:
+                continue
+            face_scale = math.hypot(right_eye[0] - left_eye[0], right_eye[1] - left_eye[1])
+            if not math.isfinite(face_scale) or face_scale <= 0.0:
+                continue
+            gaze_yaw, gaze_pitch = direction_to_yaw_pitch(smoothed.direction)
+            try:
+                sample = TargetFeatureSample(
+                    gaze_yaw=gaze_yaw,
+                    gaze_pitch=gaze_pitch,
+                    head_yaw=observation.head_yaw_deg,
+                    head_pitch=observation.head_pitch_deg,
+                    head_roll=observation.head_roll_deg,
+                    face_scale=face_scale,
+                    face_center_x=(left_eye[0] + right_eye[0]) * 0.5,
+                    face_center_y=(left_eye[1] + right_eye[1]) * 0.5,
+                )
+            except ValueError:
+                continue
+            samples.append(sample)
+            if observation.timestamp_ms - last_printed_ms >= args.interval_ms:
+                last_printed_ms = observation.timestamp_ms
+                distance, _gy, _gp = classifier.area_distance_and_gaze(
+                    record.target_id, area_profile, sample
+                )
+                status = "IN " if distance <= config.target_match_tolerance else "OUT"
+                remaining = max(0.0, deadline - time.monotonic())
+                print(
+                    f"[{remaining:4.1f}s] head_yaw={observation.head_yaw_deg:+6.1f} "
+                    f"area=x{distance:4.2f} {status}"
+                )
+            if time.monotonic() >= deadline:
+                break
+    except KeyboardInterrupt:
+        print("캡처를 중단하고 지금까지의 프레임으로 판정합니다.")
+
+    if len(samples) < args.minimum_frames:
+        raise RuntimeError(f"Only {len(samples)} valid frames captured; need {args.minimum_frames}.")
+
+    summary = verify_target_samples(classifier, record.target_id, samples, config)
+    payload = {
+        "target_id": record.target_id,
+        "target_name": record.name,
+        "label": args.label,
+        "captured_at": _datetime.datetime.now().isoformat(timespec="seconds"),
+        "profiles_path": str(args.profiles),
+        "summary": asdict(summary),
+    }
+    rendered = json.dumps(payload, indent=2, ensure_ascii=False)
+    print(rendered)
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(rendered + "\n", encoding="utf-8")
+        print(f"saved to {output_path}")
+
+    if args.compare:
+        earlier_payload = json.loads(Path(args.compare).read_text(encoding="utf-8"))
+        earlier_bins = earlier_payload.get("summary", {}).get("bins", [])
+        print(f"\n-- {earlier_payload.get('label', args.compare)} 실행과 비교 --")
+        for line in compare_verifications(earlier_bins, [dict(b) for b in payload["summary"]["bins"]]):
+            print(f"- {line}")
+    return 0
+
+
 def _run_evaluate(args: argparse.Namespace) -> int:
     frames = _load_labeled_csv(Path(args.input))
     result = compute_target_selection_accuracy(frames, args.dataset_id, args.conditions)
@@ -258,6 +394,22 @@ def _build_parser() -> argparse.ArgumentParser:
     diagnose.add_argument("--interval-ms", type=int, default=500)
     diagnose.add_argument("--csv-output", help="optional per-frame CSV dump path")
     diagnose.set_defaults(handler=_run_diagnose_composition)
+
+    verify = subparsers.add_parser(
+        "verify-target",
+        help="fixation sweep against a registered target; --compare splits collection bug vs session drift",
+    )
+    verify.add_argument("target_id", nargs="?", help="registry target id (optional if only one)")
+    verify.add_argument("--profiles", default="data/calibration/profiles.json")
+    verify.add_argument("--model", default="models/face_landmarker.task")
+    verify.add_argument("--camera-index", type=int, default=0)
+    verify.add_argument("--duration-seconds", type=float, default=20.0)
+    verify.add_argument("--minimum-frames", type=int, default=60)
+    verify.add_argument("--interval-ms", type=int, default=500)
+    verify.add_argument("--label", default="verify", help="run label stored in the JSON output")
+    verify.add_argument("--output", help="save this run's JSON here (for a later --compare)")
+    verify.add_argument("--compare", help="earlier run's JSON to diff against (collection bug vs drift)")
+    verify.set_defaults(handler=_run_verify_target)
 
     evaluate = subparsers.add_parser("evaluate", help="measure Target Selection Accuracy")
     evaluate.add_argument("--input", required=True)
