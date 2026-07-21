@@ -63,6 +63,20 @@ class TrainingConfig:
     early_stopping_patience: int = 10
     """검증 macro-F1이 이 epoch 수만큼 개선되지 않으면 학습을 멈춘다."""
 
+    # --- 웹캠 파인튜닝 pooled split (2026-07-21) ---
+    webcam_val_fraction: float = 0.1
+    """pooled 파인튜닝에서 **클립 단위 무작위** val로 뗄 비율.
+
+    `--stage finetune`에 `--train-persons`/`--val-persons`를 주지 않으면 pooled 모드로,
+    모든 `webcam/*` 클립을 사람 구분 없이 합쳐 이 비율만큼 무작위로 val에 뗀다
+    (나머지는 train). **person-split과 달리 같은 사람이 train·val 양쪽에 들어갈 수
+    있어 val 지표가 낙관적으로 편향된다** — "고정 사용자 대상" 목표에서만 쓰고,
+    early-stopping·상대비교 용도로만 해석한다(2026-07-21 결정: 팀 데모용, 새 사용자
+    일반화는 별도 주장하지 않음). person 인자를 주면 종전 person-split이 유지된다."""
+
+    webcam_split_seed: int = 0
+    """pooled 파인튜닝 클립 split의 난수 시드. 고정해 실행마다 같은 train/val 분할을 재현한다."""
+
     # --- Loss (documents/decisions.md 2026-07-19, 학습 파이프라인 인터뷰 결정) ---
     phase_loss_weight: float = 0.3
     """gesture loss 대비 phase loss 가중치. phase 라벨이 휴리스틱(노이즈 있음)이라 낮게 둔다."""
@@ -82,8 +96,17 @@ class TrainingConfig:
     클래스로 합쳐 가중치를 계산한 것과 같은 1 : 6이 된다."""
 
     # --- Augmentation ---
-    flip_probability: float = 0.5
-    """샘플마다 좌우반전(+라벨 스왑)을 적용할 확률."""
+    flip_probability: float = 0.0
+    """샘플마다 좌우반전(+라벨 스왑)을 적용할 확률. 기본 0=끔(2026-07-21 A/B로 결정).
+
+    좌우반전은 slide_left↔right처럼 순수 in-plane 이동에는 기하학적으로 정확한
+    augmentation이지만, 회전(rotate_clockwise↔counter)에는 해가 된다. Jester
+    "Turning Hand"는 팔뚝축(out-of-plane) 회전이라 2D 좌우반전이 유효한 반대 회전을
+    만들지 못하는데도 라벨만 cw→ccw로 스왑해, 경계가 흐려진 '가짜 반대회전' 샘플로
+    학습시킨다. A/B 실측(10클래스, 동일 조건): flip 끄면 회전 F1 +0.033/+0.031,
+    상호혼동 3,465→3,034(-12%), 전체 배경합산 macro-F1 0.8196→0.8291. slide up/left가
+    소폭(-0.01) 내렸지만 순이득이 커 끈다. (더 정교하게는 회전 클립만 flip 제외하는
+    선택이 있으나, 그건 별도 검증이 필요해 지금은 전면 off로 둔다.)"""
 
     time_warp_probability: float = 0.5
     """샘플마다 시간축 속도 변형을 적용할 확률."""
@@ -126,6 +149,8 @@ class TrainingConfig:
             raise ValueError("max_epochs must be at least 1")
         if self.early_stopping_patience < 1:
             raise ValueError("early_stopping_patience must be at least 1")
+        if not math.isfinite(self.webcam_val_fraction) or not (0.0 < self.webcam_val_fraction < 1.0):
+            raise ValueError("webcam_val_fraction must be within (0, 1)")
         if not math.isfinite(self.phase_loss_weight) or self.phase_loss_weight < 0.0:
             raise ValueError("phase_loss_weight must be finite and non-negative")
         if (
