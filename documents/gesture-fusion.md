@@ -30,7 +30,7 @@ README [8장 핵심 기능 2](../README.md), [9장 핵심 기능 3](../README.md
 
 동적 제스처(위 Task 1~9, swipe/rotate, 서버 이관 대상)와 **다른 관심사**다. 커서 이동·클릭·드래그·우클릭·스크롤·바탕화면 토글은 **단일 프레임의 손 모양**으로 판정한다. `pose_protocol.py`(순수)↔`pose_classifier.py`(torch)는 `model_protocol.py`↔`model.py`와 같은 격리 구조이며, 두 모델은 서로를 import하지 않고 입력 차원·산출물이 다르다.
 
-흐름: `PoseClassifier`(7-class MLP) → 기울기 신뢰 판정 → `PoseStateMachine`(시간축) → `PoseControlBridge`(실제 OS 입력). 앞 두 단계는 프레임별, 뒤 두 단계가 시간 구조와 부수효과를 담당한다.
+흐름: `PoseClassifier`(8-class MLP) → 기울기 신뢰 판정 → `PoseStateMachine`(시간축) → `PoseControlBridge`(실제 OS 입력). 앞 두 단계는 프레임별, 뒤 두 단계가 시간 구조와 부수효과를 담당한다.
 
 ### 자세 분류기 (`pose_protocol.py`, `pose_classifier.py`, `training/train_pose.py`)
 
@@ -49,8 +49,8 @@ README [8장 핵심 기능 2](../README.md), [9장 핵심 기능 3](../README.md
 
 프레임별 판정만으로는 동작이 안 정해진다(같은 pinch_index라도 짧게 떼면 클릭, 유지하면 드래그). 순수 로직이라 카메라·OS 없이 테스트한다. 규칙 세 가지:
 
-1. **진입은 느리게(dwell: 핀치 클릭류 60ms, 그 외 자세 기본 120ms), 이탈은 빠르게 하되 관대하게**: 자세가 유지돼야 상태 진입(전이 프레임은 짧아 걸러짐). `none`이 몇 프레임 들어와도 3프레임까지는 안 끊는다(놓침 15.4%가 조작 중단으로 이어지면 안 됨). 30fps 프레임 양자화로 실질 유지 시간은 명목값 + 최대 33ms.
-2. **믿을 수 없는 판정(trusted=False, 기울기 게이트)은 상태를 바꾸지도 끊지도 않는다.**
+1. **진입은 느리게(dwell: 핀치 클릭류 60ms, 그 외 자세 기본 120ms, `middle_point` 탭 닫기는 파괴적이라 500ms), 이탈은 빠르게 하되 관대하게**: 자세가 유지돼야 상태 진입(전이 프레임은 짧아 걸러짐). `none`이 몇 프레임 들어와도 3프레임까지는 안 끊는다(놓침 15.4%가 조작 중단으로 이어지면 안 됨). 30fps 프레임 양자화로 실질 유지 시간은 명목값 + 최대 33ms.
+2. **믿을 수 없는 판정(trusted=False, 기울기 게이트)은 상태·진입 dwell을 바꾸지 않되, 연속 동작은 멈춘다**: 짧은 각도 튐(관용 `UNTRUSTED_GRACE_FRAMES`=3프레임)은 흘려 커서/스크롤을 유지하지만, 지속 초과하면 연속 동작을 정지한다 — 이때도 상태는 남아 각도를 다시 낮추면 **dwell 재대기 없이 즉시 재개**(정지 순간 커서 참조점을 버려 재개 급점프 방지). 예전엔 진입만 막고 진행 중 커서 이동은 각도를 넘겨도 계속되던 문제가 있었다.
 3. **`none`은 자세 이력을 지우지 않는다**: 주먹→보 전이 중간이 none으로 분류되므로, "마지막 명령 자세"를 따로 기억해 전이 판정이 빈 구간을 건너뛴다(인접 상태로 보면 절대 성립 안 함).
 
 동작: 커서 이동(index_point·pinch_index, 마우스식 상대 이동+포인터 가속+soft deadzone+palm_scale 정규화, 참조점은 손목의 **평활된 이미지 좌표**), 클릭/드래그·더블클릭(핀치 유지 시간으로 클릭↔드래그 분기+진입 시점 소급, 빠른 두 번 핀치는 두 **진입** 간격으로 더블클릭 — dwell·release 확정 지연을 예산에서 빼야 체감 간격과 맞음), 우클릭(pinch_middle), 스크롤(two_fingers가 **가리키는 방향** — 손 이동이 아니라 MCP→끝 벡터라 손을 멈춰도 유지, 수직성 0.5 미만이면 방향 안 지어냄; 손가락이 접히면 **폄 게이트**(`MIN_FINGER_EXTENSION`)로 스크롤을 끊어, 멈추려 주먹 쥘 때 손끝이 아래로 스윙해 역방향 스크롤이 튀는 것을 막음), 손 펴기(fist→open_palm 전이)로 **Mission Control**(macOS, `open -a`)·**Task View**(Windows, Win+Tab) 열기, 중지만 폄(`middle_point`)으로 **탭 닫기**(macOS Cmd+W·Windows Ctrl+W, 진입 시 1회 발화, dwell 500ms — 파괴적이라 기본보다 길게), 검지를 편 채 **회전**(MCP→TIP 방향의 누적 각도)으로 **볼륨**(방향↔증감 부호는 `ROT_SIGN`, `ROT_STEP_DEG`=60°당 1스텝이라 빠를수록 초당 스텝↑ = 비례 제어; `ROT_MIN_SPEED`=60°/s 미만은 무시해 포인팅 지터·손 평행이동과 분리). 게이트는 확정 상태가 아니라 **분류기 라벨(index_point)**이라 **낮은 tilt로 먼저 진입할 필요 없이 손을 눕힌 채 바로 회전을 시작**할 수 있다(고tilt에선 신뢰 게이트에 걸려 상태 진입은 못 하지만 라벨은 유지 — 실측 88%). 회전 추적은 trusted 게이트 **앞**에서 돈다. 회전을 감지하면 `ROT_HOLD_MS`(400ms) 동안 **볼륨 노브 모드**를 유지해 다른 모든 동작(클릭·드래그·커서·스크롤)을 막는다 — 회전 중 순간 오인식(pinch_index·fist)이 클릭/드래그로 새던 문제를 없앤다. 임계는 대부분 **시간**이라 투영에 흔들리지 않는다(기하학적 임계는 손 각도에 8.85배까지 흔들렸다) — 폄 게이트만은 palm_scale 정규화 좌표라 손 거리·각도에 강건하다.
@@ -59,7 +59,7 @@ README [8장 핵심 기능 2](../README.md), [9장 핵심 기능 3](../README.md
 
 `PoseStateMachine` 이벤트를 `InputSink`(macOS Quartz / Windows user32)로 옮긴다. 판정(순수)과 실행(부수효과)을 분리해 상태기계를 OS 없이 테스트하고 실행을 끄고도 판정을 관찰한다. 디버깅 툴에서 토글(양 탭 공유), 드래그 중 손 놓침·제어 끄기 시 눌린 버튼을 반드시 놓는다.
 
-- **F11 외 모든 동작이 Windows·macOS 양쪽에서 대응**된다(클릭·우클릭·드래그·스크롤·커서). `Win32InputSink`·`MacOSInputSink`가 같은 `InputSink` Protocol을 구현하고 `default_input_sink()`가 플랫폼으로 고른다.
+- **F11 외 모든 동작이 Windows·macOS 양쪽에서 대응**된다(클릭·우클릭·드래그·스크롤·커서, 탭 닫기(Cmd/Ctrl+W)·볼륨(VOLUME_UP/DOWN)). `Win32InputSink`·`MacOSInputSink`가 같은 `InputSink` Protocol을 구현하고 `default_input_sink()`가 플랫폼으로 고른다.
 - **드래그 실시간 이동**: macOS는 버튼을 누른 채 움직일 때 `MouseMoved`가 아니라 `LeftMouseDragged`를 받아야 창·선택 영역이 실시간으로 따라온다(그렇지 않으면 버튼을 뗄 때까지 최종 위치로만 튄다). `move_cursor(dragging=)`로 드래그 중임을 실어 이벤트 종류를 바꾼다. Windows는 `MOUSEEVENTF_MOVE`가 버튼 눌린 채면 OS가 드래그로 해석해 별도 처리가 필요 없다.
 - **주먹→보 전이 키는 플랫폼별**: macOS=F11(바탕화면 표시), Windows=재생/일시정지(`_transition_key()`가 `sys.platform`으로 선택). 스크롤은 30fps 그대로면 감당이 안 돼 `SCROLL_INTERVAL_MS`(60ms)로 솎아내며, 이 스로틀은 실행·UI 기록 양쪽에 적용한다.
 
