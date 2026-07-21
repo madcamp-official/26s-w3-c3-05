@@ -10,8 +10,11 @@
    들어와도 바로 끊지 않는다(`RELEASE_FRAMES`) — 분류기의 놓침(실측 15.4%)이 조작
    중단으로 이어지면 안 된다.
 
-2. **믿을 수 없는 판정은 상태를 건드리지 않는다.** `trusted=False`(기울기 게이트에
-   걸린 프레임)는 상태를 바꾸지도, 유지를 끊지도 않고 그냥 흘려보낸다.
+2. **믿을 수 없는 판정은 상태를 바꾸지 않되, 연속 동작은 멈춘다.** `trusted=False`(기울기
+   게이트에 걸린 프레임)는 상태를 바꾸지도, 진입 dwell을 재설정하지도 않는다 — 각도를
+   다시 낮추면 재대기 없이 즉시 이어간다. 다만 커서 이동·스크롤 같은 **연속 동작은 그
+   프레임 동안 멈춘다**: 게이트에 걸린 손 이동을 커서에 반영하면 "너무 기울면 정지"가
+   무의미해지기 때문이다(예: 검지 10° 초과 시 커서 정지, 다시 세우면 즉시 재개).
 
 3. **`none`은 자세 이력을 지우지 않는다.** 주먹에서 손바닥으로 갈 때 중간의 어중간하게
    펴진 상태가 `none`으로 분류되기 때문에, `fist → open_palm`을 인접 상태로 보면 절대
@@ -52,6 +55,11 @@ DEFAULT_DWELL_MS = 120
 # 이 프레임 수만큼 연속으로 자세가 사라져야 상태를 해제한다. 분류기가 정상 자세를
 # none으로 흘리는 비율이 15.4%라, 1프레임만에 끊으면 조작이 계속 끊긴다.
 RELEASE_FRAMES = 3
+
+# 이 프레임 수까지의 연속 `trusted=False`(기울기 초과)는 관용한다 — 순간적인 각도 튐에
+# 커서가 깜빡 멈추지 않게. 이 이상 지속되면 연속 동작(커서·스크롤)을 정지한다. 상태는
+# 유지하므로 각도를 다시 낮추면 dwell 재대기 없이 즉시 재개된다(`RELEASE_FRAMES`와 같은 취지).
+UNTRUSTED_GRACE_FRAMES = 3
 
 # 핀치를 이보다 오래 쥐고 있으면 클릭이 아니라 드래그로 본다.
 CLICK_MAX_MS = 400
@@ -160,6 +168,7 @@ class PoseStateMachine:
 
     dwell_ms: dict[str, int] = field(default_factory=lambda: dict(DWELL_MS))
     release_frames: int = RELEASE_FRAMES
+    untrusted_grace_frames: int = UNTRUSTED_GRACE_FRAMES
     click_max_ms: int = CLICK_MAX_MS
     double_click_ms: int = DOUBLE_CLICK_MS
     transition_window_ms: int = TRANSITION_WINDOW_MS
@@ -171,6 +180,8 @@ class PoseStateMachine:
     _pending: str = ""
     _pending_since: int = 0
     _missing: int = 0
+    # 연속 `trusted=False` 프레임 수(관용 카운터). trusted 프레임에서 0으로 리셋.
+    _untrusted: int = 0
     # `none`이 덮어쓰지 않는 "마지막 명령 자세" — 전이 판정이 빈 구간을 건너뛴다.
     _last_pose: str = ""
     _last_pose_end: int = 0
@@ -190,6 +201,7 @@ class PoseStateMachine:
         self.state = ""
         self._pending = ""
         self._missing = 0
+        self._untrusted = 0
         self._last_pose = ""
         self._last_click_ms = -1_000_000
         self._dragging = False
@@ -217,9 +229,17 @@ class PoseStateMachine:
         else:
             self._palm_smoother.reset()
         self._cursor_ctx = (reference_point, palm_scale)
-        # 규칙 2: 믿을 수 없는 판정은 상태를 바꾸지도 끊지도 않는다.
+        # 규칙 2: 믿을 수 없는 판정은 상태·진입 dwell을 건드리지 않는다. 짧은 각도 튐
+        # (관용 프레임 이내)은 그대로 흘려 연속 동작을 유지하지만, 지속적으로 초과하면
+        # 커서·스크롤을 멈춘다 — 이때도 상태는 남아 각도를 낮추면 즉시 재개된다. 멈추는
+        # 순간 커서 참조점을 버려, 멈춘 동안의 손 이동이 재개 시 급점프로 튀지 않게 한다.
         if not prediction.trusted:
-            return self._continuous(timestamp_ms, landmarks)
+            self._untrusted += 1
+            if self._untrusted <= self.untrusted_grace_frames:
+                return self._continuous(timestamp_ms, landmarks)
+            self._cursor_ref = None
+            return []
+        self._untrusted = 0
 
         label = prediction.label
         if label in ("", NONE_POSE):

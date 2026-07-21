@@ -280,3 +280,28 @@ def test_open_palm_does_not_move_cursor() -> None:
     machine = PoseStateMachine()
     events = _feed_cursor(machine, "open_palm", ((0.4, 0.4), (0.7, 0.7)), ms=400)
     assert [e for e in events if e.kind == "move"] == []
+
+
+def test_sustained_untrusted_stops_cursor_but_keeps_state() -> None:
+    """기울기 초과가 관용 프레임을 넘겨 지속되면 커서가 멈추되 상태는 유지된다.
+
+    각도를 다시 낮추면 dwell 재대기 없이 즉시 이동이 재개돼야 한다(상태 보존의 목적).
+    """
+    machine = PoseStateMachine()
+    _feed_cursor(machine, "index_point", (0.5, 0.5), ms=200)  # 진입
+    assert machine.state == "index_point"
+
+    # 손은 계속 이동하지만 기울기 초과(untrusted)가 지속 — 관용(3프레임) 이후엔 정지.
+    t, moves = 233, []
+    for k in range(8):
+        point = (0.5 + 0.01 * k, 0.5)
+        out = machine.update(_pose("index_point", trusted=False), t, reference_point=point, palm_scale=0.15)
+        moves.append(any(e.kind == "move" for e in out))
+        t += 33
+    assert any(moves[:3]), "관용 구간에는 이동이 유지돼야 한다"
+    assert not any(moves[machine.untrusted_grace_frames + 1:]), "관용을 넘기면 이동이 멈춰야 한다"
+    assert machine.state == "index_point", "정지해도 상태는 유지된다"
+
+    # 각도 회복(trusted) — dwell 재대기 없이 즉시 재개.
+    resumed = _feed_cursor(machine, "index_point", ((0.6, 0.5), (0.8, 0.5)), ms=150, start=t)
+    assert any(e.kind == "move" for e in resumed), "각도 회복 시 dwell 없이 즉시 재개"

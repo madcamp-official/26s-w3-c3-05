@@ -60,7 +60,7 @@ DEFAULT_POSE_LABELS: tuple[str, ...] = (
 # 근거가 있는 구간까지만 열어준다. 표본이 없어 확인 못 한 구간은 보수적으로 20°에
 # 둔다 — 모르는 각도를 임의로 허용하면 조용히 오동작한다.
 DEFAULT_POSE_TILT_LIMITS: dict[str, float] = {
-    "index_point": 20.0,
+    "index_point": 10.0,
     # 중지 하나 → 탭 닫기(파괴적). 명시 엔트리가 없으면 unknown-label 폴백으로 가장
     # 보수적인 20°가 걸려, 분류기가 맞힌 진짜 middle_point의 56%까지 조용히 거부됐다
     # (2026-07-22 v2 데이터 실측: 20°면 진짜 44%만 통과). 진짜 중앙 기울기 21° vs
