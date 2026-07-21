@@ -23,11 +23,10 @@ from pathlib import Path
 
 import cv2
 
-from jarvis.gesture_fusion.landmarks import HandObservation
 from jarvis.gesture_fusion.mediapipe_hands import MediaPipeHandLandmarker
 from jarvis.gesture_fusion.model_protocol import DEFAULT_GESTURE_LABELS
+from training.clip_recorder import ClipRecorder
 from training.config import DEFAULT_TRAINING_CONFIG
-from training.data.clip_cache import observations_to_cached_clip, save_clip
 
 
 def _prompt_gesture_label() -> str:
@@ -47,9 +46,14 @@ def run(
     cache_dir: Path,
     camera_index: int = 0,
     max_missing_frame_fraction: float = DEFAULT_TRAINING_CONFIG.max_missing_frame_fraction,
+    target_fps: float | None = 12.0,
 ) -> None:
-    out_dir = cache_dir / "webcam" / person_id
-    clip_counter = len(sorted(out_dir.glob("*.npz"))) if out_dir.exists() else 0
+    # 녹화 규칙(누적·미검출 게이트·fps 정규화·저장)은 GUI와 공유하는 ClipRecorder에 있다.
+    recorder = ClipRecorder(
+        cache_dir=cache_dir,
+        max_missing_frame_fraction=max_missing_frame_fraction,
+        target_fps=target_fps,
+    )
 
     capture = cv2.VideoCapture(camera_index)
     if not capture.isOpened():
@@ -58,10 +62,7 @@ def run(
     # 세션 전체(여러 클립에 걸쳐)에서 단조 증가하는 timestamp — extract_jester.py와
     # 같은 이유(detect_for_video의 monotonic 제약, 랜드마커 인스턴스 재사용).
     session_start = time.monotonic()
-    recording = False
-    observations: list[HandObservation] = []
     frame_id = 0
-    missing_this_clip = 0
     gesture_label = _prompt_gesture_label()
 
     print("SPACE=녹화 시작/종료, g=제스처 변경, q/ESC=종료")
@@ -78,46 +79,27 @@ def run(
 
                 display = bgr.copy()
                 status = (
-                    f"[{gesture_label}] {'REC' if recording else 'idle'} "
-                    f"person={person_id} clip#{clip_counter}"
+                    f"[{gesture_label}] {'REC' if recorder.is_recording else 'idle'} "
+                    f"person={person_id} frames={recorder.frame_count}"
                 )
-                color = (0, 0, 255) if recording else (200, 200, 200)
+                color = (0, 0, 255) if recorder.is_recording else (200, 200, 200)
                 cv2.putText(display, status, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                 cv2.imshow("record_webcam_clips", display)
 
-                if recording:
+                if recorder.is_recording:
                     observation = landmarker.process(rgb, timestamp_ms, frame_id)
                     frame_id += 1
-                    if not observation.hand_detected:
-                        missing_this_clip += 1
-                    observations.append(observation)
+                    recorder.add(observation)
 
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord(" "):
-                    if not recording:
-                        recording = True
-                        observations = []
+                    if not recorder.is_recording:
+                        recorder.start(person_id, gesture_label)
                         frame_id = 0
-                        missing_this_clip = 0
                         print("녹화 시작")
                     else:
-                        recording = False
-                        missing_fraction = missing_this_clip / len(observations) if observations else 1.0
-                        if not observations:
-                            print("빈 클립 — 저장하지 않음")
-                        elif missing_fraction > max_missing_frame_fraction:
-                            print(
-                                f"미검출 프레임 비율이 너무 높아 이 클립을 버립니다 "
-                                f"({missing_this_clip}/{len(observations)}프레임, "
-                                f"허용 {max_missing_frame_fraction:.0%})."
-                            )
-                        else:
-                            clip_id = f"{person_id}-{gesture_label}-{clip_counter:04d}"
-                            clip = observations_to_cached_clip(observations, gesture_label, clip_id)
-                            save_clip(out_dir / f"{clip_id}.npz", clip)
-                            print(f"저장: {clip_id} ({len(observations)}프레임)")
-                            clip_counter += 1
-                elif key == ord("g") and not recording:
+                        print(recorder.stop().detail)
+                elif key == ord("g") and not recorder.is_recording:
                     gesture_label = _prompt_gesture_label()
                 elif key in (27, ord("q")):
                     break
@@ -140,6 +122,15 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_TRAINING_CONFIG.max_missing_frame_fraction,
         help="클립 내 미검출 프레임 비율이 이 값을 넘으면 클립을 버린다(기본 %(default)s)",
     )
+    parser.add_argument(
+        "--target-fps",
+        type=float,
+        default=12.0,
+        help=(
+            "저장 직전 클립을 이 fps로 리샘플해 pretrain(Jester 12fps)과 정합시킨다. "
+            "0 이하면 리샘플하지 않고 캡처 fps 그대로 저장(기본 %(default)s)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     run(
@@ -148,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         args.cache_dir,
         args.camera_index,
         max_missing_frame_fraction=args.max_missing_frame_fraction,
+        target_fps=args.target_fps if args.target_fps > 0.0 else None,
     )
     return 0
 
