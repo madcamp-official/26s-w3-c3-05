@@ -18,7 +18,6 @@ from jarvis.gesture_fusion.config import (
     JOINT_ANGLE_TRIPLETS,
     LANDMARK_DIMS,
     PINKY_MCP,
-    WRIST,
     GestureConfig,
 )
 from jarvis.gesture_fusion.features import (
