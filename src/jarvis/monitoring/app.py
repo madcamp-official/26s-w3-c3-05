@@ -103,11 +103,11 @@ _LOCK_COLOR = {
     GazeLockState.COMMITTED: "#2ea043",
 }
 _CENTER_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
-    (4_000, "중앙점을 보면서 얼굴·몸을 왼쪽 위로 천천히 이동", "EYES CENTER - FACE LEFT-UP"),
-    (8_000, "중앙점을 보면서 얼굴·몸을 오른쪽 아래로 천천히 이동", "EYES CENTER - FACE RIGHT-DOWN"),
-    (12_000, "중앙점을 보면서 얼굴·몸을 왼쪽 아래로 천천히 이동", "EYES CENTER - FACE LEFT-DOWN"),
-    (16_000, "중앙점을 보면서 얼굴·몸을 오른쪽 위로 천천히 이동", "EYES CENTER - FACE RIGHT-UP"),
-    (20_000, "중앙점을 보면서 카메라에 조금 가까이·멀리 이동", "EYES CENTER - MOVE NEAR / FAR"),
+    (4_000, "테두리를 훑으며 얼굴·몸을 왼쪽 위로 천천히 이동", "TRACE BORDER - FACE LEFT-UP"),
+    (8_000, "테두리를 훑으며 얼굴·몸을 오른쪽 아래로 천천히 이동", "TRACE BORDER - FACE RIGHT-DOWN"),
+    (12_000, "테두리를 훑으며 얼굴·몸을 왼쪽 아래로 천천히 이동", "TRACE BORDER - FACE LEFT-DOWN"),
+    (16_000, "테두리를 훑으며 얼굴·몸을 오른쪽 위로 천천히 이동", "TRACE BORDER - FACE RIGHT-UP"),
+    (20_000, "테두리를 훑으며 카메라에 조금 가까이·멀리 이동", "TRACE BORDER - MOVE NEAR / FAR"),
 )
 _BOUNDARY_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
     (2_000, "고개를 고정하고 시선을 물체의 왼쪽 위 모서리로 이동", "HEAD STILL - LOOK TOP-LEFT"),
@@ -343,6 +343,8 @@ class GazePanel(QScrollArea):
                     f"hp={s.feature_sample.head_pitch:+.1f}",
                     f"hr={s.feature_sample.head_roll:+.1f}",
                     f"scale={s.feature_sample.face_scale:.3f}",
+                    f"face=({s.feature_sample.face_center_x:.3f},"
+                    f"{s.feature_sample.face_center_y:.3f})",
                 )
             )
             if s.feature_sample is not None
@@ -1073,8 +1075,8 @@ class MainWindow(QMainWindow):
         self._registration_progress.setFormat("등록 대기")
         layout.addWidget(self._registration_progress)
         self._registration_status = QLabel(
-            "1단계에서는 중앙점만 보며 자세를 바꾸고, "
-            "2단계에서는 고개를 고정한 채 눈으로 물체 테두리를 따라갑니다."
+            "1단계에서는 테두리를 보며 자세·거리·얼굴 위치를 바꾸고, "
+            "2단계에서는 고개를 고정한 채 눈으로 테두리를 정밀하게 따라갑니다."
         )
         self._registration_status.setWordWrap(True)
         self._registration_status.setStyleSheet(
@@ -1254,10 +1256,10 @@ class MainWindow(QMainWindow):
         self._set_registration_controls(active=True)
         self._registration_step.setText("1/2 자세·거리별 테두리 수집 · 20초")
         self._registration_progress.setValue(0)
-        self._registration_progress.setFormat("1/2 중앙점 보정  %p%")
+        self._registration_progress.setFormat("1/2 자세·거리별 테두리  %p%")
         self._registration_status.setText(
-            f"'{name}' 중앙의 한 점을 계속 바라보세요. 눈은 그 점에 고정하고, "
-            "안내에 따라 얼굴·몸의 위치와 거리를 바꿉니다. 물체 테두리는 아직 보지 마세요."
+            f"'{name}' 테두리를 눈으로 계속 훑으세요. 안내에 따라 얼굴·몸의 위치와 "
+            "카메라 거리를 함께 바꿔 4가지 입력의 유효 범위를 수집합니다."
         )
         self._registration_status.setStyleSheet(
             "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
@@ -1265,11 +1267,11 @@ class MainWindow(QMainWindow):
         )
         self._log.info(
             f"'{name}' 2단계 등록 시작 — 1/2 자세·거리별 테두리 수집: "
-            "물체 중앙의 한 점만 보면서 얼굴/몸을 좌상·우하·좌하·우상·근거리/원거리로 이동"
+            "물체 테두리를 훑으면서 얼굴/몸을 좌상·우하·좌하·우상·근거리/원거리로 이동"
         )
         self._video.set_registration_guidance(
-            "REGISTRATION 1/2 - CENTER CALIBRATION",
-            "KEEP EYES ON ONE CENTER POINT",
+            "REGISTRATION 1/2 - CONTEXT BOUNDARY",
+            "TRACE BORDER WHILE MOVING FACE",
             0.0,
         )
 
@@ -1307,7 +1309,7 @@ class MainWindow(QMainWindow):
             step = "1/2 자세·거리별 테두리 수집"
             count = self._registration.center_valid_frame_count
             required = self._registration.minimum_valid_frames
-            title = "REGISTRATION 1/2 - CENTER CALIBRATION"
+            title = "REGISTRATION 1/2 - CONTEXT BOUNDARY"
         else:
             step = "2/2 물체 영역 확정"
             count = self._registration.boundary_valid_frame_count
@@ -1318,7 +1320,7 @@ class MainWindow(QMainWindow):
             video_label = "HOLD POSITION - NEED MORE VALID FRAMES"
         status = (
             f"{label}\n현재 구간 남은 시간 {remaining_s:0.1f}s · 유효 프레임 {count}/{required} · "
-            f"중앙 {self._registration.center_valid_frame_count} / 경계 "
+            f"자세별 {self._registration.center_valid_frame_count} / 정밀 "
             f"{self._registration.boundary_valid_frame_count}"
         )
         self._registration_step.setText(step)
@@ -1365,9 +1367,8 @@ class MainWindow(QMainWindow):
             )
             self._log.info(
                 f"'{record.name}' 2단계 등록 완료 "
-                f"(중앙 {self._registration.center_valid_frame_count}, "
-                f"경계 {self._registration.boundary_valid_frame_count} frames) "
-                f"— {self._describe_triangulation_outcome(record)} | "
+                f"(자세별 테두리 {self._registration.center_valid_frame_count}, "
+                f"정밀 테두리 {self._registration.boundary_valid_frame_count} frames) | "
                 f"{self._registration.diagnostic_summary()}"
             )
         except ValueError as exc:
@@ -1401,31 +1402,14 @@ class MainWindow(QMainWindow):
         self._registration_progress.setValue(0)
         self._registration_progress.setFormat("등록 대기")
         self._registration_status.setText(
-            "1단계에서는 중앙점만 보며 자세를 바꾸고, "
-            "2단계에서는 고개를 고정한 채 눈으로 물체 테두리를 따라갑니다."
+            "1단계에서는 테두리를 보며 자세·거리·얼굴 위치를 바꾸고, "
+            "2단계에서는 고개를 고정한 채 눈으로 테두리를 정밀하게 따라갑니다."
         )
         self._registration_status.setStyleSheet(
             "background:#161b22; color:#8b949e; border:1px solid #30363d;"
             " border-radius:6px; padding:8px; font-weight:600;"
         )
         self._video.clear_registration_guidance()
-
-    def _describe_triangulation_outcome(self, record: TargetRecord) -> str:
-        """3D 위치 추정이 성공했는지, 실패했다면 왜 각도 모드로 대체됐는지를
-        그대로 보여준다 — 성공을 지어내지 않는다(development-principles.md 1절)."""
-        assert self._registration is not None
-        triangulation = self._registration.triangulation_result
-        if record.position_3d is not None:
-            if triangulation is None:
-                return "3D 위치 추정 성공"
-            return f"3D 위치 추정 성공 (baseline {triangulation.baseline_mm:.0f}mm)"
-        if triangulation is None:
-            return "각도 모드로 대체 (머리 움직임 데이터 부족)"
-        return (
-            "각도 모드로 대체 (baseline "
-            f"{triangulation.baseline_mm:.0f}mm, 잔차 {triangulation.residual_rms_mm:.0f}mm, "
-            f"고유값 {triangulation.min_eigenvalue:.4f} — 머리를 더 크게 움직여 보세요)"
-        )
 
     def _reregister_selected_target(self) -> None:
         record = self._selected_target()

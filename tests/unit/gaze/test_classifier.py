@@ -35,16 +35,18 @@ def test_unknown_when_no_devices_registered() -> None:
     assert result.second_best_probability == 0.0
 
 
-def _feature_profile(gaze_yaw: float, head_yaw: float) -> TargetFeatureProfile:
+def _feature_profile(
+    gaze_yaw: float,
+    head_yaw: float,
+    *,
+    face_scale: float = 0.10,
+    face_center_x: float = 0.5,
+) -> TargetFeatureProfile:
     return TargetFeatureProfile(
-        mean=(gaze_yaw, 5.0, head_yaw, 10.0, 0.0, 0.10),
-        covariance=(
-            (4.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-            (0.0, 4.0, 0.0, 0.0, 0.0, 0.0),
-            (0.0, 0.0, 9.0, 0.0, 0.0, 0.0),
-            (0.0, 0.0, 0.0, 9.0, 0.0, 0.0),
-            (0.0, 0.0, 0.0, 0.0, 9.0, 0.0),
-            (0.0, 0.0, 0.0, 0.0, 0.0, 0.01),
+        mean=(gaze_yaw, 5.0, head_yaw, 10.0, 0.0, face_scale, face_center_x, 0.5),
+        covariance=tuple(
+            tuple(float(value) for value in row)
+            for row in np.diag([4.0, 4.0, 9.0, 9.0, 9.0, 0.01, 0.01, 0.01])
         ),
         sample_count=20,
         threshold=2.5,
@@ -68,6 +70,30 @@ def test_feature_profile_selects_nearest_distribution() -> None:
     )
 
     assert result.target == "monitor"
+
+
+def test_overlapping_areas_use_head_scale_and_face_location_context() -> None:
+    classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
+    area = TargetAreaProfile(0.0, 5.0, 8.0, 5.0, 80)
+    classifier.register_profile(
+        DeviceGazeProfile("left_pose", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        feature_profile=_feature_profile(0.0, -15.0, face_scale=0.08, face_center_x=0.35),
+        area_profile=area,
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("right_pose", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        feature_profile=_feature_profile(0.0, 15.0, face_scale=0.12, face_center_x=0.65),
+        area_profile=area,
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(
+            0.0, 5.0, 14.0, 10.0, 0.0, 0.118, 0.64, 0.5
+        ),
+    )
+
+    assert result.target == "right_pose"
 
 
 def test_feature_profile_rejects_far_distribution() -> None:
@@ -101,7 +127,7 @@ def test_area_profile_accepts_gaze_inside_registered_object_boundary() -> None:
 
     result = classifier.classify(
         _unit([0.0, 0.0, 1.0]),
-        feature_sample=TargetFeatureSample(5.0, 5.0, 40.0, 30.0, 0.0, 0.2),
+        feature_sample=TargetFeatureSample(5.0, 5.0, 5.0, 12.0, 0.0, 0.11),
     )
 
     assert result.target == "monitor"

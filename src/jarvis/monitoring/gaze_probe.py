@@ -287,6 +287,12 @@ def _feature_sample(
 ) -> TargetFeatureSample | None:
     if direction is None or face_scale is None:
         return None
+    left_eye = observation.left_eye_center_normalized
+    right_eye = observation.right_eye_center_normalized
+    if left_eye is None or right_eye is None:
+        return None
+    face_center_x = (left_eye[0] + right_eye[0]) * 0.5
+    face_center_y = (left_eye[1] + right_eye[1]) * 0.5
     gaze_yaw, gaze_pitch = direction_to_yaw_pitch(np.asarray(direction, dtype=np.float64))
     try:
         return TargetFeatureSample(
@@ -296,6 +302,8 @@ def _feature_sample(
             head_pitch=observation.head_pitch_deg,
             head_roll=observation.head_roll_deg,
             face_scale=face_scale,
+            face_center_x=face_center_x,
+            face_center_y=face_center_y,
         )
     except ValueError:
         return None

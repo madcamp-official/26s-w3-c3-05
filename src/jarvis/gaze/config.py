@@ -200,6 +200,9 @@ class GazeConfig:
     target_match_tolerance: float = 1.10
     """Accept near-boundary target matches up to this normalized distance."""
 
+    target_context_tolerance: float = 1.35
+    """Maximum normalized 8D profile distance for an in-area target."""
+
     def __post_init__(self) -> None:
         if (
             self.dwell_time_ms < 0
@@ -322,5 +325,10 @@ class GazeConfig:
             raise ValueError("gaze_motion_max_interval_ms must be positive")
         if not math.isfinite(self.target_match_tolerance) or not 1.0 <= self.target_match_tolerance <= 2.0:
             raise ValueError("target_match_tolerance must be finite and within [1, 2]")
+        if (
+            not math.isfinite(self.target_context_tolerance)
+            or not 1.0 <= self.target_context_tolerance <= 3.0
+        ):
+            raise ValueError("target_context_tolerance must be finite and within [1, 3]")
 
 DEFAULT_GAZE_CONFIG = GazeConfig()

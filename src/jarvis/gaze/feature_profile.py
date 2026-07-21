@@ -28,6 +28,8 @@ FEATURE_NAMES: tuple[str, ...] = (
     "head_pitch",
     "head_roll",
     "face_scale",
+    "face_center_x",
+    "face_center_y",
 )
 FEATURE_DIMENSION = len(FEATURE_NAMES)
 HEAD_FEATURE_INDICES: tuple[int, ...] = (2, 3, 4)
@@ -39,6 +41,16 @@ the learned distribution.
 """
 
 GAZE_FEATURE_INDICES: tuple[int, ...] = (0, 1)
+FACE_CONTEXT_INDICES: tuple[int, ...] = (5, 6, 7)
+
+# Each signal uses different units. These standard-deviation floors prevent a
+# nearly constant registration feature from dominating the inverse covariance,
+# while keeping gaze more discriminative than head pose. Face scale and center
+# stay meaningful instead of being erased by a degree-sized global regularizer.
+FEATURE_STD_FLOORS = np.asarray(
+    [1.5, 1.5, 6.0, 6.0, 8.0, 0.008, 0.035, 0.035],
+    dtype=np.float64,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +61,8 @@ class TargetFeatureSample:
     head_pitch: float
     head_roll: float
     face_scale: float
+    face_center_x: float = 0.5
+    face_center_y: float = 0.5
 
     def as_array(self) -> npt.NDArray[np.float64]:
         values = np.array(
@@ -59,6 +73,8 @@ class TargetFeatureSample:
                 self.head_pitch,
                 self.head_roll,
                 self.face_scale,
+                self.face_center_x,
+                self.face_center_y,
             ],
             dtype=np.float64,
         )
@@ -66,6 +82,8 @@ class TargetFeatureSample:
             raise ValueError("target feature sample must contain finite values")
         if self.face_scale <= 0.0:
             raise ValueError("face_scale must be positive")
+        if not 0.0 <= self.face_center_x <= 1.0 or not 0.0 <= self.face_center_y <= 1.0:
+            raise ValueError("face center must be normalized within [0, 1]")
         return values
 
     @classmethod
@@ -80,6 +98,8 @@ class TargetFeatureSample:
             head_pitch=float(array[3]),
             head_roll=float(array[4]),
             face_scale=float(array[5]),
+            face_center_x=float(array[6]),
+            face_center_y=float(array[7]),
         )
 
 
@@ -240,17 +260,15 @@ def build_area_profile(
 def build_feature_profile(
     samples: list[TargetFeatureSample],
     *,
-    regularization: float = 1.0,
-    head_regularization: float = 64.0,
+    regularization: float = 1e-6,
     threshold_floor: float = 2.5,
     threshold_quantile: float = 0.90,
 ) -> FeatureProfileBuildResult:
     """Build a robust target feature distribution.
 
-    `regularization` is diagonal covariance padding.  The feature vector mixes
-    degrees and normalized face scale, so a small positive diagonal keeps the
-    inverse covariance stable even when the user barely moves during
-    registration.
+    The vector mixes degrees and normalized image coordinates. Per-feature
+    variance floors establish the intended balance; `regularization` only adds
+    numerical stability.
     """
     if not samples:
         raise ValueError("at least one feature sample is required")
@@ -258,7 +276,7 @@ def build_feature_profile(
     center = np.median(matrix, axis=0)
     deviations = np.abs(matrix - center)
     mad = np.median(deviations, axis=0)
-    robust_scale = np.maximum(mad * 1.4826, np.array([1.0, 1.0, 2.0, 2.0, 2.0, 0.01]))
+    robust_scale = np.maximum(mad * 1.4826, FEATURE_STD_FLOORS)
     normalized = deviations / robust_scale
     keep_mask = np.max(normalized, axis=1) <= 4.0
     kept = matrix[keep_mask]
@@ -274,9 +292,8 @@ def build_feature_profile(
     else:
         covariance = np.cov(kept, rowvar=False)
     covariance = np.asarray(covariance, dtype=np.float64)
+    covariance += np.diag(FEATURE_STD_FLOORS**2)
     covariance += np.eye(FEATURE_DIMENSION, dtype=np.float64) * regularization
-    for index in HEAD_FEATURE_INDICES:
-        covariance[index, index] += head_regularization
     provisional = TargetFeatureProfile(
         mean=tuple(float(value) for value in mean),
         covariance=tuple(tuple(float(value) for value in row) for row in covariance),

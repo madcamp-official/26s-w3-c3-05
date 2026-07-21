@@ -217,21 +217,33 @@ class TargetRegistry:
         threshold = payload.get("threshold")
         if (
             not isinstance(mean, list)
-            or len(mean) != FEATURE_DIMENSION
+            or len(mean) not in (6, FEATURE_DIMENSION)
             or not isinstance(covariance, list)
-            or len(covariance) != FEATURE_DIMENSION
+            or len(covariance) != len(mean)
             or not isinstance(sample_count, int)
             or not isinstance(threshold, (int, float))
         ):
             return None
         try:
+            dimension = len(mean)
             rows = []
             for row in covariance:
-                if not isinstance(row, list) or len(row) != FEATURE_DIMENSION:
+                if not isinstance(row, list) or len(row) != dimension:
                     return None
                 rows.append(tuple(float(value) for value in row))
+            parsed_mean = [float(value) for value in mean]
+            if dimension == 6:
+                # Old registrations did not include face location. Preserve
+                # them with a neutral center and deliberately broad variance;
+                # re-registering upgrades them to a real 8D profile.
+                parsed_mean.extend((0.5, 0.5))
+                expanded = np.eye(FEATURE_DIMENSION, dtype=np.float64)
+                expanded[:6, :6] = np.asarray(rows, dtype=np.float64)
+                expanded[6, 6] = 1.0
+                expanded[7, 7] = 1.0
+                rows = [tuple(float(value) for value in row) for row in expanded]
             return TargetFeatureProfile(
-                mean=tuple(float(value) for value in mean),
+                mean=tuple(parsed_mean),
                 covariance=tuple(rows),
                 sample_count=sample_count,
                 threshold=float(threshold),

@@ -27,6 +27,8 @@ from jarvis.gaze.config import GazeConfig
         {"gaze_motion_max_interval_ms": 0},
         {"target_match_tolerance": 0.99},
         {"target_match_tolerance": 2.01},
+        {"target_context_tolerance": 0.99},
+        {"target_context_tolerance": 3.01},
     ],
 )
 def test_invalid_config_is_rejected(overrides: dict[str, object]) -> None:

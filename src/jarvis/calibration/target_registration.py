@@ -9,11 +9,9 @@ import numpy as np
 
 from jarvis.calibration.registry import (
     TargetDirection,
-    TargetGeometry3DRecord,
     TargetRecord,
     TargetSpread,
 )
-from jarvis.calibration.triangulation import TriangulationResult, triangulate_rays
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.feature_profile import (
@@ -21,7 +19,6 @@ from jarvis.gaze.feature_profile import (
     build_area_profile,
     build_feature_profile,
 )
-from jarvis.gaze.features import Vector3
 from jarvis.gaze.smoothing import SmoothedGaze
 
 
@@ -65,7 +62,6 @@ class TargetRegistrationSession:
         self.phase_started_at_ms: int | None = None
         self._center_samples: list[tuple[float, float]] = []
         self._boundary_samples: list[tuple[float, float]] = []
-        self._center_rays: list[tuple[Vector3, Vector3]] = []
         self._center_face_scales: list[float] = []
         self._center_feature_samples: list[TargetFeatureSample] = []
         self._boundary_feature_samples: list[TargetFeatureSample] = []
@@ -74,10 +70,6 @@ class TargetRegistrationSession:
         self.rejected_closed_eyes = 0
         self.rejected_low_confidence = 0
         self.rejected_jump = 0
-        self.triangulation_result: TriangulationResult | None = None
-        """가장 최근 `finalize()` 호출이 시도한 삼각측량 결과 — 품질 기준을
-        만족하지 못해 각도 모드로 대체된 경우에도 진단을 위해 남는다(값을
-        숨기지 않는다). 광선이 아예 부족해 시도조차 못 했으면 None이다."""
 
     @property
     def valid_frame_count(self) -> int:
@@ -93,9 +85,17 @@ class TargetRegistrationSession:
 
     @property
     def center_yaw_pitch(self) -> tuple[float, float] | None:
-        if self.center_valid_frame_count < self.minimum_valid_frames:
+        # The precision boundary is the authoritative object extent. Its robust
+        # midpoint is therefore the target center. Phase-1 samples exist to
+        # learn pose/distance/face-location context, not a regression label.
+        samples = (
+            self._boundary_samples
+            if self.boundary_valid_frame_count >= self.minimum_boundary_frames
+            else self._center_samples
+        )
+        if len(samples) < self.minimum_valid_frames:
             return None
-        center = np.median(np.asarray(self._center_samples, dtype=np.float64), axis=0)
+        center = np.median(np.asarray(samples, dtype=np.float64), axis=0)
         return float(center[0]), float(center[1])
 
     @property
@@ -168,8 +168,6 @@ class TargetRegistrationSession:
                 return False
         samples.append((yaw, pitch))
         if accepted_phase == RegistrationPhase.CENTER:
-            if gaze.origin is not None:
-                self._center_rays.append((gaze.origin, gaze.direction))
             if face_scale is not None and math.isfinite(face_scale) and face_scale > 0.0:
                 self._center_face_scales.append(face_scale)
             if feature_sample is not None:
@@ -237,9 +235,12 @@ class TargetRegistrationSession:
             self.config.registration_max_spread_deg,
             max(self.config.registration_min_spread_deg, float(spread[1])),
         )
-        position_3d = self._try_triangulate()
+        # Boundary rays touch different surface points, so triangulating them as
+        # if they met at one 3D point would fabricate a target position. The
+        # deterministic profile instead uses face scale and image location.
+        position_3d = None
         if self.config.require_3d_target_registration and position_3d is None:
-            raise ValueError(f"3D target registration failed: {self.triangulation_diagnostic()}")
+            raise ValueError("3D registration is incompatible with boundary tracing")
         feature_profile = (
             build_feature_profile(list(self.feature_samples)).profile
             if len(self.feature_samples) >= self.minimum_valid_frames
@@ -267,82 +268,15 @@ class TargetRegistrationSession:
             feature_profile=feature_profile,
             area_profile=area_profile,
         )
-
-    def _try_triangulate(self) -> TargetGeometry3DRecord | None:
-        """가능하면 3D 위치를 추정하고, 품질 기준을 만족할 때만 반환한다.
-
-        기준 미달(머리 이동 부족, 광선이 거의 평행, 잔차 과다)이면 조용히
-        None을 반환해 각도 기반 등록으로 대체되게 한다 — 대신 진단 결과는
-        `self.triangulation_result`에 남겨 호출자가 왜 대체됐는지 로그로 보여줄
-        수 있게 한다(지어낸 성공을 반환하지 않는다).
-        """
-        if len(self._center_rays) < self.config.minimum_triangulation_frames:
-            self.triangulation_result = None
-            return None
-        origins = [origin for origin, _ in self._center_rays]
-        directions = [direction for _, direction in self._center_rays]
-        result = triangulate_rays(origins, directions)
-        self.triangulation_result = result
-        if not result.passes_quality_gates(self.config):
-            return None
-        radius_mm = max(result.residual_rms_mm, self.config.target_radius_floor_mm)
-        center = result.center_mm
-        return TargetGeometry3DRecord(
-            center_mm=(float(center[0]), float(center[1]), float(center[2])),
-            radius_mm=radius_mm,
-        )
-
     def diagnostic_summary(self) -> str:
         """Human-readable counts explaining why registration frames were rejected."""
         return (
             f"phase={self.phase}, seen={self.total_frames_seen}, "
             f"center={self.center_valid_frame_count}, boundary={self.boundary_valid_frame_count}, "
-            f"center_rays={len(self._center_rays)}, "
             f"center_scale={len(self._center_face_scales)}, "
             f"center_features={len(self._center_feature_samples)}, "
             f"boundary_features={len(self._boundary_feature_samples)}, "
             f"tracking_lost={self.rejected_tracking_lost}, "
             f"closed_eyes={self.rejected_closed_eyes}, "
             f"low_conf={self.rejected_low_confidence}, jump={self.rejected_jump}"
-        )
-
-    def triangulation_diagnostic(self) -> str:
-        """Human-readable 3D registration quality report."""
-        if len(self._center_rays) < self.config.minimum_triangulation_frames:
-            return (
-                f"not enough center gaze rays: {len(self._center_rays)}/"
-                f"{self.config.minimum_triangulation_frames}"
-            )
-        result = self.triangulation_result
-        if result is None:
-            return "triangulation was not attempted"
-        checks = [
-            (
-                "baseline",
-                result.baseline_mm,
-                self.config.minimum_triangulation_baseline_mm,
-                result.baseline_mm >= self.config.minimum_triangulation_baseline_mm,
-            ),
-            (
-                "eigen",
-                result.min_eigenvalue,
-                self.config.minimum_triangulation_eigenvalue,
-                result.min_eigenvalue >= self.config.minimum_triangulation_eigenvalue,
-            ),
-            (
-                "residual",
-                result.residual_rms_mm,
-                self.config.maximum_triangulation_residual_mm,
-                result.residual_rms_mm <= self.config.maximum_triangulation_residual_mm,
-            ),
-        ]
-        failed = [
-            f"{name}={value:.3f} threshold={threshold:.3f}"
-            for name, value, threshold, passed in checks
-            if not passed
-        ]
-        status = "ok" if not failed else "failed " + ", ".join(failed)
-        return (
-            f"{status}; rays={result.frame_count}, baseline={result.baseline_mm:.1f}mm, "
-            f"residual={result.residual_rms_mm:.1f}mm, eigen={result.min_eigenvalue:.4f}"
         )

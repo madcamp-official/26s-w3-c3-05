@@ -348,6 +348,14 @@ class TargetClassifier:
         )
         if area_result is not None:
             return area_result
+        if self._area_profiles:
+            # A statistical context match must never pull a gaze point back
+            # into a target whose traced physical area it is outside of.
+            return ClassificationResult(
+                target=self._config.UNKNOWN_TARGET,
+                probability=0.0,
+                second_best_probability=0.0,
+            )
         if not self._feature_profiles:
             return ClassificationResult(
                 target=self._config.UNKNOWN_TARGET,
@@ -445,11 +453,11 @@ class TargetClassifier:
     ) -> ClassificationResult | None:
         if not self._area_profiles:
             return None
-        alignment_radius = max(
-            self._config.registration_min_spread_deg,
-            self._config.registration_max_area_radius_deg,
-        )
         candidates = []
+        # Use one common angular scale so a very wide registered area cannot
+        # win an overlap merely because its own normalized center distance is
+        # small. The traced area still controls eligibility.
+        alignment_radius = self._config.registration_min_spread_deg
         for device_id, profile in self._area_profiles.items():
             normalized_distance = profile.normalized_distance(
                 feature_sample.gaze_yaw,
@@ -459,18 +467,29 @@ class TargetClassifier:
             )
             if normalized_distance > self._config.target_match_tolerance:
                 continue
-            center_distance_deg = math.hypot(
-                feature_sample.gaze_yaw - profile.center_yaw,
-                feature_sample.gaze_pitch - profile.center_pitch,
-            )
             inside_depth = max(0.0, 1.0 - normalized_distance)
             area_score = 0.60 + 0.40 * inside_depth
             if normalized_distance > 1.0:
                 area_score *= 0.75
             center_score = math.exp(-0.5 * normalized_distance**2)
-            absolute_alignment_score = math.exp(
+            center_distance_deg = math.hypot(
+                feature_sample.gaze_yaw - profile.center_yaw,
+                feature_sample.gaze_pitch - profile.center_pitch,
+            )
+            absolute_gaze_score = math.exp(
                 -0.5 * (center_distance_deg / alignment_radius) ** 2
             )
+            feature_profile = self._feature_profiles.get(device_id)
+            feature_normalized = 0.0
+            feature_score = 1.0
+            if feature_profile is not None:
+                feature_normalized = (
+                    feature_profile.mahalanobis_distance(feature_sample)
+                    / feature_profile.threshold
+                )
+                if feature_normalized > self._config.target_context_tolerance:
+                    continue
+                feature_score = math.exp(-0.5 * feature_normalized**2)
             motion_alignment_score = self._motion_alignment_score(
                 feature_sample,
                 profile,
@@ -478,16 +497,19 @@ class TargetClassifier:
                 gaze_motion_velocity_deg_s,
                 gaze_motion_acceleration_deg_s2,
             )
-            # Edge-loop registration means every point inside the saved object
-            # area is a valid look target.  Center closeness should raise
-            # confidence and break overlaps, not reject valid edge looks.
+            # The traced area is the eligibility gate. The 8D distribution then
+            # combines gaze, head, face scale and face position to rank valid
+            # overlaps without letting context resurrect an out-of-area target.
             combined_score = (
                 area_score
                 * (0.70 + 0.30 * center_score)
-                * absolute_alignment_score**6
+                * (0.45 + 0.55 * absolute_gaze_score)
+                * (0.45 + 0.55 * feature_score)
                 * motion_alignment_score
             )
-            candidates.append((combined_score, center_distance_deg, normalized_distance, device_id))
+            candidates.append(
+                (combined_score, normalized_distance, feature_normalized, device_id)
+            )
         if not candidates:
             return None
         candidates.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))

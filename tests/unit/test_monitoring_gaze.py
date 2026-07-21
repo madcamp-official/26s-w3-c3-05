@@ -57,6 +57,22 @@ def _fresh() -> tuple[GazeSmoother, TargetClassifier, GazeLockStateMachine, Gaze
     return GazeSmoother(config), TargetClassifier(config), GazeLockStateMachine(config), config
 
 
+def test_feature_sample_contains_camera_relative_face_location_and_scale() -> None:
+    smoother, classifier, lock, config = _fresh()
+    snapshot = evaluate(
+        _observation(with_eye_centers=True),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+
+    assert snapshot.feature_sample is not None
+    assert snapshot.feature_sample.face_scale == pytest.approx(0.2)
+    assert snapshot.feature_sample.face_center_x == pytest.approx(0.5)
+    assert snapshot.feature_sample.face_center_y == pytest.approx(0.4)
+
+
 # --- tracking loss ------------------------------------------------------------
 
 def test_tracking_loss_is_surfaced_not_faked() -> None:
