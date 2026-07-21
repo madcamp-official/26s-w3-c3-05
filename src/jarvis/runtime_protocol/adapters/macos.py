@@ -186,6 +186,18 @@ class MacOSInputSink:
         )
         self._post(event)
 
+    def screen_size(self) -> tuple[int, int]:
+        """주 디스플레이 크기 — move_cursor(CGEvent)와 같은 **points** 좌표계로 낸다.
+
+        CGDisplayBounds는 논리 좌표(points)를 돌려줘 CGEventCreateMouseEvent가 쓰는
+        좌표계와 일치한다. Retina의 물리 픽셀(CGDisplayPixelsWide)이 아니라 이 값이
+        커서 이동 정규화의 기준이어야 한다.
+        """
+        import Quartz
+
+        bounds = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
+        return int(bounds.size.width), int(bounds.size.height)
+
     def switch_window(self, forward: bool, repeat: int) -> None:
         """Cmd+Tab (forward) / Cmd+Shift+Tab (backward)로 창을 전환한다.
 
