@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -156,3 +158,115 @@ def test_probe_rate_limiter_can_be_disabled() -> None:
     """target_fps=None이면 솎지 않는다(모든 프레임 처리)."""
     probe = GestureProbe(model_asset_path=None, target_fps=None)
     assert probe._rate_limiter is None
+
+
+# --- 관측값 재사용(headless) 모드: HandProbe 관측값으로 인식 구동 ---
+
+
+def test_activate_headless_prepares_pipeline_without_landmarker() -> None:
+    probe = GestureProbe(model_asset_path=None, model=_FakeModel(GesturePhase.ONSET))
+    assert probe.activate_headless() is True
+    assert probe.available is True
+    assert probe._landmarker is None  # 두 번째 landmarker를 돌리지 않는다
+
+
+def test_activate_headless_false_without_model() -> None:
+    probe = GestureProbe(model_asset_path=None)
+    assert probe.activate_headless() is False
+
+
+def test_advance_from_observation_produces_estimate() -> None:
+    probe = GestureProbe(model_asset_path=None, model=_FakeModel(GesturePhase.ONSET))
+    probe.activate_headless()
+    snap = None
+    for ts in (0, 100, 200):  # 100ms 간격 = 전부 채택(12fps=83ms 초과), 디바운스 통과
+        snap = probe.advance(_observation(hand_detected=True, timestamp_ms=ts, frame_id=ts))
+    assert snap is not None and snap.hand_detected
+    assert snap.estimate.gesture == "swipe_down"
+
+
+def test_advance_decimates_to_target_fps() -> None:
+    """30fps(33ms) 입력에서 target 간격 미만 프레임은 skip돼 직전 스냅샷을 돌려준다."""
+    probe = GestureProbe(model_asset_path=None, model=_FakeModel(GesturePhase.ONSET))
+    probe.activate_headless()
+    snap0 = probe.advance(_observation(hand_detected=True, timestamp_ms=0, frame_id=0))
+    snap1 = probe.advance(_observation(hand_detected=True, timestamp_ms=33, frame_id=1))
+    assert snap1 is snap0  # 33ms < 83ms → skip, 같은 스냅샷 재사용
+    snap2 = probe.advance(_observation(hand_detected=True, timestamp_ms=100, frame_id=3))
+    assert snap2 is not snap0  # 100ms ≥ 83ms → 새로 처리
+
+
+def test_advance_lost_frame_resets_and_is_always_processed() -> None:
+    """손실 프레임은 솎지 않고 항상 처리해 파이프라인을 즉시 리셋한다."""
+    probe = GestureProbe(model_asset_path=None, model=_FakeModel(GesturePhase.ACTIVE))
+    probe.activate_headless()
+    probe.advance(_observation(hand_detected=True, timestamp_ms=0, frame_id=0))
+    lost = probe.advance(_observation(hand_detected=False, timestamp_ms=10, frame_id=1))
+    assert lost is not None and not lost.hand_detected  # 10ms여도 skip되지 않음
+    assert lost.estimate.phase == GesturePhase.IDLE
+
+
+def test_load_trained_gesture_model_returns_none_without_checkpoint(tmp_path: Path) -> None:
+    from jarvis.monitoring.gesture_probe import load_trained_gesture_model
+
+    assert load_trained_gesture_model(tmp_path) is None  # 빈 디렉토리
+
+
+def test_load_trained_gesture_model_returns_none_without_sidecar(tmp_path: Path) -> None:
+    from jarvis.monitoring.gesture_probe import load_trained_gesture_model
+
+    (tmp_path / "gesture_tcn_jester.pt").write_bytes(b"not-a-real-checkpoint")
+    # 사이드카 metadata가 없으면 로드 대상으로 인정하지 않는다
+    assert load_trained_gesture_model(tmp_path) is None
+
+
+def test_load_trained_gesture_model_loads_trained_checkpoint(tmp_path: Path) -> None:
+    """torch가 있으면 학습된(trained=True) 체크포인트를 로드하고, 미학습은 거부한다."""
+    pytest.importorskip("torch")
+    import json
+
+    import torch
+
+    from jarvis.gesture_fusion.model import CausalTCN, ModelConfig
+    from jarvis.monitoring.gesture_probe import load_trained_gesture_model
+
+    net = CausalTCN(ModelConfig(feature_dim=feature_dimension(DEFAULT_GESTURE_CONFIG)))
+    torch.save(net.state_dict(), tmp_path / "gesture_tcn_jester.pt")
+
+    # trained=False → 미학습이므로 거부(무작위 가중치를 인식 결과로 내보내지 않는다)
+    (tmp_path / "gesture_tcn_jester.pt.metadata.json").write_text(
+        json.dumps({"version": "x", "trained": False}), encoding="utf-8"
+    )
+    assert load_trained_gesture_model(tmp_path) is None
+
+    # trained=True → 로드
+    (tmp_path / "gesture_tcn_jester.pt.metadata.json").write_text(
+        json.dumps({"version": "pretrain-epoch24", "trained": True}), encoding="utf-8"
+    )
+    model = load_trained_gesture_model(tmp_path)
+    assert model is not None
+    assert model.metadata.trained is True  # type: ignore[attr-defined]
+
+
+def test_load_trained_gesture_model_prefers_finetuned(tmp_path: Path) -> None:
+    """finetuned·jester가 둘 다 있으면 finetuned를 우선한다."""
+    pytest.importorskip("torch")
+    import json
+
+    import torch
+
+    from jarvis.gesture_fusion.model import CausalTCN, ModelConfig
+    from jarvis.monitoring.gesture_probe import load_trained_gesture_model
+
+    net = CausalTCN(ModelConfig(feature_dim=feature_dimension(DEFAULT_GESTURE_CONFIG)))
+    for name, version in (
+        ("gesture_tcn_finetuned.pt", "finetune-v1"),
+        ("gesture_tcn_jester.pt", "pretrain-epoch24"),
+    ):
+        torch.save(net.state_dict(), tmp_path / name)
+        (tmp_path / f"{name}.metadata.json").write_text(
+            json.dumps({"version": version, "trained": True}), encoding="utf-8"
+        )
+    model = load_trained_gesture_model(tmp_path)
+    assert model is not None
+    assert model.metadata.version == "finetune-v1"  # type: ignore[attr-defined]

@@ -72,6 +72,11 @@ from jarvis.gaze.smoothing import SmoothedGaze
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
+from jarvis.monitoring.gesture_probe import (
+    GestureProbe,
+    ProbeGestureSource,
+    load_trained_gesture_model,
+)
 from jarvis.monitoring.gesture_source import GestureSource, UntrainedGestureSource
 from jarvis.monitoring.hand_probe import HandProbe, HandSnapshot
 from jarvis.monitoring.messages import MessageLevel, MessageLog
@@ -1061,7 +1066,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("JARVIS Pipeline Monitor")
         self.resize(1180, 820)
         self._log = MessageLog()
-        self._gesture_source: GestureSource = UntrainedGestureSource()
+        # 학습된 체크포인트가 models/에 있으면 실시간 탭에 인식을 표시한다(finetuned 우선,
+        # 없으면 Jester 사전학습). 없거나 torch 미설치면 정직하게 off(UntrainedGestureSource).
+        # 인식은 HandProbe의 관측값을 재사용하므로 두 번째 landmarker를 돌리지 않는다.
+        self._recognizer: GestureProbe | None = None
+        self._probe_source: ProbeGestureSource | None = None
+        self._gesture_source: GestureSource = self._make_gesture_source()
         self._env = env if env is not None else _load_env()
         self._model_path = model_path if model_path is not None else _default_model_path()
         self._profiles_path = profiles_path if profiles_path is not None else _default_profiles_path()
@@ -1107,7 +1117,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(tabs)
 
         self._log.info("모니터 시작")
-        if not self._gesture_source.available:
+        if self._gesture_source.available:
+            self._log.info(f"제스처 인식: {self._gesture_source.status_text}")
+        else:
             self._log.warn(self._gesture_source.status_text)
 
         self._camera: CameraWorker | None = None
@@ -1129,6 +1141,23 @@ class MainWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_tick)
         self._timer.start(150)
+
+    def _make_gesture_source(self) -> GestureSource:
+        """학습된 체크포인트가 있으면 관측값 재사용 인식 소스를, 없으면 정직한 off 소스를 만든다.
+
+        인식은 HandProbe의 관측값을 재사용하므로(두 번째 landmarker 없음) 여기서 만든
+        `GestureProbe`는 landmarker를 시작하지 않고 `activate_headless()`로 모델·윈도우만
+        준비한다. 프레임 구동은 `_on_hand`가 `advance(observation)`로 한다.
+        """
+        model = load_trained_gesture_model(_default_models_dir())
+        if model is None:
+            return UntrainedGestureSource()
+        probe = GestureProbe(model_asset_path=None, model=model)
+        if not probe.activate_headless():
+            return UntrainedGestureSource()
+        self._recognizer = probe
+        self._probe_source = ProbeGestureSource(probe)
+        return self._probe_source
 
     def _build_live_tab(self) -> QWidget:
         self._video = VideoView()
@@ -1580,6 +1609,14 @@ class MainWindow(QMainWindow):
         self._hand_panel.update_snapshot(snapshot)
         self._sidebar.set_hand_status(snapshot)
         self._finetune_panel.video.set_hand(snapshot)
+        # 학습된 모델이 로드됐으면 HandProbe의 관측값을 그대로 인식 파이프라인에 흘린다
+        # (두 번째 landmarker 없이). advance가 12fps로 솎아 넣고, 결과는 사이드바가 poll한다.
+        if (
+            self._recognizer is not None
+            and self._probe_source is not None
+            and snapshot.observation is not None
+        ):
+            self._probe_source.submit(self._recognizer.advance(snapshot.observation))
         # 녹화 중이면 이 프레임의 관측값(스무딩 전 원본)을 클립 버퍼에 넣는다. observation은
         # 검출·손실 프레임 둘 다 존재하므로(hand_probe A단계) 미검출도 클립에 남아 미검출
         # 게이트가 CLI와 동일하게 동작한다.
@@ -1616,6 +1653,10 @@ def _default_model_path() -> Path | None:
 
 def _default_hand_model_path() -> Path | None:
     return Path("models/hand_landmarker.task")
+
+
+def _default_models_dir() -> Path:
+    return Path("models")
 
 
 def _default_profiles_path() -> Path:

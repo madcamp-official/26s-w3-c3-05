@@ -17,6 +17,7 @@ trained=False`). 손 랜드마크 검출·오버레이는 실제로 동작하지
 
 from __future__ import annotations
 
+import json
 import time
 from collections import deque
 from pathlib import Path
@@ -36,6 +37,8 @@ from jarvis.gesture_fusion.model_protocol import (
     EXPECTED_INPUT_FPS,
     FrameRateLimiter,
     GestureModel,
+    ModelConfig,
+    ModelMetadata,
     SlidingFeatureWindow,
 )
 from jarvis.gesture_fusion.spotting import DEFAULT_SPOTTER_CONFIG, GestureSpotter, SpotterConfig
@@ -148,9 +151,54 @@ class GestureProbe:
         return True
 
     def _build_default_model(self) -> GestureModel:
-        from jarvis.gesture_fusion.model import CausalTCNGestureModel, ModelConfig
+        from jarvis.gesture_fusion.model import CausalTCNGestureModel
 
         return CausalTCNGestureModel(ModelConfig(feature_dim=feature_dimension(self._config)))
+
+    def activate_headless(self) -> bool:
+        """landmarker 없이 모델·윈도우만 준비한다 — 관측값을 외부에서 주입받는 모드.
+
+        HandProbe가 이미 프레임마다 손을 검출하므로, **두 번째 landmarker를 돌리지 않고**
+        그 관측값(`HandSnapshot.observation`)을 재사용한다. `process_bgr`(자체 landmarker
+        구동) 대신 `advance(observation)`로 구동한다. 주입된 model이 없으면 False.
+        """
+        model = self._injected_model
+        if model is None:
+            self._status_text = "gesture 모델 미주입"
+            return False
+        self._model = model
+        self._window = SlidingFeatureWindow(
+            window_size=model.window_size, feature_dim=feature_dimension(self._config)
+        )
+        self._available = True
+        meta = getattr(model, "metadata", None)
+        if meta is not None and meta.trained:
+            self._status_text = (
+                f"LIVE · 인식 활성 (관측값 재사용 · {int(EXPECTED_INPUT_FPS)}fps) · {meta.version}"
+            )
+        else:
+            self._status_text = "미학습 모델 — 인식 비활성"
+        return True
+
+    def advance(self, observation: HandObservation) -> GestureSnapshot | None:
+        """외부 관측값(HandProbe)으로 파이프라인을 한 프레임 진행한다.
+
+        학습 cadence(`EXPECTED_INPUT_FPS`)로 솎아 넣는다. 단 손실 프레임은 **항상 처리**해
+        파이프라인을 즉시 리셋한다 — 솎으면 velocity가 손실 구간을 가로질러 튀고, 리미터도
+        리셋해 복귀 첫 프레임을 바로 채택한다. 채택 안 된 프레임은 직전 스냅샷을 돌려준다.
+        """
+        if self._model is None or self._window is None:
+            return None
+        if not observation.hand_detected:
+            if self._rate_limiter is not None:
+                self._rate_limiter.reset()
+        elif self._rate_limiter is not None and not self._rate_limiter.should_accept(
+            observation.timestamp_ms
+        ):
+            return self._last_snapshot
+        snapshot = self._advance(observation, time.monotonic())
+        self._last_snapshot = snapshot
+        return snapshot
 
     def process_bgr(
         self, bgr_frame: npt.NDArray[np.uint8], timestamp_ms: int, frame_id: int
@@ -242,3 +290,51 @@ class ProbeGestureSource:
         drained = list(self._buffer)
         self._buffer.clear()
         return drained
+
+
+# 우선순위: 파인튜닝 체크포인트 > Jester 사전학습. 앞의 것이 있으면 그걸 쓴다.
+_CHECKPOINT_PREFERENCE: tuple[str, ...] = (
+    "gesture_tcn_finetuned.pt",
+    "gesture_tcn_jester.pt",
+)
+
+
+def load_trained_gesture_model(
+    models_dir: Path, gesture_config: GestureConfig | None = None
+) -> GestureModel | None:
+    """models_dir에서 가장 좋은 **학습된** 체크포인트를 로드한다 — 없으면 None.
+
+    우선순위는 finetuned > jester(사전학습). 각 `.pt`는 사이드카 `<name>.metadata.json`을
+    함께 읽어 `ModelMetadata`를 구성하고, **`metadata.trained=True`일 때만** 인정한다 —
+    미학습·무작위 가중치를 인식 결과로 내보내지 않는다(성공을 지어내지 않는다). 다음은
+    전부 조용히 None/다음 후보로 떨어진다: torch 미설치(`ml` extra 부재), `.pt`·사이드카
+    부재, 라벨 집합 불일치(state_dict head shape 불일치)·손상 파일.
+
+    데모 노트북에서 VM의 `.pt`를 `models/`로 복사하면 다음 실행 때 자동으로 잡힌다.
+    """
+    config = gesture_config or DEFAULT_GESTURE_CONFIG
+    for name in _CHECKPOINT_PREFERENCE:
+        checkpoint = models_dir / name
+        sidecar = checkpoint.with_name(checkpoint.name + ".metadata.json")
+        if not checkpoint.is_file() or not sidecar.is_file():
+            continue
+        try:
+            from jarvis.gesture_fusion.model import CausalTCNGestureModel
+        except ImportError:
+            return None  # torch 없음 — 정직하게 off (다음 후보를 봐도 마찬가지)
+        try:
+            meta_dict = json.loads(sidecar.read_text(encoding="utf-8"))
+            metadata = ModelMetadata(
+                version=str(meta_dict.get("version", "")),
+                trained=bool(meta_dict.get("trained", False)),
+                training_data_source=str(meta_dict.get("training_data_source", "")),
+                evaluation_notes=str(meta_dict.get("evaluation_notes", "")),
+            )
+            if not metadata.trained:
+                continue
+            model = CausalTCNGestureModel(ModelConfig(feature_dim=feature_dimension(config)))
+            model.load_weights(str(checkpoint), metadata)
+            return model
+        except Exception:  # noqa: BLE001 - 라벨 불일치·손상 파일은 다음 후보/off로 떨어뜨린다
+            continue
+    return None
