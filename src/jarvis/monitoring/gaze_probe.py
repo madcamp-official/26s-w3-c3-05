@@ -194,6 +194,10 @@ class GazeSnapshot:
     gaze_motion_history_valid: bool = False
     gaze_source: str = "unavailable"
     gaze_source_reason: str | None = None
+    left_eye_open_ratio: float | None = None
+    right_eye_open_ratio: float | None = None
+    left_eye_open_baseline: float | None = None
+    right_eye_open_baseline: float | None = None
 
     @property
     def tracking_lost(self) -> bool:
@@ -771,6 +775,10 @@ def evaluate(
         gaze_source_reason=(
             gaze_source_reason if gaze_source != "head+iris" else None
         ),
+        left_eye_open_ratio=observation.left_eye_open_ratio,
+        right_eye_open_ratio=observation.right_eye_open_ratio,
+        left_eye_open_baseline=observation.left_eye_open_baseline,
+        right_eye_open_baseline=observation.right_eye_open_baseline,
     )
 
 

@@ -45,6 +45,10 @@ class FaceObservation:
     left_eye_center_normalized: tuple[float, float] | None = None
     right_eye_center_normalized: tuple[float, float] | None = None
     eyes_open: bool = True
+    left_eye_open_ratio: float | None = None
+    right_eye_open_ratio: float | None = None
+    left_eye_open_baseline: float | None = None
+    right_eye_open_baseline: float | None = None
     head_position_mm: Vector3 | None = None
     """머리(얼굴 모델 원점)의 카메라 기준 3D 위치 근사값 — MediaPipe facial
     transformation matrix의 translation 성분(`transform[:3, 3]`)에서 얻는다.
@@ -83,6 +87,14 @@ class FaceObservation:
                 continue
             if not all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in center):
                 raise ValueError(f"{name} must contain normalized coordinates within [0, 1]")
+        for name, ratio in (
+            ("left_eye_open_ratio", self.left_eye_open_ratio),
+            ("right_eye_open_ratio", self.right_eye_open_ratio),
+            ("left_eye_open_baseline", self.left_eye_open_baseline),
+            ("right_eye_open_baseline", self.right_eye_open_baseline),
+        ):
+            if ratio is not None and (not math.isfinite(ratio) or ratio < 0.0):
+                raise ValueError(f"{name} must be finite and non-negative")
         if self.head_position_mm is not None:
             if self.head_position_mm.shape != (3,) or not np.all(
                 np.isfinite(self.head_position_mm)

@@ -352,6 +352,21 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
     if snapshot.gaze_source != "head+iris":
         reason = f" ({snapshot.gaze_source_reason})" if snapshot.gaze_source_reason else ""
         lines.append((f"SOURCE  {snapshot.gaze_source}{reason}", (80, 190, 230)))
+    if (
+        snapshot.left_eye_open_ratio is not None
+        and snapshot.right_eye_open_ratio is not None
+        and snapshot.left_eye_open_baseline is not None
+        and snapshot.right_eye_open_baseline is not None
+    ):
+        eye_state = "OPEN" if snapshot.eyes_open else "CLOSED"
+        lines.append(
+            (
+                f"EYE L {snapshot.left_eye_open_ratio:.3f}/{snapshot.left_eye_open_baseline:.3f} "
+                f"R {snapshot.right_eye_open_ratio:.3f}/{snapshot.right_eye_open_baseline:.3f} "
+                f"{eye_state}",
+                (80, 200, 80) if snapshot.eyes_open else (80, 190, 230),
+            )
+        )
     if snapshot.camera_pose_warning:
         lines.append(("CAMERA POSE CHANGED / re-register", (60, 180, 255)))
     _text_block(frame, lines, (8, h - 6 - 20 * len(lines) - 6))

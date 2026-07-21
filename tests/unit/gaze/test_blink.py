@@ -10,7 +10,7 @@ def test_partial_blink_is_rejected_relative_to_personal_open_baseline() -> None:
     detector = AdaptiveBlinkDetector()
 
     assert detector.update(0.25, 0.24)
-    assert not detector.update(0.15, 0.14)
+    assert not detector.update(0.14, 0.13)
 
 
 def test_reopen_hysteresis_waits_for_eyelids_to_recover() -> None:

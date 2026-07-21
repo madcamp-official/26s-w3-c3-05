@@ -388,12 +388,25 @@ class GazePanel(QScrollArea):
             else "None (no completed eye movement)"
         )
         est = s.target_estimate
+        eye_opening = (
+            f"L {s.left_eye_open_ratio:.3f}/{s.left_eye_open_baseline:.3f}  "
+            f"R {s.right_eye_open_ratio:.3f}/{s.right_eye_open_baseline:.3f}  "
+            f"{'OPEN' if s.eyes_open else 'CLOSED'}"
+            if (
+                s.left_eye_open_ratio is not None
+                and s.right_eye_open_ratio is not None
+                and s.left_eye_open_baseline is not None
+                and s.right_eye_open_baseline is not None
+            )
+            else "unavailable"
+        )
         self._numeric.setText(
             f"face_detected : {s.face_detected}\n"
             f"head (deg)    : yaw {s.head_yaw_deg:+7.2f}  pitch {s.head_pitch_deg:+7.2f}  "
             f"roll {s.head_roll_deg:+7.2f}\n"
             f"pose warning  : {s.camera_pose_warning or 'None'}\n"
             f"iris L / R    : {s.left_iris_relative}  /  {s.right_iris_relative}\n"
+            f"eye ratio/base: {eye_opening}\n"
             f"face_scale    : {s.face_scale if s.face_scale is not None else 'None'}\n"
             f"gaze vector   : {direction}\n"
             f"gaze source   : {s.gaze_source}\n"

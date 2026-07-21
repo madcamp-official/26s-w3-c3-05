@@ -90,11 +90,11 @@ class GazeConfig:
     half this value remains a hard guard against a fully collapsed eyelid.
     """
 
-    blink_close_ratio: float = 0.68
-    """Close when eye openness falls below this fraction of the personal baseline."""
+    blink_close_ratio: float = 0.60
+    """Close when both eyes fall below 60% of their personal open baselines."""
 
-    blink_reopen_ratio: float = 0.82
-    """Reopen only above this baseline fraction to avoid rapid open/closed chatter."""
+    blink_reopen_ratio: float = 0.75
+    """Reopen above 75% of baseline, balancing recovery speed and chatter."""
 
     eye_openness_baseline_decay: float = 0.01
     """Per-frame downward adaptation rate of the personal open-eye baseline."""
