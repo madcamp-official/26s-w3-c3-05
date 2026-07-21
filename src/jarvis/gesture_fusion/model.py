@@ -90,6 +90,12 @@ class CausalTCN(nn.Module):
     스트리밍 추론에는 `CausalTCNGestureModel`(마지막 시점만 반환·검증)을 쓴다.
     """
 
+    # register_buffer로 채우는 텐서 버퍼 — nn.Module.__getattr__는 이들을
+    # `Tensor | Module`로 반환해 mypy가 `.view()`·`.to()`를 거부한다. 클래스 수준
+    # 주석으로 실제 타입(Tensor)을 알려 타입 체크를 통과시킨다(torch+mypy 표준 패턴).
+    input_mean: torch.Tensor
+    input_std: torch.Tensor
+
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
