@@ -91,7 +91,9 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
 1단계에서는 물체 테두리를 훑으며 얼굴·몸을 대각선과 앞뒤로 움직여 자세·거리·
 화면 내 위치 문맥을 모은다. 2단계에서는 고개를 고정하고 테두리를 다시 한 바퀴
 돌아 최종 area를 확정한다. runtime은 area 안 후보만 만들고 8D profile로 검증·
-정렬한다. area 밖 후보는 profile이 가까워도 항상 `UNKNOWN`이다. 겹침에서는 target
+정렬한다. area 밖 후보는 profile이 가까워도 항상 `UNKNOWN`이다. area 안에서는 head
+pose가 달라도 눈이 보정한 최종 gaze를 우선하며, 8D 문맥은 hard rejection이 아니라
+겹친 후보의 순위와 신뢰도에만 사용한다. 겹침에서는 target
 중심 방향과, 빠른 홍채 이동이 정지할 때 저장한 마지막 이동 방향을 추가 근거로 쓴다.
 
 테두리 ray는 서로 다른 표면점을 향하므로 새 등록에서는 3D 한 점으로 삼각측량하지
@@ -249,7 +251,7 @@ Debug monitor policy: simple `iris jump` lowers confidence so the arrow keeps mo
 ### Deterministic 8D target scoring
 
 The traced yaw/pitch area is the eligibility gate. Candidates inside that area are
-validated and ranked with an 8D Mahalanobis profile: gaze yaw/pitch, head yaw/pitch/
+ranked with an 8D Mahalanobis soft-context profile: gaze yaw/pitch, head yaw/pitch/
 roll, face scale, and normalized face center x/y. Per-feature covariance floors keep
 gaze more discriminative while preventing degree units from erasing scale/location.
 No learned classifier is trained during registration.
@@ -271,7 +273,7 @@ target bonus. Blink, recovery, iris-jump and tracking-loss frames reset settle s
 | `dwell_time_ms` | `3000` | Same target must remain the confident engine result for three continuous seconds before confirmation. |
 | `target_lock_ttl_ms` | `1500` | Gesture-wait/input-stream validity window; replacement candidates do not clear the confirmed target. |
 | `confirmed_unknown_timeout_ms` | `2000` | Release the Gaze confirmed target after two continuous seconds of classifier `UNKNOWN`. |
-| `target_context_tolerance` | `1.35` | Maximum normalized 8D Mahalanobis distance for an in-area candidate. |
+| `target_context_tolerance` | `1.35` | Soft scale for normalized 8D Mahalanobis overlap ranking. |
 | `target_settle_alignment_weight` | `0.55` | Maximum overlap bonus in the final iris landing direction. |
 | `gaze_settle_start_speed_deg_s` | `12.0` | Speed that arms eye-movement landing detection. |
 | `gaze_settle_stop_speed_deg_s` | `4.0` | Speed below which the armed movement is considered settled. |
@@ -285,7 +287,6 @@ target bonus. Blink, recovery, iris-jump and tracking-loss frames reset settle s
 | `registration_min_spread_deg` | `4.0` | Minimum angular spread saved for a registered target. Prevents overly tiny target regions. |
 | `registration_max_spread_deg` | `8.0` | Maximum angular spread saved for a registered target. Prevents one target from swallowing too much space. |
 | `registration_max_area_radius_deg` | `6.0` | Runtime cap for edge-loop target area radius, even if an old JSON profile saved a larger area. |
-| `target_area_scale_flex` | `0.25` | Allows the target area radius to flex by ±25% from face-scale changes. If the user is closer than during registration, the apparent target area grows slightly; if farther, it shrinks slightly. |
 
 ### Legacy 3D profile compatibility
 
@@ -306,7 +307,7 @@ target bonus. Blink, recovery, iris-jump and tracking-loss frames reset settle s
 - Up/down head motion dominates or flips targets too easily: decrease `head_pitch_weight`.
 - Left/right feels reversed: check `horizontal_axis_sign`.
 - Looking at a target but logs show near-boundary values such as `8.3/8.0deg x1.03 OUT`: check `target_match_tolerance`.
-- If target matching changes mostly when the user moves closer/farther from the camera: check `target_area_scale_flex`.
+- If matching changes with distance or head turn: inspect the 8D face-scale/face-center context; it must not shrink the hard gaze area.
 - Not looking at a target but it is still selected: check duplicate target records, `registration_max_area_radius_deg`, and the saved target profile/area.
 - Blink causes vector spikes: check `blink_hold_ms`, `blink_recovery_hold_ms`, and `iris_jump_threshold`.
 - Vector freezes too much: `iris_jump_threshold` may be too low, or blink-recovery hold may be too aggressive.

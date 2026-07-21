@@ -179,9 +179,6 @@ class GazeConfig:
     registration_max_area_radius_deg: float = 6.0
     """Runtime/storage cap for edge-loop target area radii."""
 
-    target_area_scale_flex: float = 0.25
-    """Allowed fractional target-area radius change from face-scale distance changes."""
-
     target_settle_alignment_weight: float = 0.55
     """Overlap bonus for a target in the final settling direction of the iris."""
 
@@ -201,7 +198,7 @@ class GazeConfig:
     """Accept near-boundary target matches up to this normalized distance."""
 
     target_context_tolerance: float = 1.35
-    """Maximum normalized 8D profile distance for an in-area target."""
+    """Soft scale for normalized 8D context distance during candidate ranking."""
 
     def __post_init__(self) -> None:
         if (
@@ -309,7 +306,6 @@ class GazeConfig:
                 "registration_max_area_radius_deg must satisfy min_spread <= area <= max_spread"
             )
         for name, value in {
-            "target_area_scale_flex": self.target_area_scale_flex,
             "target_settle_alignment_weight": self.target_settle_alignment_weight,
         }.items():
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:

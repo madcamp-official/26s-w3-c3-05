@@ -324,7 +324,7 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 | `iris_jump_threshold` | `0.18` | 프레임 간 홍채 offset jump 감지 기준 |
 | `max_valid_eye_offset` | `0.55` | 비현실적인 눈 가장자리 홍채 offset reject 기준 |
 | `small_motion_deadzone_deg` | `1.0` | 미세한 smoothed gaze 흔들림만 흡수하는 각도 |
-| `target_context_tolerance` | `1.35` | 테두리 안 후보에 적용할 8D Mahalanobis 정규화 거리 상한 |
+| `target_context_tolerance` | `1.35` | 테두리 안 후보의 8D Mahalanobis soft-context 점수 스케일 |
 | `target_settle_alignment_weight` | `0.55` | 겹친 영역에서 마지막 홍채 감속 방향에 주는 최대 보너스 |
 | `gaze_settle_start_speed_deg_s` | `12.0` | 홍채 이동을 시작으로 간주하는 각속도 |
 | `gaze_settle_stop_speed_deg_s` | `4.0` | 홍채가 멈췄다고 간주하는 각속도 |
@@ -335,17 +335,15 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 | `target_match_tolerance` | `1.10` | 등록 반경 경계값을 살짝 넘는 gaze를 허용하는 정규화 거리 상한 |
 | `registration_min_spread_deg` / `registration_max_spread_deg` | `4.0` / `8.0` | 등록 target의 각도 profile spread 하한/상한 |
 | `registration_max_area_radius_deg` | `6.0` | edge-loop target area가 과하게 커졌을 때 런타임에서 적용하는 반경 cap |
-| `target_area_scale_flex` | `0.25` | 등록 당시 대비 얼굴 scale 변화에 따라 target area 반경을 ±25%까지 유동 조정 |
 
 실험 중 조정 우선순위는 다음과 같다.
 
 1. 위/아래 고개 움직임이 덜 반영되면 `head_pitch_weight`를 조정한다.
 2. 좌/우 고개 움직임이 과하거나 부족하면 `head_yaw_weight`를 조정한다.
-3. 테두리 안인데 자세·거리 때문에 `UNKNOWN`이면 `target_context_tolerance`를 조금 올린다.
+3. 겹친 후보가 자세·거리 문맥과 다르게 선택되면 `target_context_tolerance`를 조정한다.
 4. 경계에서만 `UNKNOWN`이면 `target_match_tolerance`를 조금 올린다.
-5. 사용자-카메라 거리가 바뀔 때만 영역이 빡빡하거나 넓어지면 `target_area_scale_flex`를 조정한다.
-6. 겹친 물체가 반대로 선택되면 settle start/stop 속도와 `target_settle_alignment_weight`를 조정한다.
-7. 안 보고 있는데 target으로 빨려 들어가면 `registration_max_area_radius_deg`를 낮추거나 다시 등록한다.
+5. 겹친 물체가 반대로 선택되면 settle start/stop 속도와 `target_settle_alignment_weight`를 조정한다.
+6. 안 보고 있는데 target으로 빨려 들어가면 `registration_max_area_radius_deg`를 낮추거나 다시 등록한다.
 
 ## 기기 등록 방식
 
@@ -391,9 +389,9 @@ Baseline:
 최근 시선 방향 시퀀스
 → Temporal smoothing
 → 정밀 테두리 area 안 target만 후보 생성
-→ 8D Mahalanobis 문맥(gaze/head/scale/face center)으로 후보 검증·정렬
+→ 8D Mahalanobis 문맥(gaze/head/scale/face center)으로 후보 순위·신뢰도 조정
 → 겹친 후보는 gaze 중심 점수 + 홍채 settle 방향으로 결정
-→ area 밖 또는 8D 문맥 밖이면 UNKNOWN
+→ area 밖이면 UNKNOWN
 ```
 
 `position_3d`가 등록된 기기는 Device classifier 단계에서 "유사도"를 다르게

@@ -358,7 +358,6 @@ def _area_details(
 ) -> tuple[AreaProfileDetail, ...]:
     if sample is None:
         return tuple()
-    profiles = classifier.profiles
     details = [
         AreaProfileDetail(
             device_id=device_id,
@@ -366,11 +365,6 @@ def _area_details(
                 sample.gaze_yaw,
                 sample.gaze_pitch,
                 config.registration_max_area_radius_deg,
-                _area_radius_scale(
-                    profiles.get(device_id),
-                    sample.face_scale,
-                    config,
-                ),
             ),
             tolerance=config.target_match_tolerance,
             is_selected=device_id == selected_target,
@@ -378,20 +372,6 @@ def _area_details(
         for device_id, profile in classifier.area_profiles.items()
     ]
     return tuple(sorted(details, key=lambda item: item.normalized_distance))
-
-
-def _area_radius_scale(
-    profile: DeviceGazeProfile | None,
-    current_face_scale: float,
-    config: GazeConfig,
-) -> float:
-    if profile is None or profile.reference_face_scale is None or current_face_scale <= 0.0:
-        return 1.0
-    ratio = current_face_scale / profile.reference_face_scale
-    if not math.isfinite(ratio) or ratio <= 0.0:
-        return 1.0
-    flex = config.target_area_scale_flex
-    return min(1.0 + flex, max(1.0 - flex, ratio))
 
 
 def _device_details(

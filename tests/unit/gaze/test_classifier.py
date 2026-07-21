@@ -96,6 +96,25 @@ def test_overlapping_areas_use_head_scale_and_face_location_context() -> None:
     assert result.target == "right_pose"
 
 
+def test_in_area_gaze_is_not_rejected_by_compensated_head_pose() -> None:
+    """Head context must not veto a gaze that lands in the traced object area."""
+    classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
+    classifier.register_profile(
+        DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        feature_profile=_feature_profile(0.0, 0.0),
+        area_profile=TargetAreaProfile(0.0, 5.0, 6.0, 4.0, 80),
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(
+            5.9, 5.0, 37.0, 10.0, 3.0, 0.10, 0.5, 0.5
+        ),
+    )
+
+    assert result.target == "monitor"
+
+
 def test_feature_profile_rejects_far_distribution() -> None:
     classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
     classifier.register_profile(
@@ -218,13 +237,12 @@ def test_area_profile_inside_boundary_overrides_low_softmax_probability() -> Non
     assert result.probability < 0.95
 
 
-def test_area_profile_flexes_with_face_scale_for_apparent_target_size() -> None:
+def test_face_scale_does_not_shrink_a_valid_traced_area() -> None:
     classifier = TargetClassifier(
         GazeConfig(
             unknown_probability_threshold=0.0,
             registration_max_area_radius_deg=6.0,
-            target_match_tolerance=1.0,
-            target_area_scale_flex=0.25,
+            target_match_tolerance=1.1,
         )
     )
     classifier.register_profile(
@@ -243,19 +261,13 @@ def test_area_profile_flexes_with_face_scale_for_apparent_target_size() -> None:
         ),
     )
 
-    far_without_scale_flex = classifier.classify(
+    result = classifier.classify(
         _unit([0.0, 0.0, 1.0]),
-        feature_sample=TargetFeatureSample(7.0, 0.0, 0.0, 0.0, 0.0, 0.10),
-        current_face_scale=0.10,
-    )
-    closer_with_larger_apparent_target = classifier.classify(
-        _unit([0.0, 0.0, 1.0]),
-        feature_sample=TargetFeatureSample(7.0, 0.0, 0.0, 0.0, 0.0, 0.125),
-        current_face_scale=0.125,
+        feature_sample=TargetFeatureSample(6.0, 0.0, 0.0, 0.0, 0.0, 0.075),
+        current_face_scale=0.075,
     )
 
-    assert far_without_scale_flex.target == GazeConfig().UNKNOWN_TARGET
-    assert closer_with_larger_apparent_target.target == "screen"
+    assert result.target == "screen"
 
 
 def test_overlapping_area_profiles_prefer_gaze_aligned_center() -> None:

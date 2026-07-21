@@ -468,7 +468,6 @@ class TargetClassifier:
                 feature_sample.gaze_yaw,
                 feature_sample.gaze_pitch,
                 self._config.registration_max_area_radius_deg,
-                self._area_radius_scale(device_id, current_face_scale),
             )
             if normalized_distance > self._config.target_match_tolerance:
                 continue
@@ -492,9 +491,14 @@ class TargetClassifier:
                     feature_profile.mahalanobis_distance(feature_sample)
                     / feature_profile.threshold
                 )
-                if feature_normalized > self._config.target_context_tolerance:
-                    continue
-                feature_score = math.exp(-0.5 * feature_normalized**2)
+                # A matching final gaze can be produced with very different
+                # head poses (eyes compensate for the head turn).  Context is
+                # therefore a soft overlap/ranking signal, never a veto for a
+                # gaze that is already inside the traced object area.
+                context_distance = (
+                    feature_normalized / self._config.target_context_tolerance
+                )
+                feature_score = math.exp(-0.5 * context_distance**2)
             motion_alignment_score = self._settle_alignment_score(
                 feature_sample,
                 profile,
@@ -502,7 +506,7 @@ class TargetClassifier:
             )
             # The traced area is the eligibility gate. The 8D distribution then
             # combines gaze, head, face scale and face position to rank valid
-            # overlaps without letting context resurrect an out-of-area target.
+            # overlaps without rejecting compensated head/eye poses.
             combined_score = (
                 area_score
                 * (0.70 + 0.30 * center_score)
@@ -573,18 +577,3 @@ class TargetClassifier:
             motion_norm * target_norm
         )
         return weight * max(0.0, min(1.0, cosine))
-
-    def _area_radius_scale(self, device_id: str, current_face_scale: float | None) -> float:
-        profile = self._profiles.get(device_id)
-        if (
-            profile is None
-            or profile.reference_face_scale is None
-            or current_face_scale is None
-            or current_face_scale <= 0.0
-        ):
-            return 1.0
-        ratio = current_face_scale / profile.reference_face_scale
-        if not math.isfinite(ratio) or ratio <= 0.0:
-            return 1.0
-        flex = self._config.target_area_scale_flex
-        return min(1.0 + flex, max(1.0 - flex, ratio))

@@ -20,8 +20,6 @@ from jarvis.gaze.config import GazeConfig
         {"max_valid_eye_offset": -0.1},
         {"registration_max_area_radius_deg": 3.0},
         {"registration_max_area_radius_deg": 20.0},
-        {"target_area_scale_flex": -0.1},
-        {"target_area_scale_flex": 1.1},
         {"target_settle_alignment_weight": 1.1},
         {"gaze_settle_start_speed_deg_s": -0.1},
         {"gaze_settle_stop_speed_deg_s": 12.0},
