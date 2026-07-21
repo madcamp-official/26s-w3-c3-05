@@ -439,13 +439,16 @@ dwell_time_ms: 3000
 minimum_probability: 0.80
 minimum_margin: 0.20
 target_lock_ttl_ms: 1500
+confirmed_unknown_timeout_ms: 2000
 ```
 
 기기가 Lock되면 마지막 확정 선택을 유지한다. 다른 기기를 보기 시작해도 기존 기기를
 즉시 해제하지 않고 새 기기의 3초 dwell을 별도 후보로 누적하며, 3초를 모두 채운 한
 프레임에서만 선택을 원자적으로 교체한다. 후보가 도중에 `UNKNOWN` 또는 저신뢰로
-취소되면 이전 확정 기기가 그대로 남는다. 단, 확정 기기 삭제·명시적 reset과
-`GESTURE_WAIT`의 TTL 만료는 별도로 처리한다.
+취소되면 이전 확정 기기를 즉시 버리지 않는다. 다만 Gaze 엔진 결과가 2초 동안
+연속으로 `UNKNOWN`이면 사용자가 등록 영역을 벗어난 것으로 보고 확정 기기도
+`UNKNOWN`으로 해제한다. 2초 안에 알려진 target이 다시 나오면 타이머는 초기화된다.
+확정 기기 삭제·명시적 reset과 `GESTURE_WAIT`의 TTL 만료도 별도로 처리한다.
 
 ---
 

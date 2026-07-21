@@ -279,6 +279,14 @@ class GazePanel(QScrollArea):
                 f"{dwell_seconds:.1f}/{required_seconds:.1f}s"
             )
             self._confirmed_target.setStyleSheet(_MONO + " color:#58a6ff;")
+        elif s.locked_device is not None and s.unknown_elapsed_ms > 0:
+            elapsed_seconds = s.unknown_elapsed_ms / 1000.0
+            required_seconds = s.unknown_required_ms / 1000.0
+            self._confirmed_target.setText(
+                f"3초 확정 응시 대상: {s.locked_target_label} [{s.locked_device}]  | "
+                f"UNKNOWN 해제 대기 {elapsed_seconds:.1f}/{required_seconds:.1f}s"
+            )
+            self._confirmed_target.setStyleSheet(_MONO + " color:#d29922;")
         else:
             self._confirmed_target.setText(
                 f"3초 확정 응시 대상: {s.locked_target_label or '--'} "

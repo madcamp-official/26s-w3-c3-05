@@ -169,6 +169,8 @@ class GazeSnapshot:
     dwell_progress: float
     locked_device: str | None
     locked_target_label: str | None
+    unknown_elapsed_ms: int
+    unknown_required_ms: int
     is_confident: bool
 
     # 2f — the contract message emitted to Fusion
@@ -677,6 +679,8 @@ def evaluate(
         dwell_progress=lock.dwell_progress,
         locked_device=locked_device,
         locked_target_label=locked_target_label,
+        unknown_elapsed_ms=lock.unknown_elapsed_ms,
+        unknown_required_ms=config.confirmed_unknown_timeout_ms,
         is_confident=_is_confident(result, config),
         target_estimate=estimate,
         inference_ms=inference_ms,

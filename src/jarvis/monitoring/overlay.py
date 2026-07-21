@@ -210,8 +210,16 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
     else:
         dwell_text = "HOLD 3S: --"
         dwell_color = grey
-    confirmed_text = f"CONFIRMED: {snapshot.locked_target_label or '--'}"
-    confirmed_color = (80, 200, 80) if snapshot.locked_device is not None else grey
+    if snapshot.locked_device is not None and snapshot.unknown_elapsed_ms > 0:
+        confirmed_text = (
+            f"CONFIRMED: {snapshot.locked_target_label} | UNKNOWN "
+            f"{snapshot.unknown_elapsed_ms / 1000.0:.1f}/"
+            f"{snapshot.unknown_required_ms / 1000.0:.1f}s"
+        )
+        confirmed_color = (80, 190, 230)
+    else:
+        confirmed_text = f"CONFIRMED: {snapshot.locked_target_label or '--'}"
+        confirmed_color = (80, 200, 80) if snapshot.locked_device is not None else grey
     headline_lines = (
         (engine_text, looking_color),
         (dwell_text, dwell_color),

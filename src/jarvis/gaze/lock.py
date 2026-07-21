@@ -48,6 +48,8 @@ class GazeLockStateMachine:
         self._candidate_started_at_ms: int | None = None
         self._candidate_elapsed_ms = 0
         self._lock_expires_at_ms: int | None = None
+        self._unknown_started_at_ms: int | None = None
+        self._unknown_elapsed_ms = 0
 
     @property
     def state(self) -> GazeLockState:
@@ -86,6 +88,11 @@ class GazeLockStateMachine:
             return 1.0
         return min(1.0, self._candidate_elapsed_ms / self._config.dwell_time_ms)
 
+    @property
+    def unknown_elapsed_ms(self) -> int:
+        """Continuous UNKNOWN time while retaining a previously confirmed target."""
+        return self._unknown_elapsed_ms
+
     def is_locked_to(self, device_id: str) -> bool:
         """Cursor Control Mapper 게이트(README 6장) 등에서 쓰는 편의 함수."""
         return self.locked_device == device_id
@@ -98,6 +105,7 @@ class GazeLockStateMachine:
         self._candidate_started_at_ms = None
         self._candidate_elapsed_ms = 0
         self._lock_expires_at_ms = None
+        self._clear_unknown_timer()
 
     def update(self, timestamp_ms: int, classification: ClassificationResult) -> GazeLockState:
         """한 프레임의 분류 결과를 반영해 상태를 전이시키고 새 상태를 반환한다.
@@ -143,11 +151,25 @@ class GazeLockStateMachine:
             self._state = GazeLockState.TARGET_LOCKED
             self._locked_device = self._candidate_device
             self._clear_candidate()
+            self._clear_unknown_timer()
             self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
             return self._state
 
         if self._state == GazeLockState.TARGET_LOCKED:
             assert self._lock_expires_at_ms is not None
+            if classification.target == self._config.UNKNOWN_TARGET:
+                self._clear_candidate()
+                if self._unknown_started_at_ms is None:
+                    self._unknown_started_at_ms = timestamp_ms
+                self._unknown_elapsed_ms = max(
+                    0, timestamp_ms - self._unknown_started_at_ms
+                )
+                if self._unknown_elapsed_ms >= self._config.confirmed_unknown_timeout_ms:
+                    self.reset()
+                    return self._state
+                self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
+                return self._state
+            self._clear_unknown_timer()
             if confident and classification.target == self._locked_device:
                 self._clear_candidate()
                 self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
@@ -181,6 +203,7 @@ class GazeLockStateMachine:
         """TARGET_LOCKED 상태에서 Fusion이 gesture 시작을 감지했을 때 호출한다."""
         if self._state == GazeLockState.TARGET_LOCKED:
             self._clear_candidate()
+            self._clear_unknown_timer()
             self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
             self._state = GazeLockState.GESTURE_WAIT
         return self._state
@@ -204,3 +227,7 @@ class GazeLockStateMachine:
         self._candidate_device = None
         self._candidate_started_at_ms = None
         self._candidate_elapsed_ms = 0
+
+    def _clear_unknown_timer(self) -> None:
+        self._unknown_started_at_ms = None
+        self._unknown_elapsed_ms = 0

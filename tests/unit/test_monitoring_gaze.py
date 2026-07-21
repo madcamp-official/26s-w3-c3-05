@@ -354,6 +354,8 @@ def test_lock_reaches_target_locked_after_dwell() -> None:
     assert last.locked_device == "laptop"
     assert last.locked_target_label == "laptop"
     assert last.dwell_progress == 1.0
+    assert last.unknown_elapsed_ms == 0
+    assert last.unknown_required_ms == 2000
 
 
 def test_snapshot_separates_instant_engine_target_from_three_second_confirmation() -> None:

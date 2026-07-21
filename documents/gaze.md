@@ -41,8 +41,10 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
   등록 방향과의 절대 각도(`unknown_max_angle_deg`, 기본 25도)도 함께 검사한다. 등록
   기기가 하나일 때 상대 확률이 항상 1.0이 되는 경우에도 먼 시선을 거부하기 위해서다.
 - 3초 확정 대상은 새 후보가 dwell을 모두 채울 때까지 sticky하게 유지한다. 새 후보가
-  `UNKNOWN`/저신뢰로 취소돼도 이전 대상은 유지되고, 새 후보가 3초를 채운 프레임에서
-  공백 없이 원자적으로 교체된다. 확정 대상 삭제·명시적 reset은 Lock을 해제한다.
+  잠깐 `UNKNOWN`/저신뢰로 취소돼도 이전 대상은 유지되고, 새 후보가 3초를 채운 프레임에서
+  공백 없이 원자적으로 교체된다. 단, Gaze classifier가 2초 연속 `UNKNOWN`이면 확정
+  target을 해제한다. 그 전에 알려진 target이 나오면 UNKNOWN 타이머는 초기화된다.
+  이 규칙은 Gaze 모듈에만 적용하며 Gesture/Fusion 로직은 변경하지 않는다.
 - `target_lock_ttl_ms`는 확정 선택 자체를 1.5초마다 지우는 타이머가 아니라, gesture
   wait와 Fusion 입력 스트림 중단 시 안전하게 intent를 거부하는 유효 시간이다.
 - `jarvis-gaze calibrate`는 카메라 관측을 기기 프로필로 축약해 저장하고,
@@ -238,6 +240,7 @@ Debug monitor policy: simple `iris jump` no longer freezes the vector completely
 | `minimum_margin` | `0.20` | Minimum top-1 vs top-2 margin for confident lock. |
 | `dwell_time_ms` | `3000` | Same target must remain the confident engine result for three continuous seconds before confirmation. |
 | `target_lock_ttl_ms` | `1500` | Gesture-wait/input-stream validity window; replacement candidates do not clear the confirmed target. |
+| `confirmed_unknown_timeout_ms` | `2000` | Release the Gaze confirmed target after two continuous seconds of classifier `UNKNOWN`. |
 
 ### Registration / target profile
 

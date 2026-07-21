@@ -185,6 +185,8 @@ class GazeSampleStore:
             "dwell_progress": latest.dwell_progress,
             "confirmed_target": latest.locked_device,
             "confirmed_target_label": latest.locked_target_label,
+            "unknown_elapsed_ms": latest.unknown_elapsed_ms,
+            "unknown_required_ms": latest.unknown_required_ms,
             "reject_reason": latest.reject_reason,
             "nearest_target_range": (
                 {

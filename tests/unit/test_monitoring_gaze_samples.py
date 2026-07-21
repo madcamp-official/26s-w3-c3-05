@@ -92,6 +92,8 @@ def test_store_persists_snapshot_as_json(tmp_path: Path) -> None:
     assert payload[0]["target_label"] == "UNKNOWN"
     assert payload[0]["confirmed_target"] is None
     assert payload[0]["dwell_required_ms"] == 3000
+    assert payload[0]["unknown_elapsed_ms"] == 0
+    assert payload[0]["unknown_required_ms"] == 2000
     assert payload[0]["nearest_target_range"] is None
 
 

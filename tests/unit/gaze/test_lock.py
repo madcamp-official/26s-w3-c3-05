@@ -107,16 +107,49 @@ def test_locked_persists_through_brief_look_away_within_ttl() -> None:
     assert lock.locked_device == "laptop"
 
 
-def test_locked_selection_survives_unknown_frames_until_explicit_reset() -> None:
-    config = GazeConfig(dwell_time_ms=100, target_lock_ttl_ms=1000)
+def test_locked_selection_releases_after_two_continuous_unknown_seconds() -> None:
+    config = GazeConfig(
+        dwell_time_ms=100,
+        target_lock_ttl_ms=1000,
+        confirmed_unknown_timeout_ms=2000,
+    )
     lock = GazeLockStateMachine(config)
     lock.update(0, _confident("laptop"))
     lock.update(100, _confident("laptop"))
     assert lock.state == GazeLockState.TARGET_LOCKED
 
-    state = lock.update(100 + 5000, _unknown())
+    state = lock.update(200, _unknown())
     assert state == GazeLockState.TARGET_LOCKED
     assert lock.locked_device == "laptop"
+    assert lock.unknown_elapsed_ms == 0
+
+    state = lock.update(2199, _unknown())
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "laptop"
+    assert lock.unknown_elapsed_ms == 1999
+
+    state = lock.update(2200, _unknown())
+    assert state == GazeLockState.SEARCHING
+    assert lock.locked_device is None
+    assert lock.unknown_elapsed_ms == 0
+
+
+def test_known_target_interrupts_unknown_release_timer() -> None:
+    config = GazeConfig(dwell_time_ms=100, confirmed_unknown_timeout_ms=2000)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("monitor"))
+    lock.update(100, _confident("monitor"))
+
+    lock.update(200, _unknown())
+    lock.update(1900, _unknown())
+    assert lock.unknown_elapsed_ms == 1700
+    lock.update(1950, _confident("monitor"))
+    assert lock.unknown_elapsed_ms == 0
+
+    lock.update(2000, _unknown())
+    state = lock.update(3999, _unknown())
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "monitor"
 
 
 def test_replacement_candidate_keeps_confirmed_target_until_dwell() -> None:

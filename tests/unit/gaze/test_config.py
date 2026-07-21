@@ -12,6 +12,7 @@ from jarvis.gaze.config import GazeConfig
     [
         {"smoothing_window_frames": 0},
         {"target_lock_ttl_ms": 0},
+        {"confirmed_unknown_timeout_ms": 0},
         {"minimum_probability": float("nan")},
         {"minimum_tracking_confidence": 1.1},
         {"unknown_max_angle_deg": 181.0},

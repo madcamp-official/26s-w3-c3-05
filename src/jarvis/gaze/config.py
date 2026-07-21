@@ -30,6 +30,9 @@ class GazeConfig:
     target_lock_ttl_ms: int = 1500
     """TARGET_LOCKED/GESTURE_WAIT 상태가 만료되기까지의 유예 시간."""
 
+    confirmed_unknown_timeout_ms: int = 2000
+    """Release the confirmed target after this much continuous UNKNOWN time."""
+
     # Target classifier (README 7장 "Target 추정")
     unknown_probability_threshold: float = 0.80
     """최고 유사도 기반 확률이 이 값 미만이면 UNKNOWN으로 거부한다.
@@ -186,8 +189,12 @@ class GazeConfig:
     """Accept near-boundary target matches up to this normalized distance."""
 
     def __post_init__(self) -> None:
-        if self.dwell_time_ms < 0 or self.target_lock_ttl_ms <= 0:
-            raise ValueError("Gaze timing thresholds must be non-negative and TTL must be positive")
+        if (
+            self.dwell_time_ms < 0
+            or self.target_lock_ttl_ms <= 0
+            or self.confirmed_unknown_timeout_ms <= 0
+        ):
+            raise ValueError("Gaze timing thresholds are invalid")
         if self.blink_hold_ms < 0 or self.blink_recovery_hold_ms < 0:
             raise ValueError("blink hold thresholds must be non-negative")
         if self.tracking_loss_hold_ms < 0:
