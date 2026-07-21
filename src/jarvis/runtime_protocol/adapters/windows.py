@@ -24,7 +24,6 @@ the scroll/volume/media logic.
 
 from __future__ import annotations
 
-import ctypes
 import sys
 from enum import StrEnum
 from typing import Any, Protocol
@@ -71,13 +70,8 @@ class InputSink(Protocol):
         """Press and release a single system key."""
         ...
 
-    def move_cursor(self, dx: int, dy: int, *, dragging: bool = False) -> None:
-        """현재 위치에서 (dx, dy)px만큼 커서를 옮긴다.
-
-        ``dragging``이면 버튼이 눌린 상태의 드래그 이동임을 sink에 알린다 — macOS는
-        ``LeftMouseDragged``로 분기해야 창·선택이 실시간으로 따라오고, Windows는
-        눌린 버튼 상태가 이동 이벤트에 실려 별도 분기가 필요 없다.
-        """
+    def move_cursor(self, dx: int, dy: int) -> None:
+        """Move the cursor by a relative delta (used by the future pointer path)."""
         ...
 
     def switch_window(self, forward: bool, repeat: int) -> None:
@@ -208,24 +202,12 @@ _VK_MENU = 0x12  # ALT
 _VK_SHIFT = 0x10
 
 
-class _POINT(ctypes.Structure):
-    """``GetCursorPos``가 채우는 화면 좌표(px). 커서 절대 이동 계산용.
-
-    ``ctypes`` 자체는 모든 OS에서 import되므로(Windows 전용은 ``windll`` 접근뿐)
-    이 구조체를 모듈 최상위에 둬도 non-Windows import는 깨지지 않는다.
-    """
-
-    _fields_ = (("x", ctypes.c_long), ("y", ctypes.c_long))
-
-
 class Win32InputSink:
     """Real OS input via ``user32`` (Windows only, manually verified).
 
-    Keys·scroll·click은 classic ``keybd_event``/``mouse_event`` 경로를, 커서 이동은
-    ``GetCursorPos``+``SetCursorPos`` 절대 좌표 경로를 쓴다(상대 ``mouse_event``는
-    포인터 가속에 왜곡되므로 — `move_cursor` 참고). ``windll`` 접근만 Windows
-    전용이라 ``_user32``에서 지연 resolve하고, 이 모듈 import 자체는 non-Windows
-    호스트·테스트에서도 항상 성공한다(실제 호출 시에만 Windows가 필요).
+    Uses the classic ``keybd_event``/``mouse_event`` entry points. ``ctypes`` is
+    imported lazily so importing this module never fails on a non-Windows host or
+    in tests; the calls themselves only work on Windows.
     """
 
     def _user32(self) -> Any:
@@ -261,33 +243,10 @@ class Win32InputSink:
         user32.keybd_event(vk, 0, 0, 0)
         user32.keybd_event(vk, 0, _KEYEVENTF_KEYUP, 0)
 
-    def _cursor_position(self) -> tuple[int, int] | None:
-        """현재 커서의 화면 좌표(px). 못 읽으면 None(다음 프레임에 재시도)."""
-        point = _POINT()
-        if not self._user32().GetCursorPos(ctypes.byref(point)):
-            return None
-        return int(point.x), int(point.y)
-
     def move_cursor(self, dx: int, dy: int, *, dragging: bool = False) -> None:
-        """현재 위치에서 정확히 (dx, dy)px 이동 — 현재 좌표+델타의 절대 이동으로 낸다.
-
-        상대 ``mouse_event(MOUSEEVENTF_MOVE)``는 Windows "포인터 정확도 향상"
-        (포인터 가속) 곡선을 타서, 컨트롤러가 계산한 픽셀 델타가 그대로 적용되지
-        않는다 — 느린 이동은 덜, 빠른 이동은 더 나가 손 랜드마크 기준 감도가
-        어긋난다(실측: 5px×20회=100px 지시가 81px로 적용). ``GetCursorPos``로 현재
-        위치를 읽어 델타를 더한 절대 좌표를 ``SetCursorPos``해 가속을 우회한다 —
-        macOS sink(현재 위치+델타 절대 이동)와 같은 의미라 두 OS 감도가 일치한다.
-
-        ``dragging``이면 pose_control이 이미 왼쪽 버튼을 누른 상태다(``press`` 참고).
-        버튼이 눌린 채 커서가 움직이면 Windows가 ``WM_MOUSEMOVE``에 ``MK_LBUTTON``을
-        실어 보내 창·선택이 실시간으로 따라오므로, 이동 방식은 드래그 여부와
-        무관하게 같다(macOS는 별도 ``LeftMouseDragged``가 필요해 분기하지만 Windows는
-        불필요).
-        """
-        current = self._cursor_position()
-        if current is None:
-            return
-        self._user32().SetCursorPos(current[0] + dx, current[1] + dy)
+        # MOUSEEVENTF_MOVE (0x0001)는 버튼이 눌린 채면 OS가 드래그로 해석하므로,
+        # Windows에서는 드래그 여부와 무관하게 같은 상대 이동으로 충분하다.
+        self._user32().mouse_event(0x0001, dx, dy, 0, 0)
 
     def switch_window(self, forward: bool, repeat: int) -> None:
         # Alt+Tab (forward) / Alt+Shift+Tab (backward). Hold Alt for the whole
