@@ -86,7 +86,15 @@ MIN_FINGER_EXTENSION = 0.55
 # index_point 유지 88%) 기반이며 실기기 튜닝 대상이다.
 ROT_STEP_DEG = 60.0       # 누적 회전 이만큼마다 볼륨 1스텝(작을수록 민감)
 ROT_MIN_SPEED = 60.0      # deg/s. 이 미만 각속도는 누적하지 않는다(포인팅 지터·드리프트 차단)
-ROT_SIGN = 1.0            # +누적(화면 시계방향)을 볼륨 증가로. 실기기에서 CW/CCW 뒤집히면 -1로
+ROT_SIGN = -1.0           # 화면 시계방향을 볼륨 증가로(실기기 확인 결과 -1). 뒤집히면 부호 변경
+# 회전을 감지하면 이 시간 동안 "볼륨 노브 모드"를 유지해 다른 모든 동작(클릭·드래그·커서·
+# 스크롤 등)을 막는다 — 회전 중 순간 오인식(pinch_index·fist)이 클릭/드래그로 새지 않게.
+# 회전을 멈추고 이 시간이 지나야 일반 조작으로 돌아간다.
+ROT_HOLD_MS = 400
+# 회전 게이트는 확정 상태가 아니라 **분류기 라벨**로 연다 — index_point는 고tilt에서
+# 신뢰 게이트에 걸려(trusted=False) 상태로 진입하지 못하지만 라벨 자체는 유지되므로
+# (실측 88%), 손을 눕힌 채로도 회전을 시작할 수 있어야 하기 때문이다.
+ROT_LABEL = "index_point"
 
 # 커서 이동: index_point(이동) 또는 pinch_index(드래그) 상태에서 손 이동을 커서로 옮긴다.
 # 좌표를 1:1로 대응시키지 않고, 마우스처럼 손 이동 **델타**에 이득을 곱한다.
@@ -205,10 +213,12 @@ class PoseStateMachine:
     _cursor_ref_ms: int = 0
     # 커서 speed 분모로 쓰는 palm_scale의 One-Euro 평활기(raw palm_scale 지터 완화).
     _palm_smoother: OneEuroFilter = field(default_factory=_make_cursor_palm_smoother)
-    # 검지 회전 누적(볼륨용). index_point를 벗어나면 리셋한다.
+    # 검지 회전 누적(볼륨용). index_point 라벨을 벗어나면(관용 초과) 리셋한다.
     _rot_prev_angle: float | None = None
     _rot_prev_ms: int = 0
     _rot_accum: float = 0.0
+    _rot_missing: int = 0        # 연속으로 index_point 라벨이 아닌 프레임 수(관용 카운터)
+    _rot_active_until: int = 0   # 이 시각까지는 볼륨 노브 모드(다른 동작 차단)
 
     def reset(self) -> None:
         """추적 손실 등으로 이력을 신뢰할 수 없을 때 — 상태를 지어내지 않는다."""
@@ -221,6 +231,8 @@ class PoseStateMachine:
         self._dragging = False
         self._rot_prev_angle = None
         self._rot_accum = 0.0
+        self._rot_missing = 0
+        self._rot_active_until = 0
         self._palm_smoother.reset()
 
     def update(
@@ -245,9 +257,13 @@ class PoseStateMachine:
         else:
             self._palm_smoother.reset()
         self._cursor_ctx = (reference_point, palm_scale)
-        # 검지 회전 → 볼륨: index_point 상태가 유지되는 한 trusted와 무관하게 추적한다.
-        # 회전은 대부분 tilt>10°(untrusted)라 아래 규칙 2 게이트 **앞**에서 잡아야 한다.
-        rotation = self._track_rotation(timestamp_ms, landmarks)
+        # 검지 회전 → 볼륨: 분류기 라벨이 index_point면 trusted·상태와 무관하게 추적한다
+        # (고tilt에서 손을 눕힌 채로도 회전을 시작할 수 있게). 규칙 2 게이트 **앞**에서 돈다.
+        rotation = self._track_rotation(prediction, timestamp_ms, landmarks)
+        # 볼륨 노브 모드: 회전이 활성인 동안엔 다른 모든 동작을 막는다(회전 중 순간 오인식이
+        # 클릭·드래그로 새지 않게). 상태는 건드리지 않아 모드가 풀리면 그대로 이어간다.
+        if timestamp_ms < self._rot_active_until:
+            return rotation
         # 규칙 2: 믿을 수 없는 판정은 상태·진입 dwell을 건드리지 않는다. 짧은 각도 튐
         # (관용 프레임 이내)은 그대로 흘려 연속 동작을 유지하지만, 지속적으로 초과하면
         # 커서·스크롤을 멈춘다 — 이때도 상태는 남아 각도를 낮추면 즉시 재개된다. 멈추는
@@ -302,19 +318,25 @@ class PoseStateMachine:
         return PoseEvent("move", timestamp_ms, 0.0, (px, py))
 
     def _track_rotation(
-        self, timestamp_ms: int, landmarks: FloatArray | None
+        self, prediction: PosePrediction, timestamp_ms: int, landmarks: FloatArray | None
     ) -> list[PoseEvent]:
-        """index_point 상태에서 검지 방향의 회전을 누적해 볼륨 스텝 이벤트를 낸다.
+        """검지(index_point) 방향의 회전을 누적해 볼륨 스텝 이벤트를 낸다.
 
-        검지 MCP→TIP 벡터의 각도를 프레임마다 unwrap해 더한다. 각속도가 `ROT_MIN_SPEED`
-        미만이면(포인팅 중 손떨림·손 평행이동으로 방향이 거의 안 변하는 경우) 누적하지
-        않는다. 누적이 `ROT_STEP_DEG`를 넘을 때마다 부호에 따라 volume_up/volume_down을
-        낸다 — 빠르게 돌수록 초당 스텝이 많아져 비례 제어가 된다. index_point를 벗어나면
-        누적을 버린다(다음 회전은 처음부터).
+        게이트는 확정 상태가 아니라 **분류기 라벨**(`ROT_LABEL`)이다 — 고tilt에서 손을
+        눕힌 채로도 회전을 시작할 수 있어야 하는데, 그 각도에선 신뢰 게이트에 걸려 상태로
+        진입하지 못하기 때문이다. 검지 MCP→TIP 벡터의 각도를 프레임마다 unwrap해 더하고,
+        각속도가 `ROT_MIN_SPEED` 미만이면(포인팅 지터·손 평행이동) 누적하지 않는다. 누적이
+        `ROT_STEP_DEG`를 넘을 때마다 부호에 따라 volume_up/down을 낸다(빠를수록 초당 스텝↑
+        = 비례 제어). 회전을 감지하면 `ROT_HOLD_MS` 동안 볼륨 노브 모드를 유지한다. 라벨을
+        벗어나도 관용(`untrusted_grace_frames`) 안에서는 누적을 지키고, 넘기면 리셋한다.
         """
-        if self.state != "index_point" or landmarks is None:
-            self._rot_prev_angle, self._rot_accum = None, 0.0
+        index_active = prediction.label == ROT_LABEL or self.state == ROT_LABEL
+        if not index_active or landmarks is None:
+            self._rot_missing += 1
+            if self._rot_missing > self.untrusted_grace_frames:
+                self._rot_prev_angle, self._rot_accum = None, 0.0
             return []
+        self._rot_missing = 0
         points = np.asarray(landmarks, dtype=np.float64)
         if points.ndim != 2 or points.shape[0] <= INDEX_TIP:
             return []
@@ -330,6 +352,7 @@ class PoseStateMachine:
         self._rot_prev_angle, self._rot_prev_ms = angle, timestamp_ms
         if abs(delta) / dt_s < ROT_MIN_SPEED:  # 회전으로 볼 만큼 빠르지 않으면 무시
             return []
+        self._rot_active_until = timestamp_ms + ROT_HOLD_MS  # 볼륨 노브 모드 연장
         self._rot_accum += delta
         steps = int(self._rot_accum / ROT_STEP_DEG)  # 0을 향해 버림
         if steps == 0:

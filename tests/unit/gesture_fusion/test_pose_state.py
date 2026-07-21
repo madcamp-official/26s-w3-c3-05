@@ -329,28 +329,56 @@ def _enter_index(machine: PoseStateMachine, *, start: int = 0) -> int:
     return t
 
 
+def _rotate(machine: PoseStateMachine, *, sign: int, frames: int, start: int, trusted: bool = False):
+    """검지 방향을 sign*15°/frame으로 돌리며 이벤트 종류를 모은다. 다음 timestamp도 반환."""
+    events, t, theta = [], start, 0.0
+    for _ in range(frames):
+        theta += sign * 15.0
+        events += [e.kind for e in machine.update(_pose("index_point", trusted=trusted), t, _hand_pointing(theta))]
+        t += 33
+    return events, t
+
+
 def test_index_rotation_drives_volume() -> None:
-    """index_point 상태에서 검지를 돌리면 방향에 따라 볼륨 스텝이 나온다(고tilt·untrusted 포함)."""
+    """검지를 돌리면 볼륨 스텝이 나오고, 반대로 돌리면 반대 방향이 나온다(고tilt·untrusted 포함).
+
+    CW/CCW ↔ up/down 부호는 `ROT_SIGN`(실기기 확인값)에 달렸으므로, 여기서는 두 방향이
+    **서로 반대**라는 불변만 검증한다.
+    """
     machine = PoseStateMachine()
     t = _enter_index(machine)
     assert machine.state == "index_point"
 
-    # 시계방향(각도 증가)을 고tilt(untrusted)로 — 회전은 trusted와 무관하게 잡혀야 한다.
-    up, theta = [], 0.0
-    for _ in range(20):
-        theta += 15.0
-        up += [e.kind for e in machine.update(_pose("index_point", trusted=False), t, _hand_pointing(theta))]
-        t += 33
-    assert up.count("volume_up") > 0 and up.count("volume_down") == 0
+    cw, t = _rotate(machine, sign=+1, frames=20, start=t)
+    cw_vol = {e for e in cw if e.startswith("volume")}
+    assert len(cw_vol) == 1, "한 방향 회전은 한 종류의 볼륨 스텝만"
     assert machine.state == "index_point"  # 회전 내내 상태 유지
 
-    # 반시계(각도 감소) → 반대 방향
-    down = []
-    for _ in range(20):
-        theta -= 15.0
-        down += [e.kind for e in machine.update(_pose("index_point", trusted=False), t, _hand_pointing(theta))]
+    ccw, t = _rotate(machine, sign=-1, frames=20, start=t)
+    ccw_vol = {e for e in ccw if e.startswith("volume")}
+    assert len(ccw_vol) == 1
+    assert cw_vol != ccw_vol, "반대로 돌리면 볼륨 방향도 반대여야 한다"
+
+
+def test_index_rotation_starts_at_high_tilt_without_entering_state() -> None:
+    """상태 진입(낮은 tilt) 없이도, 고tilt(untrusted) 라벨만으로 회전 볼륨이 시작된다."""
+    machine = PoseStateMachine()
+    events, _ = _rotate(machine, sign=+1, frames=20, start=0, trusted=False)
+    assert any(e.startswith("volume") for e in events)
+    assert machine.state == ""  # 상태로 진입하지 않았어도 동작
+
+
+def test_volume_knob_mode_blocks_other_actions() -> None:
+    """회전(볼륨 노브 모드) 중에는 순간 오인식(pinch 등)이 섞여도 클릭·드래그가 나오지 않는다."""
+    machine = PoseStateMachine()
+    events, t, theta = [], 0, 0.0
+    for i in range(15):
+        theta += 15.0
+        label = "pinch_index" if i % 3 == 0 else "index_point"  # 회전 중 오인식 섞기
+        events += [e.kind for e in machine.update(_pose(label, trusted=False), t, _hand_pointing(theta))]
         t += 33
-    assert down.count("volume_down") > 0 and down.count("volume_up") == 0
+    assert not any(e in ("click", "drag_start", "right_click") for e in events)
+    assert any(e.startswith("volume") for e in events)
 
 
 def test_pointing_without_rotation_does_not_change_volume() -> None:
