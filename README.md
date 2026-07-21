@@ -437,6 +437,15 @@ class의 head 유효 가중치가 gaze의 20%를 넘지 못하게 제한한다. 
 동일하게 적용한다. 눈을 감거나 blink recovery/추적 hold 중에는 derivative history를
 갱신하지 않으며 250ms보다 긴 공백 뒤에는 속도·가속도를 초기화한다.
 
+이 Linear classifier는 등록 영역을 대신하는 최종 판정기가 아니라, **현재 등록된
+영역이 겹칠 때의 순위기**로만 사용한다. 먼저 현재 gaze가 각 target의 edge-loop
+영역(영역이 없는 레거시 target은 direction 반경)과 `target_match_tolerance`를
+통과해야 후보가 된다. 후보가 두 개 이상일 때만 softmax 순위를 쓰며, 후보가 없으면
+ML confidence가 높아도 `UNKNOWN`이다. 저장 학습 데이터에는 target ID와 별도로
+등록 위치의 공간 지문을 붙인다. 같은 ID라도 방향·영역·스케일·3D 위치가 달라지면
+이전 샘플을 폐기하고 현재 등록 샘플로 교체하며, 삭제됐거나 현재 registry에 없는
+target class는 추론에서 제외한다.
+
 ## Gaze Lock 상태 머신
 
 ```

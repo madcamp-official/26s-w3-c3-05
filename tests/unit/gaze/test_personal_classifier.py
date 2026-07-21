@@ -124,6 +124,82 @@ def test_store_waits_until_two_targets_have_enough_samples(tmp_path: Path) -> No
     assert store.model is None
 
 
+def test_store_invalidates_deleted_and_same_id_moved_target_samples(tmp_path: Path) -> None:
+    path = tmp_path / "personal_target_classifier.json"
+    store = PersonalTargetStore(path)
+    store.add_samples(
+        "target_001",
+        [
+            feature
+            for _target_id, feature in _samples(
+                "target_001", gaze_yaw=1.0, gaze_pitch=3.0, head_yaw=-5.0
+            )
+        ],
+        registration_signature="old-location",
+    )
+    store.add_samples(
+        "target_003",
+        [
+            feature
+            for _target_id, feature in _samples(
+                "target_003", gaze_yaw=18.0, gaze_pitch=8.0, head_yaw=15.0
+            )
+        ],
+        registration_signature="deleted-location",
+    )
+    assert store.model is not None
+
+    invalidated = store.synchronize_targets({"target_001": "new-location"})
+
+    assert invalidated == {"target_001", "target_003"}
+    assert store.samples == []
+    assert store.model is None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["target_signatures"] == {}
+    assert payload["model"] is None
+
+
+def test_store_keeps_samples_for_exact_current_registration(tmp_path: Path) -> None:
+    store = PersonalTargetStore(tmp_path / "personal_target_classifier.json")
+    features = [
+        feature
+        for _target_id, feature in _samples(
+            "monitor", gaze_yaw=1.0, gaze_pitch=3.0, head_yaw=-5.0
+        )
+    ]
+    store.add_samples(
+        "monitor",
+        features,
+        registration_signature="current-registration",
+    )
+
+    invalidated = store.synchronize_targets(
+        {"monitor": "current-registration"}
+    )
+
+    assert invalidated == set()
+    assert len(store.samples) == len(features)
+
+
+def test_store_removes_deleted_legacy_target_without_signature(tmp_path: Path) -> None:
+    store = PersonalTargetStore(tmp_path / "personal_target_classifier.json")
+    store.add_samples(
+        "deleted_target",
+        [
+            feature
+            for _target_id, feature in _samples(
+                "deleted_target", gaze_yaw=1.0, gaze_pitch=3.0, head_yaw=-5.0
+            )
+        ],
+    )
+    assert "deleted_target" not in store.target_signatures
+
+    invalidated = store.synchronize_targets({"target_001": "current-location"})
+
+    assert invalidated == {"deleted_target"}
+    assert store.samples == []
+
+
 def test_motion_score_multiplier_reorders_personal_softmax_candidates() -> None:
     model = PersonalTargetClassifier(
         target_ids=["left", "right"],

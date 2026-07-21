@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -100,6 +101,27 @@ class TargetRecord:
     def to_geometry_3d(self) -> TargetGeometry3D | None:
         """3D 삼각측량이 성공했을 때만 값을 반환한다(그 외에는 None)."""
         return self.position_3d.to_geometry_3d() if self.position_3d is not None else None
+
+    @property
+    def registration_signature(self) -> str:
+        """Return a stable fingerprint of this *registered location*.
+
+        ``target_id`` is intentionally excluded: an ID names the current UI
+        slot, not a permanent physical location.  Renaming a target therefore
+        keeps its training data, while changing direction, area, scale, feature
+        distribution, or 3-D geometry invalidates samples learned for the old
+        location.
+        """
+        payload = asdict(self)
+        for metadata_key in ("target_id", "name", "device_type", "device_id"):
+            payload.pop(metadata_key, None)
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
 
 
 class TargetRegistry:

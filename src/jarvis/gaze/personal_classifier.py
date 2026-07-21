@@ -168,18 +168,33 @@ class PersonalTargetClassifier:
         sample: TargetFeatureSample,
         *,
         score_multipliers: dict[str, float] | None = None,
+        candidate_target_ids: set[str] | None = None,
     ) -> PersonalTargetPrediction | None:
         if not self.fitted:
             return None
         x = np.asarray(sample.as_array(), dtype=np.float64)
         if x.shape != self.mean.shape or not np.all(np.isfinite(x)):
             return None
-        logits = (((x - self.mean) / self.scale) * self.feature_weights) @ self.weights + self.bias
+        candidate_indices = [
+            index
+            for index, target_id in enumerate(self.target_ids)
+            if candidate_target_ids is None or target_id in candidate_target_ids
+        ]
+        # A softmax over one class always reports 1.0 and cannot rank anything.
+        # Leave a single spatially valid candidate to the deterministic area/
+        # direction matcher instead of manufacturing ML confidence.
+        if len(candidate_indices) < 2:
+            return None
+        all_logits = (
+            ((x - self.mean) / self.scale) * self.feature_weights
+        ) @ self.weights + self.bias
+        logits = all_logits[candidate_indices]
         if score_multipliers is not None:
-            for index, target_id in enumerate(self.target_ids):
+            for local_index, model_index in enumerate(candidate_indices):
+                target_id = self.target_ids[model_index]
                 multiplier = float(score_multipliers.get(target_id, 1.0))
                 if math.isfinite(multiplier) and multiplier > 0.0:
-                    logits[index] += math.log(multiplier)
+                    logits[local_index] += math.log(multiplier)
         logits -= logits.max()
         exp = np.exp(logits)
         probs = exp / exp.sum()
@@ -190,7 +205,7 @@ class PersonalTargetClassifier:
         if not math.isfinite(confidence):
             return None
         return PersonalTargetPrediction(
-            target_id=self.target_ids[best],
+            target_id=self.target_ids[candidate_indices[best]],
             confidence=confidence,
             second_best_confidence=float(probs[second]) if second != best else 0.0,
         )
@@ -268,6 +283,7 @@ class PersonalTargetStore:
         self.confidence_threshold = confidence_threshold
         self.feature_weights = _feature_weight_array(feature_weights)
         self.samples: list[PersonalTrainingSample] = []
+        self.target_signatures: dict[str, str] = {}
         self.model: PersonalTargetClassifier | None = None
         self._load()
 
@@ -277,12 +293,21 @@ class PersonalTargetStore:
         samples: list[TargetFeatureSample],
         *,
         replace_target: bool = True,
+        registration_signature: str | None = None,
     ) -> PersonalTargetClassifier | None:
         if replace_target:
             self.samples = [sample for sample in self.samples if sample.target_id != target_id]
         self.samples.extend(
             PersonalTrainingSample.from_feature_sample(target_id, sample) for sample in samples
         )
+        if registration_signature is not None:
+            if not registration_signature:
+                raise ValueError("registration_signature must not be empty")
+            self.target_signatures[target_id] = registration_signature
+        elif replace_target:
+            # Samples without a registration fingerprint are usable by direct
+            # callers, but cannot later be assumed to match a persisted target.
+            self.target_signatures.pop(target_id, None)
         self.model = PersonalTargetClassifier.fit(
             self.samples,
             feature_weights=self.feature_weights,
@@ -292,11 +317,49 @@ class PersonalTargetStore:
 
     def remove_target(self, target_id: str) -> None:
         self.samples = [sample for sample in self.samples if sample.target_id != target_id]
+        self.target_signatures.pop(target_id, None)
         self.model = PersonalTargetClassifier.fit(
             self.samples,
             feature_weights=self.feature_weights,
         )
         self._save()
+
+    def synchronize_targets(self, current_signatures: dict[str, str]) -> set[str]:
+        """Drop training sets that do not describe the current registrations.
+
+        Matching only by ``target_id`` is unsafe because the same slot may be
+        reused for a different physical location.  Legacy samples without a
+        signature are deliberately invalidated once rather than silently
+        affecting the new scene.
+        """
+        known_targets = {sample.target_id for sample in self.samples}
+        if self.model is not None:
+            known_targets.update(self.model.target_ids)
+        invalidated = {
+            target_id
+            for target_id in known_targets
+            if target_id not in current_signatures
+            or current_signatures[target_id] != self.target_signatures.get(target_id)
+        }
+        retained_signatures = {
+            target_id: signature
+            for target_id, signature in self.target_signatures.items()
+            if target_id in current_signatures
+            and current_signatures[target_id] == signature
+            and target_id not in invalidated
+        }
+        if not invalidated and retained_signatures == self.target_signatures:
+            return set()
+        self.samples = [
+            sample for sample in self.samples if sample.target_id not in invalidated
+        ]
+        self.target_signatures = retained_signatures
+        self.model = PersonalTargetClassifier.fit(
+            self.samples,
+            feature_weights=self.feature_weights,
+        )
+        self._save()
+        return invalidated
 
     def _load(self) -> None:
         if not self.path.is_file():
@@ -324,6 +387,15 @@ class PersonalTargetStore:
         model_payload = payload.get("model")
         if isinstance(model_payload, dict):
             self.model = PersonalTargetClassifier.from_dict(model_payload)
+        raw_signatures = payload.get("target_signatures", {})
+        if isinstance(raw_signatures, dict):
+            self.target_signatures = {
+                str(target_id): signature
+                for target_id, signature in raw_signatures.items()
+                if isinstance(target_id, str)
+                and isinstance(signature, str)
+                and signature
+            }
         if self.samples and (
             self.model is None
             or not np.allclose(self.model.feature_weights, self.feature_weights)
@@ -339,6 +411,7 @@ class PersonalTargetStore:
         payload = {
             "confidence_threshold": self.confidence_threshold,
             "feature_weights": self.feature_weights.tolist(),
+            "target_signatures": self.target_signatures,
             "model": self.model.to_dict() if self.model is not None else None,
             "samples": [
                 {"target_id": sample.target_id, "features": list(sample.features)}

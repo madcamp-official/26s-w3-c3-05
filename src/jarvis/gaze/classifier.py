@@ -217,11 +217,22 @@ class TargetClassifier:
         self,
         sample: TargetFeatureSample | None,
         *,
+        direction: Vector3 | None = None,
+        origin: Vector3 | None = None,
+        current_face_scale: float | None = None,
         gaze_motion_delta_deg: tuple[float, float] | None = None,
         gaze_motion_velocity_deg_s: tuple[float, float] | None = None,
         gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None,
     ) -> PersonalTargetPrediction | None:
         if sample is None or self._personal_classifier is None:
+            return None
+        candidates = self._spatially_eligible_target_ids(
+            sample,
+            direction,
+            origin,
+            current_face_scale,
+        ).intersection(self._personal_classifier.target_ids)
+        if len(candidates) < 2:
             return None
         multipliers = {
             target_id: self._motion_alignment_score(
@@ -231,9 +242,62 @@ class TargetClassifier:
                 gaze_motion_velocity_deg_s,
                 gaze_motion_acceleration_deg_s2,
             )
-            for target_id in self._personal_classifier.target_ids
+            for target_id in candidates
         }
-        return self._personal_classifier.predict(sample, score_multipliers=multipliers)
+        return self._personal_classifier.predict(
+            sample,
+            score_multipliers=multipliers,
+            candidate_target_ids=candidates,
+        )
+
+    def _spatially_eligible_target_ids(
+        self,
+        sample: TargetFeatureSample,
+        direction: Vector3 | None,
+        origin: Vector3 | None,
+        current_face_scale: float | None,
+    ) -> set[str]:
+        """Return current targets whose saved spatial boundary contains the gaze.
+
+        The personal classifier is only a ranker for overlapping candidates.
+        An edge-loop area is authoritative when available; direction variance
+        is the fallback for legacy/direction-only registrations.
+        """
+        eligible: set[str] = set()
+        for target_id, profile in self._profiles.items():
+            area = self._area_profiles.get(target_id)
+            if area is not None:
+                normalized = area.normalized_distance(
+                    sample.gaze_yaw,
+                    sample.gaze_pitch,
+                    self._config.registration_max_area_radius_deg,
+                    self._area_radius_scale(target_id, current_face_scale),
+                )
+                if normalized <= self._config.target_match_tolerance:
+                    eligible.add(target_id)
+                continue
+            if direction is None:
+                continue
+            geometry = (
+                self._geometries.get(target_id)
+                if self._config.enable_3d_target_matching
+                else None
+            )
+            angular_distance, variance = effective_distance_and_variance(
+                direction,
+                origin,
+                profile,
+                geometry,
+                self._config,
+                current_face_scale,
+            )
+            normalized = angular_distance / math.sqrt(max(variance, _MINIMUM_VARIANCE))
+            if (
+                normalized <= self._config.target_match_tolerance
+                and math.degrees(angular_distance) <= self._config.unknown_max_angle_deg
+            ):
+                eligible.add(target_id)
+        return eligible
 
     @property
     def profiles(self) -> dict[str, DeviceGazeProfile]:
@@ -381,6 +445,9 @@ class TargetClassifier:
     ) -> ClassificationResult:
         personal = self.predict_personal(
             feature_sample,
+            direction=direction,
+            origin=origin,
+            current_face_scale=current_face_scale,
             gaze_motion_delta_deg=gaze_motion_delta_deg,
             gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
             gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
@@ -408,7 +475,23 @@ class TargetClassifier:
                 probability=0.0,
                 second_best_probability=0.0,
             )
-        device_ids = list(self._feature_profiles.keys())
+        spatial_candidates = self._spatially_eligible_target_ids(
+            feature_sample,
+            direction,
+            origin,
+            current_face_scale,
+        )
+        device_ids = [
+            device_id
+            for device_id in self._feature_profiles
+            if device_id in spatial_candidates
+        ]
+        if not device_ids:
+            return ClassificationResult(
+                target=self._config.UNKNOWN_TARGET,
+                probability=0.0,
+                second_best_probability=0.0,
+            )
         distances = np.asarray(
             [
                 self._feature_profiles[device_id].mahalanobis_distance(feature_sample)

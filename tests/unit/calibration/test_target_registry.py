@@ -407,6 +407,30 @@ def test_rename_preserves_position_3d(tmp_path: Path) -> None:
 
     assert renamed.name == "거실 전구"
     assert renamed.position_3d == record.position_3d
+    assert renamed.registration_signature == record.registration_signature
+
+
+def test_registration_signature_changes_when_same_id_moves() -> None:
+    original = TargetRecord(
+        "target_001",
+        "모니터",
+        "UNKNOWN",
+        TargetDirection(2.0, 5.0),
+        TargetSpread(6.0, 4.0),
+        "target_001",
+        reference_face_scale=0.09,
+    )
+    moved = TargetRecord(
+        "target_001",
+        "모니터",
+        "UNKNOWN",
+        TargetDirection(-18.0, 5.0),
+        TargetSpread(6.0, 4.0),
+        "target_001",
+        reference_face_scale=0.09,
+    )
+
+    assert original.registration_signature != moved.registration_signature
 
 
 def test_legacy_records_without_position_3d_still_load(tmp_path: Path) -> None:

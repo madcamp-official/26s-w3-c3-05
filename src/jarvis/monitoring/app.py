@@ -401,7 +401,10 @@ class GazePanel(QScrollArea):
             f"{'USED' if s.personal_prediction.confidence >= s.personal_confidence_threshold else 'fallback'} "
             f"(thr={s.personal_confidence_threshold:.2f})"
             if s.personal_prediction is not None
-            else f"None (needs 2+ registered targets, thr={s.personal_confidence_threshold:.2f})"
+            else (
+                "None (needs 2+ trained current targets inside the spatial gate, "
+                f"thr={s.personal_confidence_threshold:.2f})"
+            )
         )
         est = s.target_estimate
         self._numeric.setText(
@@ -1248,11 +1251,19 @@ class MainWindow(QMainWindow):
         self._calibration_store = GazeCalibrationStore(
             calibration_model_path or _default_calibration_model_path()
         )
+        self._target_registry = TargetRegistry(self._profiles_path)
         self._personal_target_store = PersonalTargetStore(
             personal_classifier_path or _default_personal_classifier_path(),
             feature_weights=self._gaze_config.personal_feature_weights,
         )
-        self._target_registry = TargetRegistry(self._profiles_path)
+        self._invalidated_personal_targets = (
+            self._personal_target_store.synchronize_targets(
+                {
+                    record.target_id: record.registration_signature
+                    for record in self._target_registry.records
+                }
+            )
+        )
         # Prefer the validated residual MLP; Ridge remains a fallback when the
         # personal dataset is still too small for an MLP.
         self._active_calibration_model: GazeCalibrationCorrector | None = (
@@ -1290,6 +1301,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(tabs)
 
         self._log.info("모니터 시작")
+        if self._invalidated_personal_targets:
+            removed = ", ".join(sorted(self._invalidated_personal_targets))
+            self._log.warn(
+                "현재 등록 위치와 맞지 않는 개인 ML 샘플을 제거했습니다: " + removed
+            )
         if self._gesture_source.available:
             self._log.info(f"제스처 인식: {self._gesture_source.status_text}")
         else:
@@ -1810,6 +1826,7 @@ class MainWindow(QMainWindow):
                 record.target_id,
                 list(self._registration.feature_samples),
                 replace_target=True,
+                registration_signature=record.registration_signature,
             )
             self._probe.set_personal_classifier(
                 personal_model,

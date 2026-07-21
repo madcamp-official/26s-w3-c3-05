@@ -618,6 +618,9 @@ def evaluate(
                         )
         personal_prediction = classifier.predict_personal(
             feature_sample,
+            direction=smoothed.direction,
+            origin=smoothed.origin,
+            current_face_scale=current_face_scale,
             gaze_motion_delta_deg=gaze_motion_delta_deg,
             gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
             gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,

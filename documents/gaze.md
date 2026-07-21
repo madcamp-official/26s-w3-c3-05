@@ -256,6 +256,18 @@ classifier score and the area score by up to `1 + 0.35 + 0.15 = 1.50`. Opposite
 motion is not rewarded. Blink, recovery, and tracking-hold frames freeze the motion
 history; intervals over 250ms reset derivatives instead of producing a false spike.
 
+The personal softmax is now only a ranker for overlapping **current spatial
+candidates**. A target must first pass its saved edge-loop area gate (or its direction
+variance gate when no area exists) using `target_match_tolerance`. With fewer than two
+eligible candidates, deterministic area/direction matching decides; with no candidate,
+the result is `UNKNOWN` regardless of softmax confidence. The model softmax is also
+restricted to IDs in the current registry, so a deleted class cannot win.
+
+Training rows are bound to a registration fingerprint derived from direction, spread,
+area, feature profile, face scale, and optional 3-D geometry—not to `target_id` alone.
+Re-registering the same ID replaces its rows, and a fingerprint mismatch on startup
+invalidates legacy/stale rows. Renaming does not change the fingerprint.
+
 ### Target matching / UNKNOWN rejection
 
 | Setting | Current value | Meaning |
