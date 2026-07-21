@@ -400,6 +400,13 @@ Baseline:
 }
 ```
 
+개인별 벡터 보정은 raw head+iris 기하 벡터에 residual MLP
+`12 → 24 → 12 → 2(delta_yaw, delta_pitch)`를 적용한다. 최소 3개 target 방향과
+60개 유효 샘플이 필요하며, held-out 오차가 raw vector보다 좋아진 경우에만 기본
+보정기로 활성화한다. 새 물체 등록 또는 위치 재등록이 끝나면 저장된 target별
+샘플 전체로 재학습하고, 실시간 추론 중에는 학습하지 않는다. 데이터와 모델은
+`data/calibration/gaze_regressor.json`에 함께 저장한다.
+
 ## Gaze Lock 상태 머신
 
 ```

@@ -92,7 +92,7 @@ Implemented files:
 - `src/jarvis/gaze/smoothing.py`: confidence-aware EMA smoothing is enabled before classification.
 - `src/jarvis/gaze/smoothing.py`: short blinks hold the last stable gaze briefly, and tiny gaze changes are absorbed by a
   small angular deadzone to reduce jitter.
-- `src/jarvis/gaze/lock.py`: 300-500 ms dwell-based lock and hysteresis are handled by the existing state machine.
+- `src/jarvis/gaze/lock.py`: three-second dwell confirmation and hysteresis are handled by the existing state machine.
 - `src/jarvis/monitoring/`: debug UI can register/reregister/rename/delete targets and show the live gaze ray,
   candidate/lock state, and pipeline diagnostics without drawing artificial target-area circles.
 
@@ -102,8 +102,28 @@ MVP operating assumptions:
 - User changes are announced manually, so automatic face identity/profile switching is out of MVP scope.
 - Objects are registered every time they are newly added or moved.
 - Real-camera yaw/pitch sign and scale still need one final fixed-camera sanity check before demo.
-- The current `CalibratedGaze` is geometric yaw/pitch from the smoothed gaze vector. A learned Ridge/MLP personal correction
-  can be added later when labeled calibration samples are available.
+- `CalibratedGaze` uses a validated residual MLP by default when at least three labeled target directions are available;
+  otherwise it falls back to Ridge or the raw geometric vector.
+
+## Residual MLP vector calibration (2026-07-21)
+
+`src/jarvis/gaze/mlp_calibration.py` implements a NumPy-only `12 → 24 → 12 → 2`
+network. Input is raw yaw/pitch, both iris offsets, head yaw/pitch/roll, face center,
+and face scale. Output is not an absolute direction but `(delta_yaw, delta_pitch)`;
+the geometric vector therefore remains the safe baseline. Corrections are capped at
+35 degrees.
+
+Training data remains in `data/calibration/gaze_regressor.json`. Each sample stores
+the 13-value Ridge-compatible feature vector, target yaw/pitch pseudo-label, and (for
+new records) `target_id`. At registration completion the current target's identified
+samples replace its previous identified samples, all targets are replayed, and both
+Ridge and MLP are retrained. Validation is split within each target direction. A new
+MLP is activated only when it improves held-out angular error over the raw vector.
+Training runs only after registration; live inference is three matrix multiplies.
+
+The debug panel exposes `vector model: mlp/ridge/geometric`, raw yaw/pitch, final
+yaw/pitch, and whether correction was applied. The checkbox disables correction for
+an immediate A/B comparison without changing or deleting the dataset.
 
 ## 3D object position update (2026-07-20)
 

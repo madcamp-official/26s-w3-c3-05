@@ -142,6 +142,7 @@ class GazeSampleStore:
             },
             "raw_gaze_yaw_pitch_deg": raw_gaze_yaw_pitch,
             "calibration_applied": any(item.calibration_applied for item in valid),
+            "calibration_model_kind": latest.calibration_model_kind,
             "gaze_confidence": mean(eye_confidences),
             "head_pose_deg": {
                 "yaw": mean([item.head_yaw_deg for item in valid]),

@@ -29,7 +29,7 @@ import numpy as np
 import numpy.typing as npt
 
 from jarvis.contracts.messages import TargetEstimate
-from jarvis.gaze.calibration_model import GazeCalibrationModel, observation_features
+from jarvis.gaze.calibration_model import GazeCalibrationCorrector, observation_features
 from jarvis.gaze.classifier import (
     ClassificationResult,
     DeviceGazeProfile,
@@ -133,6 +133,7 @@ class GazeSnapshot:
     gaze_direction: tuple[float, float, float] | None
     gaze_confidence: float | None
     calibration_applied: bool
+    calibration_model_kind: str | None
     calibration_features: tuple[float, ...] | None
 
     # 2c — temporal smoothing
@@ -460,7 +461,7 @@ def evaluate(
     config: GazeConfig,
     inference_ms: float = 0.0,
     target_labels: dict[str, str] | None = None,
-    calibration_model: GazeCalibrationModel | None = None,
+    calibration_model: GazeCalibrationCorrector | None = None,
     previous_iris_offset: tuple[float, float] | None = None,
     last_closed_eye_ms: int | None = None,
     previous_feature_sample: TargetFeatureSample | None = None,
@@ -642,6 +643,7 @@ def evaluate(
         gaze_direction=gaze_direction,
         gaze_confidence=gaze_confidence,
         calibration_applied=calibration_applied,
+        calibration_model_kind=(calibration_model.kind if calibration_model is not None else None),
         calibration_features=calibration_features,
         smoothed_stability=smoothed_stability,
         smoothed_gaze_direction=classify_direction,
@@ -695,7 +697,7 @@ class GazeProbe:
         model_path: Path | None,
         profiles_path: Path | None = None,
         config: GazeConfig | None = None,
-        calibration_model: GazeCalibrationModel | None = None,
+        calibration_model: GazeCalibrationCorrector | None = None,
     ) -> None:
         self._config = config or GazeConfig()
         self._smoother = GazeSmoother(self._config)
@@ -750,7 +752,7 @@ class GazeProbe:
     def profile_count(self) -> int:
         return self._profile_count
 
-    def set_calibration_model(self, model: GazeCalibrationModel | None) -> None:
+    def set_calibration_model(self, model: GazeCalibrationCorrector | None) -> None:
         self._calibration_model = model
 
     def set_personal_classifier(

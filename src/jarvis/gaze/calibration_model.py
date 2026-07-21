@@ -17,12 +17,14 @@ import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 import numpy.typing as npt
 
 from jarvis.gaze.direction import direction_to_yaw_pitch, yaw_pitch_to_direction
 from jarvis.gaze.features import FaceObservation, GazeVector, Vector3
+from jarvis.gaze.mlp_calibration import GazeMLPCalibrationModel
 
 _FEATURE_DIM = 13
 FEATURE_NAMES: tuple[str, ...] = (
@@ -49,6 +51,7 @@ class GazeCalibrationSample:
     features: tuple[float, ...]
     target_yaw: float
     target_pitch: float
+    target_id: str | None = None
 
     def __post_init__(self) -> None:
         if len(self.features) != _FEATURE_DIM:
@@ -56,6 +59,25 @@ class GazeCalibrationSample:
         values = (*self.features, self.target_yaw, self.target_pitch)
         if not all(math.isfinite(value) for value in values):
             raise ValueError("calibration sample values must be finite")
+        if self.target_id is not None and not self.target_id:
+            raise ValueError("target_id must not be empty")
+
+
+class GazeCalibrationCorrector(Protocol):
+    """Structural interface shared by Ridge and residual-MLP correctors."""
+
+    kind: str
+
+    @property
+    def fitted(self) -> bool: ...
+
+    @property
+    def sample_count(self) -> int: ...
+
+    @property
+    def target_count(self) -> int: ...
+
+    def correct(self, observation: FaceObservation, raw_gaze: GazeVector) -> GazeVector: ...
 
 
 def observation_features(observation: FaceObservation, raw_gaze: GazeVector) -> tuple[float, ...]:
@@ -93,6 +115,8 @@ def observation_features(observation: FaceObservation, raw_gaze: GazeVector) -> 
 
 class GazeCalibrationModel:
     """Ridge-regression yaw/pitch corrector trained from registration samples."""
+
+    kind = "ridge"
 
     def __init__(
         self,
@@ -211,7 +235,7 @@ class GazeCalibrationModel:
 
 
 class GazeCalibrationStore:
-    """Persistent append-only sample store plus fitted model."""
+    """Persistent calibration dataset plus Ridge and residual-MLP models."""
 
     def __init__(self, path: Path, *, regularization: float = 1.0) -> None:
         self._path = path
@@ -220,6 +244,10 @@ class GazeCalibrationStore:
         self._model = GazeCalibrationModel.fit(
             self._samples, regularization=self._regularization
         )
+        persisted_mlp = self._load_mlp_model()
+        self._mlp_model = persisted_mlp or GazeMLPCalibrationModel.fit(self._samples)
+        if persisted_mlp is None and self._mlp_model.fitted and self._path.is_file():
+            self._save()
 
     @property
     def samples(self) -> tuple[GazeCalibrationSample, ...]:
@@ -229,11 +257,36 @@ class GazeCalibrationStore:
     def model(self) -> GazeCalibrationModel:
         return self._model
 
-    def add_samples(self, samples: Iterable[GazeCalibrationSample]) -> GazeCalibrationModel:
-        self._samples.extend(samples)
+    @property
+    def mlp_model(self) -> GazeMLPCalibrationModel:
+        return self._mlp_model
+
+    @property
+    def preferred_model(self) -> GazeCalibrationCorrector | None:
+        if self._mlp_model.fitted:
+            return self._mlp_model
+        if self._model.fitted:
+            return self._model
+        return None
+
+    def add_samples(
+        self,
+        samples: Iterable[GazeCalibrationSample],
+        *,
+        replace_target_id: str | None = None,
+    ) -> GazeCalibrationModel:
+        incoming = list(samples)
+        if replace_target_id is not None:
+            self._samples = [
+                sample for sample in self._samples if sample.target_id != replace_target_id
+            ]
+        self._samples.extend(incoming)
         self._model = GazeCalibrationModel.fit(
             self._samples, regularization=self._regularization
         )
+        candidate = GazeMLPCalibrationModel.fit(self._samples)
+        if candidate.fitted:
+            self._mlp_model = candidate
         self._save()
         return self._model
 
@@ -259,18 +312,41 @@ class GazeCalibrationStore:
                     features=tuple(float(value) for value in features),
                     target_yaw=float(target.get("yaw", 0.0)),
                     target_pitch=float(target.get("pitch", 0.0)),
+                    target_id=(
+                        str(item["target_id"])
+                        if isinstance(item.get("target_id"), str)
+                        else None
+                    ),
                 )
             )
         return samples
+
+    def _load_mlp_model(self) -> GazeMLPCalibrationModel | None:
+        if not self._path.is_file():
+            return None
+        try:
+            payload = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        raw_model = payload.get("mlp_model")
+        return (
+            GazeMLPCalibrationModel.from_dict(raw_model)
+            if isinstance(raw_model, dict)
+            else None
+        )
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "model": self._model.to_dict(),
+            "mlp_model": self._mlp_model.to_dict(),
             "samples": [
                 {
                     "features": list(sample.features),
                     "target": {"yaw": sample.target_yaw, "pitch": sample.target_pitch},
+                    "target_id": sample.target_id,
                 }
                 for sample in self._samples
             ],
