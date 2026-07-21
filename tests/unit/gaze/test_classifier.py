@@ -20,6 +20,7 @@ from jarvis.gaze.feature_profile import (
     TargetFeatureSample,
     build_feature_profile,
 )
+from jarvis.gaze.personal_classifier import PersonalTargetClassifier, PersonalTrainingSample
 
 
 def _unit(vector: list[float]) -> np.ndarray:
@@ -154,6 +155,159 @@ def test_area_profile_accepts_near_boundary_with_tolerance() -> None:
     assert result.target == "monitor"
 
 
+def test_personal_classifier_ranks_overlapping_spatial_candidates_when_confident() -> None:
+    classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
+    classifier.register_profile(
+        DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        area_profile=TargetAreaProfile(
+            center_yaw=0.0,
+            center_pitch=0.0,
+            radius_yaw=8.0,
+            radius_pitch=8.0,
+            sample_count=80,
+        ),
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("speaker", _unit([0.2, 0.0, 0.98]), variance=0.01),
+        area_profile=TargetAreaProfile(
+            center_yaw=4.0,
+            center_pitch=0.0,
+            radius_yaw=8.0,
+            radius_pitch=8.0,
+            sample_count=80,
+        ),
+    )
+    samples = []
+    for i in range(24):
+        samples.append(
+            PersonalTrainingSample.from_feature_sample(
+                "monitor",
+                TargetFeatureSample(0.0 + i * 0.02, 0.0, -2.0, 3.0, 0.0, 0.10),
+            )
+        )
+        samples.append(
+            PersonalTrainingSample.from_feature_sample(
+                "speaker",
+                TargetFeatureSample(0.4 + i * 0.02, 0.0, 25.0, 3.0, 0.0, 0.10),
+            )
+        )
+    model = PersonalTargetClassifier.fit(samples)
+    assert model is not None
+    classifier.set_personal_classifier(model, confidence_threshold=0.60)
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(0.5, 0.0, 25.0, 3.0, 0.0, 0.10),
+    )
+
+    assert result.target == "speaker"
+
+
+def test_personal_classifier_cannot_select_target_outside_spatial_gate() -> None:
+    config = GazeConfig(unknown_probability_threshold=0.0)
+    classifier = TargetClassifier(config)
+    for device_id, center_yaw in (("monitor", 0.0), ("speaker", 12.0)):
+        classifier.register_profile(
+            DeviceGazeProfile(device_id, _unit([0.0, 0.0, 1.0]), variance=0.01),
+            area_profile=TargetAreaProfile(
+                center_yaw=center_yaw,
+                center_pitch=0.0,
+                radius_yaw=4.0,
+                radius_pitch=4.0,
+                sample_count=80,
+            ),
+        )
+    model = PersonalTargetClassifier(
+        target_ids=["monitor", "speaker"],
+        mean=np.zeros(6, dtype=np.float64),
+        scale=np.ones(6, dtype=np.float64),
+        weights=np.zeros((6, 2), dtype=np.float64),
+        bias=np.asarray([20.0, 0.0], dtype=np.float64),
+        feature_weights=np.asarray(config.personal_feature_weights, dtype=np.float64),
+        sample_count=40,
+    )
+    classifier.set_personal_classifier(model, confidence_threshold=0.60)
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(30.0, 0.0, 0.0, 0.0, 0.0, 0.10),
+    )
+
+    assert result.target == config.UNKNOWN_TARGET
+
+
+def test_personal_classifier_ignores_model_classes_not_currently_registered() -> None:
+    config = GazeConfig(unknown_probability_threshold=0.0)
+    classifier = TargetClassifier(config)
+    for device_id, center_yaw in (("monitor", 0.0), ("speaker", 2.0)):
+        classifier.register_profile(
+            DeviceGazeProfile(device_id, _unit([0.0, 0.0, 1.0]), variance=0.01),
+            area_profile=TargetAreaProfile(
+                center_yaw=center_yaw,
+                center_pitch=0.0,
+                radius_yaw=6.0,
+                radius_pitch=6.0,
+                sample_count=80,
+            ),
+        )
+    model = PersonalTargetClassifier(
+        target_ids=["monitor", "speaker", "deleted_target"],
+        mean=np.zeros(6, dtype=np.float64),
+        scale=np.ones(6, dtype=np.float64),
+        weights=np.zeros((6, 3), dtype=np.float64),
+        bias=np.asarray([0.0, 1.0, 100.0], dtype=np.float64),
+        feature_weights=np.asarray(config.personal_feature_weights, dtype=np.float64),
+        sample_count=60,
+    )
+    classifier.set_personal_classifier(model, confidence_threshold=0.60)
+    sample = TargetFeatureSample(1.0, 0.0, 0.0, 0.0, 0.0, 0.10)
+
+    prediction = classifier.predict_personal(sample)
+    result = classifier.classify(_unit([0.0, 0.0, 1.0]), feature_sample=sample)
+
+    assert prediction is not None
+    assert prediction.target_id == "speaker"
+    assert result.target == "speaker"
+
+
+def test_area_profile_inside_boundary_overrides_low_softmax_probability() -> None:
+    classifier = TargetClassifier(
+        GazeConfig(
+            unknown_probability_threshold=0.95,
+            registration_max_area_radius_deg=8.0,
+            target_match_tolerance=1.0,
+        )
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        area_profile=TargetAreaProfile(
+            center_yaw=0.0,
+            center_pitch=0.0,
+            radius_yaw=8.0,
+            radius_pitch=8.0,
+            sample_count=80,
+        ),
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("speaker", _unit([0.1, 0.0, 0.99]), variance=0.01),
+        area_profile=TargetAreaProfile(
+            center_yaw=14.0,
+            center_pitch=0.0,
+            radius_yaw=8.0,
+            radius_pitch=8.0,
+            sample_count=80,
+        ),
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(6.5, 0.0, 0.0, 0.0, 0.0, 0.1),
+    )
+
+    assert result.target == "monitor"
+    assert result.probability < 0.95
+
+
 def test_area_profile_flexes_with_face_scale_for_apparent_target_size() -> None:
     classifier = TargetClassifier(
         GazeConfig(
@@ -268,6 +422,55 @@ def test_overlapping_area_profiles_use_recent_gaze_motion_as_tiebreaker() -> Non
     )
 
     assert result.target == "right"
+
+
+def test_velocity_and_acceleration_bonus_reaches_personal_classifier() -> None:
+    config = GazeConfig(
+        unknown_probability_threshold=0.0,
+        target_motion_alignment_weight=0.35,
+        target_acceleration_alignment_weight=0.15,
+    )
+    classifier = TargetClassifier(config)
+    for device_id, center_yaw in (("left", -2.0), ("right", 2.0)):
+        classifier.register_profile(
+            DeviceGazeProfile(device_id, _unit([0.0, 0.0, 1.0]), variance=0.01),
+            area_profile=TargetAreaProfile(
+                center_yaw=center_yaw,
+                center_pitch=0.0,
+                radius_yaw=6.0,
+                radius_pitch=6.0,
+                sample_count=120,
+            ),
+        )
+    model = PersonalTargetClassifier(
+        target_ids=["left", "right"],
+        mean=np.zeros(6, dtype=np.float64),
+        scale=np.ones(6, dtype=np.float64),
+        weights=np.zeros((6, 2), dtype=np.float64),
+        bias=np.zeros(2, dtype=np.float64),
+        feature_weights=np.asarray(config.personal_feature_weights, dtype=np.float64),
+        sample_count=40,
+    )
+    classifier.set_personal_classifier(model, confidence_threshold=0.55)
+    sample = TargetFeatureSample(0.0, 0.0, 0.0, 0.0, 0.0, 0.1)
+
+    prediction = classifier.predict_personal(
+        sample,
+        gaze_motion_velocity_deg_s=(10.0, 0.0),
+        gaze_motion_acceleration_deg_s2=(100.0, 0.0),
+    )
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=sample,
+        gaze_motion_velocity_deg_s=(10.0, 0.0),
+        gaze_motion_acceleration_deg_s2=(100.0, 0.0),
+    )
+
+    assert prediction is not None
+    assert prediction.target_id == "right"
+    assert prediction.confidence == pytest.approx(0.6)
+    assert result.target == "right"
+    assert result.probability == pytest.approx(0.6)
 
 
 def test_built_feature_profile_tolerates_head_pose_when_gaze_matches() -> None:

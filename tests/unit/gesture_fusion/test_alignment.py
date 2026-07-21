@@ -53,6 +53,10 @@ def _config(**overrides: object) -> AlignmentConfig:
 # --- TargetLockTracker: dwell → lock ---
 
 
+def test_default_target_confirmation_requires_three_seconds() -> None:
+    assert AlignmentConfig().target_dwell_ms == 3000
+
+
 def test_below_dwell_time_stays_unlocked() -> None:
     tracker = TargetLockTracker(_config(target_dwell_ms=200))
     tracker.push(_target(0))
@@ -128,12 +132,39 @@ def test_brief_invalid_frame_within_ttl_keeps_lock() -> None:
     assert state.target == "room.bulb"
 
 
-def test_switching_to_new_target_while_locked_releases_old_lock() -> None:
-    tracker = TargetLockTracker(_config(target_dwell_ms=0, target_lock_ttl_ms=500))
+def test_switching_target_keeps_old_lock_during_replacement_dwell() -> None:
+    tracker = TargetLockTracker(_config(target_dwell_ms=200, target_lock_ttl_ms=500))
     tracker.push(_target(0, target="room.bulb"))
+    tracker.push(_target(200, target="room.bulb"))
+    state = tracker.push(_target(250, target="laptop"))
+    assert state.locked
+    assert state.target == "room.bulb"
+    assert state.candidate == "laptop"
+
+
+def test_cancelled_replacement_keeps_old_fusion_lock() -> None:
+    tracker = TargetLockTracker(_config(target_dwell_ms=200, target_lock_ttl_ms=500))
     tracker.push(_target(0, target="room.bulb"))
-    state = tracker.push(_target(50, target="laptop"))
-    assert not state.locked  # 새 대상은 아직 dwell 전
+    tracker.push(_target(200, target="room.bulb"))
+    tracker.push(_target(250, target="laptop"))
+
+    state = tracker.push(_target(300, target="UNKNOWN"))
+    assert state.locked
+    assert state.target == "room.bulb"
+    assert state.candidate is None
+
+
+def test_replacement_fusion_handoff_is_atomic_after_dwell() -> None:
+    tracker = TargetLockTracker(_config(target_dwell_ms=200, target_lock_ttl_ms=500))
+    tracker.push(_target(0, target="room.bulb"))
+    tracker.push(_target(200, target="room.bulb"))
+    tracker.push(_target(250, target="laptop"))
+
+    state = tracker.push(_target(450, target="laptop"))
+    assert state.locked
+    assert state.target == "laptop"
+    assert state.candidate is None
+    assert state.locked_at_ms == 450
 
 
 def test_reset_clears_lock_and_candidate() -> None:

@@ -29,7 +29,7 @@ import numpy as np
 import numpy.typing as npt
 
 from jarvis.contracts.messages import TargetEstimate
-from jarvis.gaze.calibration_model import GazeCalibrationModel, observation_features
+from jarvis.gaze.calibration_model import GazeCalibrationCorrector, observation_features
 from jarvis.gaze.classifier import (
     ClassificationResult,
     DeviceGazeProfile,
@@ -46,6 +46,7 @@ from jarvis.gaze.feature_profile import (
 )
 from jarvis.gaze.features import FaceObservation, GazeVector, Vector3, compose_gaze_vector
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
+from jarvis.gaze.personal_classifier import PersonalTargetClassifier, PersonalTargetPrediction
 from jarvis.gaze.smoothing import GazeSmoother
 
 
@@ -132,6 +133,7 @@ class GazeSnapshot:
     gaze_direction: tuple[float, float, float] | None
     gaze_confidence: float | None
     calibration_applied: bool
+    calibration_model_kind: str | None
     calibration_features: tuple[float, ...] | None
 
     # 2c — temporal smoothing
@@ -149,14 +151,26 @@ class GazeSnapshot:
     margin: float
     reject_reason: str | None
     device_details: tuple[DeviceGazeDetail, ...]
+    raw_device_details: tuple[DeviceGazeDetail, ...]
     feature_sample: TargetFeatureSample | None
     gaze_motion_delta_deg: tuple[float, float] | None
     feature_details: tuple[FeatureProfileDetail, ...]
     area_details: tuple[AreaProfileDetail, ...]
+    personal_prediction: PersonalTargetPrediction | None
+    personal_confidence_threshold: float
+    camera_pose_warning: str | None
 
     # 2e — gaze lock state machine
     lock_state: GazeLockState
+    candidate_device: str | None
+    candidate_label: str | None
+    dwell_elapsed_ms: int
+    dwell_required_ms: int
+    dwell_progress: float
     locked_device: str | None
+    locked_target_label: str | None
+    unknown_elapsed_ms: int
+    unknown_required_ms: int
     is_confident: bool
 
     # 2f — the contract message emitted to Fusion
@@ -164,6 +178,14 @@ class GazeSnapshot:
 
     # per-frame gaze compute time (capture→estimate), measured, ms
     inference_ms: float
+
+    # Time-normalized derivatives of the smoothed gaze direction. These stay
+    # None during blink/recovery/tracking holds so stale landmarks cannot earn
+    # a target-direction bonus.
+    gaze_motion_velocity_deg_s: tuple[float, float] | None = None
+    gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None
+    personal_feature_weights: tuple[float, ...] | None = None
+    gaze_motion_history_valid: bool = False
 
     @property
     def tracking_lost(self) -> bool:
@@ -417,6 +439,29 @@ def _device_details(
     return tuple(details)
 
 
+def _camera_pose_warning(
+    classifier: TargetClassifier,
+    current_face_scale: float | None,
+    head_roll_deg: float,
+) -> str | None:
+    reference_scales = [
+        profile.reference_face_scale
+        for profile in classifier.profiles.values()
+        if profile.reference_face_scale is not None and profile.reference_face_scale > 0.0
+    ]
+    warnings: list[str] = []
+    if reference_scales and current_face_scale is not None and current_face_scale > 0.0:
+        reference = float(np.median(np.asarray(reference_scales, dtype=np.float64)))
+        ratio = current_face_scale / reference
+        if math.isfinite(ratio) and (ratio < 0.70 or ratio > 1.30):
+            warnings.append(f"face scale x{ratio:.2f}")
+    if abs(head_roll_deg) > 30.0:
+        warnings.append(f"head roll {head_roll_deg:+.0f}deg")
+    if not warnings:
+        return None
+    return "camera/user pose changed: " + ", ".join(warnings) + " — re-register targets"
+
+
 def evaluate(
     observation: FaceObservation,
     *,
@@ -426,10 +471,12 @@ def evaluate(
     config: GazeConfig,
     inference_ms: float = 0.0,
     target_labels: dict[str, str] | None = None,
-    calibration_model: GazeCalibrationModel | None = None,
+    calibration_model: GazeCalibrationCorrector | None = None,
     previous_iris_offset: tuple[float, float] | None = None,
     last_closed_eye_ms: int | None = None,
     previous_feature_sample: TargetFeatureSample | None = None,
+    previous_motion_timestamp_ms: int | None = None,
+    previous_gaze_velocity_deg_s: tuple[float, float] | None = None,
 ) -> GazeSnapshot:
     """Run one observation through the full pipeline, capturing every stage.
 
@@ -455,6 +502,7 @@ def evaluate(
             frame_id=raw_gaze_vector.frame_id,
             origin=raw_gaze_vector.origin,
         )
+    motion_history_valid = raw_gaze_vector is not None and not jumpy_iris
     calibration_features = (
         observation_features(observation, raw_gaze_vector)
         if raw_gaze_vector is not None
@@ -501,6 +549,9 @@ def evaluate(
     current_face_scale = _face_scale(observation)
     feature_sample: TargetFeatureSample | None = None
     gaze_motion_delta_deg: tuple[float, float] | None = None
+    gaze_motion_velocity_deg_s: tuple[float, float] | None = None
+    gaze_motion_acceleration_deg_s2: tuple[float, float] | None = None
+    personal_prediction: PersonalTargetPrediction | None = None
     if smoothed is None:
         result = ClassificationResult(
             target=config.UNKNOWN_TARGET, probability=0.0, second_best_probability=0.0
@@ -527,18 +578,61 @@ def evaluate(
                 float(smoothed.origin[1]),
                 float(smoothed.origin[2]),
             )
-        feature_sample = _feature_sample(observation, classify_direction, current_face_scale)
-        if feature_sample is not None and previous_feature_sample is not None:
+        # A blink/recovery frame reuses the complete last stable classifier
+        # feature. Recomputing head/scale while only the gaze direction is held
+        # can otherwise switch the personal ML target during a blink.
+        feature_sample = (
+            previous_feature_sample
+            if hold_gaze and previous_feature_sample is not None
+            else _feature_sample(observation, classify_direction, current_face_scale)
+        )
+        if (
+            motion_history_valid
+            and feature_sample is not None
+            and previous_feature_sample is not None
+        ):
             gaze_motion_delta_deg = (
                 feature_sample.gaze_yaw - previous_feature_sample.gaze_yaw,
                 feature_sample.gaze_pitch - previous_feature_sample.gaze_pitch,
             )
+            if previous_motion_timestamp_ms is not None:
+                dt_ms = observation.timestamp_ms - previous_motion_timestamp_ms
+                if 0 < dt_ms <= config.gaze_motion_max_interval_ms:
+                    dt_s = dt_ms / 1000.0
+                    gaze_motion_velocity_deg_s = (
+                        gaze_motion_delta_deg[0] / dt_s,
+                        gaze_motion_delta_deg[1] / dt_s,
+                    )
+                    if previous_gaze_velocity_deg_s is not None:
+                        gaze_motion_acceleration_deg_s2 = (
+                            (
+                                gaze_motion_velocity_deg_s[0]
+                                - previous_gaze_velocity_deg_s[0]
+                            )
+                            / dt_s,
+                            (
+                                gaze_motion_velocity_deg_s[1]
+                                - previous_gaze_velocity_deg_s[1]
+                            )
+                            / dt_s,
+                        )
+        personal_prediction = classifier.predict_personal(
+            feature_sample,
+            direction=smoothed.direction,
+            origin=smoothed.origin,
+            current_face_scale=current_face_scale,
+            gaze_motion_delta_deg=gaze_motion_delta_deg,
+            gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
+            gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
+        )
         result = classifier.classify(
             smoothed.direction,
             origin=smoothed.origin,
             current_face_scale=current_face_scale,
             feature_sample=feature_sample,
             gaze_motion_delta_deg=gaze_motion_delta_deg,
+            gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
+            gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
         )
         lock.update(smoothed.timestamp_ms, result)
         estimate = TargetEstimate(
@@ -551,12 +645,31 @@ def evaluate(
         )
 
     details = _device_details(classify_direction, classify_origin, classifier, config, result.target)
+    raw_details = _device_details(
+        raw_gaze_direction,
+        classify_origin,
+        classifier,
+        config,
+        result.target,
+    )
     profile_details = _feature_details(feature_sample, classifier, config, result.target)
     area_details = _area_details(feature_sample, classifier, config, result.target)
     target_label = (
         config.UNKNOWN_TARGET
         if result.target == config.UNKNOWN_TARGET
         else (target_labels or {}).get(result.target, result.target)
+    )
+    candidate_device = lock.candidate_device
+    candidate_label = (
+        (target_labels or {}).get(candidate_device, candidate_device)
+        if candidate_device is not None
+        else None
+    )
+    locked_device = lock.locked_device
+    locked_target_label = (
+        (target_labels or {}).get(locked_device, locked_device)
+        if locked_device is not None
+        else None
     )
 
     return GazeSnapshot(
@@ -580,6 +693,7 @@ def evaluate(
         gaze_direction=gaze_direction,
         gaze_confidence=gaze_confidence,
         calibration_applied=calibration_applied,
+        calibration_model_kind=(calibration_model.kind if calibration_model is not None else None),
         calibration_features=calibration_features,
         smoothed_stability=smoothed_stability,
         smoothed_gaze_direction=classify_direction,
@@ -593,15 +707,35 @@ def evaluate(
         margin=result.probability - result.second_best_probability,
         reject_reason=_reject_reason(result, details, config, profile_details),
         device_details=details,
+        raw_device_details=raw_details,
         feature_sample=feature_sample,
         gaze_motion_delta_deg=gaze_motion_delta_deg,
         feature_details=profile_details,
         area_details=area_details,
+        personal_prediction=personal_prediction,
+        personal_confidence_threshold=classifier.personal_confidence_threshold,
+        camera_pose_warning=_camera_pose_warning(
+            classifier,
+            current_face_scale,
+            observation.head_roll_deg,
+        ),
         lock_state=lock.state,
-        locked_device=lock.locked_device,
+        candidate_device=candidate_device,
+        candidate_label=candidate_label,
+        dwell_elapsed_ms=lock.candidate_elapsed_ms,
+        dwell_required_ms=config.dwell_time_ms,
+        dwell_progress=lock.dwell_progress,
+        locked_device=locked_device,
+        locked_target_label=locked_target_label,
+        unknown_elapsed_ms=lock.unknown_elapsed_ms,
+        unknown_required_ms=config.confirmed_unknown_timeout_ms,
         is_confident=_is_confident(result, config),
         target_estimate=estimate,
         inference_ms=inference_ms,
+        gaze_motion_velocity_deg_s=gaze_motion_velocity_deg_s,
+        gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
+        personal_feature_weights=config.personal_feature_weights,
+        gaze_motion_history_valid=motion_history_valid,
     )
 
 
@@ -619,7 +753,7 @@ class GazeProbe:
         model_path: Path | None,
         profiles_path: Path | None = None,
         config: GazeConfig | None = None,
-        calibration_model: GazeCalibrationModel | None = None,
+        calibration_model: GazeCalibrationCorrector | None = None,
     ) -> None:
         self._config = config or GazeConfig()
         self._smoother = GazeSmoother(self._config)
@@ -634,6 +768,8 @@ class GazeProbe:
         self._previous_iris_offset: tuple[float, float] | None = None
         self._last_closed_eye_ms: int | None = None
         self._previous_feature_sample: TargetFeatureSample | None = None
+        self._previous_motion_timestamp_ms: int | None = None
+        self._previous_gaze_velocity_deg_s: tuple[float, float] | None = None
         self._profile_count = self._load_profiles(profiles_path)
 
     def _load_profiles(self, profiles_path: Path | None) -> int:
@@ -674,8 +810,25 @@ class GazeProbe:
     def profile_count(self) -> int:
         return self._profile_count
 
-    def set_calibration_model(self, model: GazeCalibrationModel | None) -> None:
+    def set_calibration_model(self, model: GazeCalibrationCorrector | None) -> None:
         self._calibration_model = model
+        # Do not blend directions from two calibration coordinate systems when
+        # phase 1 trains a preview model before boundary collection.
+        self._smoother.reset()
+        self._previous_feature_sample = None
+        self._previous_motion_timestamp_ms = None
+        self._previous_gaze_velocity_deg_s = None
+
+    def set_personal_classifier(
+        self,
+        model: PersonalTargetClassifier | None,
+        *,
+        confidence_threshold: float = 0.65,
+    ) -> None:
+        self._classifier.set_personal_classifier(
+            model,
+            confidence_threshold=confidence_threshold,
+        )
 
     def register_profile(
         self,
@@ -703,6 +856,9 @@ class GazeProbe:
         existed = device_id in self._classifier.profiles
         self._classifier.unregister_profile(device_id)
         self._target_labels.pop(device_id, None)
+        if self._lock.locked_device == device_id:
+            # Sticky confirmation must not keep pointing at a deleted target.
+            self._lock.reset()
         if existed:
             self._profile_count = max(0, self._profile_count - 1)
 
@@ -721,7 +877,7 @@ class GazeProbe:
             self._status_text = "mediapipe 미설치 — pip install -e \".[vision]\""
             return False
         try:
-            self._adapter = FaceLandmarkerAdapter(self._model_path)
+            self._adapter = FaceLandmarkerAdapter(self._model_path, config=self._config)
         except Exception as exc:  # noqa: BLE001 - surface any init failure honestly
             self._status_text = f"gaze 어댑터 초기화 실패: {exc}"
             return False
@@ -775,13 +931,17 @@ class GazeProbe:
             previous_iris_offset=self._previous_iris_offset,
             last_closed_eye_ms=self._last_closed_eye_ms,
             previous_feature_sample=self._previous_feature_sample,
+            previous_motion_timestamp_ms=self._previous_motion_timestamp_ms,
+            previous_gaze_velocity_deg_s=self._previous_gaze_velocity_deg_s,
         )
         if observation.face_detected and not observation.eyes_open:
             self._last_closed_eye_ms = observation.timestamp_ms
         if snapshot.raw_gaze_direction is not None:
             self._previous_iris_offset = _iris_offset(observation)
-        if snapshot.feature_sample is not None:
+        if snapshot.gaze_motion_history_valid and snapshot.feature_sample is not None:
             self._previous_feature_sample = snapshot.feature_sample
+            self._previous_motion_timestamp_ms = observation.timestamp_ms
+            self._previous_gaze_velocity_deg_s = snapshot.gaze_motion_velocity_deg_s
         return snapshot
 
     def close(self) -> None:

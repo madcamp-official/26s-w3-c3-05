@@ -16,6 +16,8 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from jarvis.gaze.blink import AdaptiveBlinkDetector
+from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.features import FaceObservation, Vector3
 
 FloatMatrix = npt.NDArray[np.float64]
@@ -162,7 +164,12 @@ def _lost_tracking_observation(timestamp_ms: int, frame_id: int) -> FaceObservat
 class FaceLandmarkerAdapter:
     """MediaPipe Face Landmarker를 감싸 프레임마다 FaceObservation을 만든다."""
 
-    def __init__(self, model_asset_path: str | Path, num_faces: int = 1) -> None:
+    def __init__(
+        self,
+        model_asset_path: str | Path,
+        num_faces: int = 1,
+        config: GazeConfig = GazeConfig(),
+    ) -> None:
         model_path = Path(model_asset_path)
         if not model_path.is_file():
             raise FileNotFoundError(
@@ -176,6 +183,7 @@ class FaceLandmarkerAdapter:
             output_facial_transformation_matrixes=True,
         )
         self._landmarker = FaceLandmarker.create_from_options(options)
+        self._blink_detector = AdaptiveBlinkDetector(config)
 
     def close(self) -> None:
         self._landmarker.close()
@@ -269,6 +277,9 @@ class FaceLandmarkerAdapter:
             face_detected=True,
             left_eye_center_normalized=left_eye_center,
             right_eye_center_normalized=right_eye_center,
-            eyes_open=min(left_eye_open_ratio, right_eye_open_ratio) >= 0.12,
+            eyes_open=self._blink_detector.update(
+                left_eye_open_ratio,
+                right_eye_open_ratio,
+            ),
             head_position_mm=head_position_mm,
         )

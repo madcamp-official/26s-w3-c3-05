@@ -1,15 +1,16 @@
-"""Robust ten-second collection for look-to-register targets.
+"""Two-phase look-to-register collection.
 
-사용자가 물체를 다양한 각도·자세로 바라보는 동안(README 5.1) 각도 기반
-direction+spread(오늘까지의 동작, 항상 계산됨)와 3D 위치(가능할 때만) 둘 다를
-시도한다. 3D는 머리 이동(parallax)으로 얻은 시선 광선들을 삼각측량해 품질
-기준을 만족할 때만 채택되고, 그렇지 않으면 조용히 각도 기반으로 대체된다
-(calibration/triangulation.py, documents/decisions.md).
+Phase 1 keeps the eyes on one center point while the user changes head/body pose.
+Only these samples define the target center, MLP supervision, and 3D rays. Phase 2
+keeps the head still while the eyes trace the four edges. Only these samples define
+the target area. Keeping the two sets separate prevents boundary gaze from being
+incorrectly labelled as the center direction during MLP training.
 """
 
 from __future__ import annotations
 
 import math
+from enum import StrEnum
 
 import numpy as np
 
@@ -31,6 +32,12 @@ from jarvis.gaze.features import Vector3
 from jarvis.gaze.smoothing import SmoothedGaze
 
 
+class RegistrationPhase(StrEnum):
+    CENTER = "CENTER"
+    BOUNDARY = "BOUNDARY"
+    COMPLETE = "COMPLETE"
+
+
 class TargetRegistrationSession:
     def __init__(
         self,
@@ -39,24 +46,37 @@ class TargetRegistrationSession:
         device_type: str,
         device_id: str,
         *,
-        duration_ms: int = 15_000,
-        minimum_valid_frames: int = 15,
+        center_duration_ms: int = 20_000,
+        boundary_duration_ms: int = 16_000,
+        minimum_valid_frames: int = 30,
+        minimum_boundary_frames: int | None = None,
         minimum_confidence: float = 0.35,
         maximum_jump_deg: float = 18.0,
         config: GazeConfig = GazeConfig(),
     ) -> None:
-        if duration_ms <= 0 or minimum_valid_frames <= 0:
+        if center_duration_ms <= 0 or boundary_duration_ms <= 0 or minimum_valid_frames <= 0:
             raise ValueError("duration and frame count must be positive")
+        if minimum_boundary_frames is not None and minimum_boundary_frames <= 0:
+            raise ValueError("minimum boundary frame count must be positive")
         self.target_id, self.name = target_id, name
         self.device_type, self.device_id = device_type, device_id
-        self.duration_ms, self.minimum_valid_frames = duration_ms, minimum_valid_frames
+        self.center_duration_ms = center_duration_ms
+        self.boundary_duration_ms = boundary_duration_ms
+        self.duration_ms = center_duration_ms + boundary_duration_ms
+        self.minimum_valid_frames = minimum_valid_frames
+        self.minimum_boundary_frames = minimum_boundary_frames or minimum_valid_frames
         self.minimum_confidence, self.maximum_jump_deg = minimum_confidence, maximum_jump_deg
         self.config = config
+        self.phase = RegistrationPhase.CENTER
         self.started_at_ms: int | None = None
-        self._samples: list[tuple[float, float]] = []
-        self._rays: list[tuple[Vector3, Vector3]] = []
-        self._face_scales: list[float] = []
-        self._feature_samples: list[TargetFeatureSample] = []
+        self.phase_started_at_ms: int | None = None
+        self._center_samples: list[tuple[float, float]] = []
+        self._boundary_samples: list[tuple[float, float]] = []
+        self._center_rays: list[tuple[Vector3, Vector3]] = []
+        self._center_face_scales: list[float] = []
+        self._center_feature_samples: list[TargetFeatureSample] = []
+        self._boundary_feature_samples: list[TargetFeatureSample] = []
+        self._calibration_features: list[tuple[float, ...]] = []
         self.total_frames_seen = 0
         self.rejected_tracking_lost = 0
         self.rejected_closed_eyes = 0
@@ -69,7 +89,57 @@ class TargetRegistrationSession:
 
     @property
     def valid_frame_count(self) -> int:
-        return len(self._samples)
+        return self.center_valid_frame_count + self.boundary_valid_frame_count
+
+    @property
+    def center_valid_frame_count(self) -> int:
+        return len(self._center_samples)
+
+    @property
+    def boundary_valid_frame_count(self) -> int:
+        return len(self._boundary_samples)
+
+    @property
+    def calibration_features(self) -> tuple[tuple[float, ...], ...]:
+        """Raw regression features from CENTER only."""
+        return tuple(self._calibration_features)
+
+    @property
+    def center_yaw_pitch(self) -> tuple[float, float] | None:
+        if self.center_valid_frame_count < self.minimum_valid_frames:
+            return None
+        center = np.median(np.asarray(self._center_samples, dtype=np.float64), axis=0)
+        return float(center[0]), float(center[1])
+
+    @property
+    def feature_samples(self) -> tuple[TargetFeatureSample, ...]:
+        """Center and boundary evidence used by the target classifier."""
+        return tuple((*self._center_feature_samples, *self._boundary_feature_samples))
+
+    def phase_elapsed_ms(self, timestamp_ms: int) -> int:
+        if self.phase_started_at_ms is None:
+            return 0
+        return max(0, timestamp_ms - self.phase_started_at_ms)
+
+    def phase_duration_ms(self) -> int:
+        if self.phase == RegistrationPhase.CENTER:
+            return self.center_duration_ms
+        if self.phase == RegistrationPhase.BOUNDARY:
+            return self.boundary_duration_ms
+        return 0
+
+    def phase_progress(self, timestamp_ms: int) -> float:
+        if self.phase == RegistrationPhase.COMPLETE:
+            return 1.0
+        duration = self.phase_duration_ms()
+        time_progress = min(1.0, self.phase_elapsed_ms(timestamp_ms) / duration)
+        if self.phase == RegistrationPhase.CENTER:
+            frame_progress = min(1.0, self.center_valid_frame_count / self.minimum_valid_frames)
+        else:
+            frame_progress = min(
+                1.0, self.boundary_valid_frame_count / self.minimum_boundary_frames
+            )
+        return min(time_progress, frame_progress)
 
     def add(
         self,
@@ -79,8 +149,13 @@ class TargetRegistrationSession:
         eyes_open: bool = True,
         face_scale: float | None = None,
         feature_sample: TargetFeatureSample | None = None,
+        calibration_features: tuple[float, ...] | None = None,
     ) -> bool:
         self.total_frames_seen += 1
+        if gaze is not None:
+            self._advance_phase_if_ready(gaze.timestamp_ms)
+        if self.phase == RegistrationPhase.COMPLETE:
+            return False
         if gaze is None:
             self.rejected_tracking_lost += 1
             return False
@@ -92,34 +167,83 @@ class TargetRegistrationSession:
             return False
         if self.started_at_ms is None:
             self.started_at_ms = gaze.timestamp_ms
+            self.phase_started_at_ms = gaze.timestamp_ms
+        accepted_phase = self.phase
         yaw, pitch = direction_to_yaw_pitch(gaze.direction)
-        if self._samples:
-            previous_yaw, previous_pitch = self._samples[-1]
+        samples = (
+            self._center_samples
+            if accepted_phase == RegistrationPhase.CENTER
+            else self._boundary_samples
+        )
+        if samples:
+            previous_yaw, previous_pitch = samples[-1]
             if math.hypot(yaw - previous_yaw, pitch - previous_pitch) > self.maximum_jump_deg:
                 self.rejected_jump += 1
                 return False
-        self._samples.append((yaw, pitch))
-        if gaze.origin is not None:
-            self._rays.append((gaze.origin, gaze.direction))
-        if face_scale is not None and math.isfinite(face_scale) and face_scale > 0.0:
-            self._face_scales.append(face_scale)
-        if feature_sample is not None:
-            self._feature_samples.append(feature_sample)
+        samples.append((yaw, pitch))
+        if accepted_phase == RegistrationPhase.CENTER:
+            if gaze.origin is not None:
+                self._center_rays.append((gaze.origin, gaze.direction))
+            if face_scale is not None and math.isfinite(face_scale) and face_scale > 0.0:
+                self._center_face_scales.append(face_scale)
+            if feature_sample is not None:
+                self._center_feature_samples.append(feature_sample)
+            if calibration_features is not None:
+                self._calibration_features.append(calibration_features)
+        elif feature_sample is not None:
+            self._boundary_feature_samples.append(feature_sample)
+        self._advance_phase_if_ready(gaze.timestamp_ms)
         return True
 
     def is_elapsed(self, timestamp_ms: int) -> bool:
-        return (
-            self.started_at_ms is not None and timestamp_ms - self.started_at_ms >= self.duration_ms
-        )
+        self._advance_phase_if_ready(timestamp_ms)
+        return self.phase == RegistrationPhase.COMPLETE
+
+    def start_boundary(self, timestamp_ms: int) -> None:
+        """Advance explicitly after enough center frames; useful for UI/tests."""
+        if self.center_valid_frame_count < self.minimum_valid_frames:
+            raise ValueError(
+                "not enough valid center frames: "
+                f"{self.center_valid_frame_count}/{self.minimum_valid_frames}"
+            )
+        self.phase = RegistrationPhase.BOUNDARY
+        self.phase_started_at_ms = timestamp_ms
+
+    def _advance_phase_if_ready(self, timestamp_ms: int) -> None:
+        if self.phase_started_at_ms is None:
+            return
+        elapsed_ms = self.phase_elapsed_ms(timestamp_ms)
+        if (
+            self.phase == RegistrationPhase.CENTER
+            and elapsed_ms >= self.center_duration_ms
+            and self.center_valid_frame_count >= self.minimum_valid_frames
+        ):
+            self.start_boundary(timestamp_ms)
+            return
+        if (
+            self.phase == RegistrationPhase.BOUNDARY
+            and elapsed_ms >= self.boundary_duration_ms
+            and self.boundary_valid_frame_count >= self.minimum_boundary_frames
+        ):
+            self.phase = RegistrationPhase.COMPLETE
+            self.phase_started_at_ms = timestamp_ms
 
     def finalize(self) -> TargetRecord:
-        if len(self._samples) < self.minimum_valid_frames:
+        if self.center_valid_frame_count < self.minimum_valid_frames:
             raise ValueError(
-                f"not enough valid registration frames: {len(self._samples)}/{self.minimum_valid_frames}"
+                "not enough valid center frames: "
+                f"{self.center_valid_frame_count}/{self.minimum_valid_frames}"
             )
-        samples = np.asarray(self._samples, dtype=np.float64)
-        center = np.median(samples, axis=0)
-        deviations = np.abs(samples - center)
+        if self.boundary_valid_frame_count < self.minimum_boundary_frames:
+            raise ValueError(
+                "not enough valid boundary frames: "
+                f"{self.boundary_valid_frame_count}/{self.minimum_boundary_frames}"
+            )
+        boundary_samples = np.asarray(self._boundary_samples, dtype=np.float64)
+        center_yaw_pitch = self.center_yaw_pitch
+        assert center_yaw_pitch is not None
+        center = np.asarray(center_yaw_pitch, dtype=np.float64)
+        deviations = np.abs(boundary_samples - center)
         spread = np.percentile(deviations, 90, axis=0)
         spread_yaw = min(
             self.config.registration_max_spread_deg,
@@ -133,12 +257,13 @@ class TargetRegistrationSession:
         if self.config.require_3d_target_registration and position_3d is None:
             raise ValueError(f"3D target registration failed: {self.triangulation_diagnostic()}")
         feature_profile = (
-            build_feature_profile(self._feature_samples).profile
-            if len(self._feature_samples) >= self.minimum_valid_frames
+            build_feature_profile(list(self.feature_samples)).profile
+            if len(self.feature_samples) >= self.minimum_valid_frames
             else None
         )
         area_profile = build_area_profile(
-            self._samples,
+            self._boundary_samples,
+            center_yaw_pitch=(float(center[0]), float(center[1])),
             minimum_radius_deg=self.config.registration_min_spread_deg,
             maximum_radius_deg=self.config.registration_max_area_radius_deg,
         )
@@ -151,8 +276,8 @@ class TargetRegistrationSession:
             device_id=self.device_id,
             position_3d=position_3d,
             reference_face_scale=(
-                float(np.median(np.asarray(self._face_scales, dtype=np.float64)))
-                if self._face_scales
+                float(np.median(np.asarray(self._center_face_scales, dtype=np.float64)))
+                if self._center_face_scales
                 else None
             ),
             feature_profile=feature_profile,
@@ -167,11 +292,11 @@ class TargetRegistrationSession:
         `self.triangulation_result`에 남겨 호출자가 왜 대체됐는지 로그로 보여줄
         수 있게 한다(지어낸 성공을 반환하지 않는다).
         """
-        if len(self._rays) < self.config.minimum_triangulation_frames:
+        if len(self._center_rays) < self.config.minimum_triangulation_frames:
             self.triangulation_result = None
             return None
-        origins = [origin for origin, _ in self._rays]
-        directions = [direction for _, direction in self._rays]
+        origins = [origin for origin, _ in self._center_rays]
+        directions = [direction for _, direction in self._center_rays]
         result = triangulate_rays(origins, directions)
         self.triangulation_result = result
         if not result.passes_quality_gates(self.config):
@@ -186,9 +311,13 @@ class TargetRegistrationSession:
     def diagnostic_summary(self) -> str:
         """Human-readable counts explaining why registration frames were rejected."""
         return (
-            f"seen={self.total_frames_seen}, valid={self.valid_frame_count}, "
-            f"rays={len(self._rays)}, face_scale={len(self._face_scales)}, "
-            f"features={len(self._feature_samples)}, "
+            f"phase={self.phase}, seen={self.total_frames_seen}, "
+            f"center={self.center_valid_frame_count}, boundary={self.boundary_valid_frame_count}, "
+            f"center_rays={len(self._center_rays)}, "
+            f"center_scale={len(self._center_face_scales)}, "
+            f"center_features={len(self._center_feature_samples)}, "
+            f"boundary_features={len(self._boundary_feature_samples)}, "
+            f"mlp_features={len(self._calibration_features)}, "
             f"tracking_lost={self.rejected_tracking_lost}, "
             f"closed_eyes={self.rejected_closed_eyes}, "
             f"low_conf={self.rejected_low_confidence}, jump={self.rejected_jump}"
@@ -196,9 +325,9 @@ class TargetRegistrationSession:
 
     def triangulation_diagnostic(self) -> str:
         """Human-readable 3D registration quality report."""
-        if len(self._rays) < self.config.minimum_triangulation_frames:
+        if len(self._center_rays) < self.config.minimum_triangulation_frames:
             return (
-                f"not enough gaze rays: {len(self._rays)}/"
+                f"not enough center gaze rays: {len(self._center_rays)}/"
                 f"{self.config.minimum_triangulation_frames}"
             )
         result = self.triangulation_result

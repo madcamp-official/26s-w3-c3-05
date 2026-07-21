@@ -116,3 +116,33 @@ def test_calibration_store_persists_samples_and_model(tmp_path: Path) -> None:
     assert len(reloaded.samples) == 1
     assert reloaded.model.fitted is False
     assert np.asarray(reloaded.model.to_dict()["coefficients"]).shape == (13, 2)
+
+
+def test_preview_model_replaces_target_in_memory_without_persisting(tmp_path: Path) -> None:
+    path = tmp_path / "gaze_regressor.json"
+    store = GazeCalibrationStore(path)
+    original = [
+        GazeCalibrationSample(
+            features=tuple(float(index) for index in range(13)),
+            target_yaw=target_yaw,
+            target_pitch=0.0,
+            target_id=target_id,
+        )
+        for target_id, target_yaw in (("left", -10.0), ("right", 10.0))
+    ]
+    store.add_samples(original)
+    before = path.read_text(encoding="utf-8")
+    replacement = GazeCalibrationSample(
+        features=tuple(float(index + 1) for index in range(13)),
+        target_yaw=-12.0,
+        target_pitch=2.0,
+        target_id="left",
+    )
+
+    preview = store.preview_model([replacement], replace_target_id="left")
+
+    assert preview is not None
+    assert preview.fitted
+    assert preview.sample_count == 2
+    assert len(store.samples) == 2
+    assert path.read_text(encoding="utf-8") == before
