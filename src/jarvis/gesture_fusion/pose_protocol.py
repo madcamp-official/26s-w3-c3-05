@@ -30,9 +30,11 @@ NONE_POSE = "none"
 """제어 명령이 아님. 이 판정이 나오면 어떤 동작도 실행하지 않는다."""
 
 # 수집·학습에서 쓰는 정적 자세 라벨. 순서가 분류기 출력 인덱스와 일치해야 한다
-# (학습 산출물의 `label_names`가 진실이며, 로드 시 대조한다).
+# (학습 산출물의 `label_names`가 진실이며, 로드 시 대조한다). 2026-07-22 8-class v2:
+# index_point 다음에 middle_point(중지 하나 → 탭 닫기) 추가 — 모델 label_names 순서와 일치.
 DEFAULT_POSE_LABELS: tuple[str, ...] = (
     "index_point",
+    "middle_point",
     "pinch_index",
     "pinch_middle",
     "two_fingers",
