@@ -58,7 +58,7 @@ def _feed(machine: PoseStateMachine, label: str, *, ms: int, start: int = 0, ste
 def test_short_pose_does_not_trigger() -> None:
     """전이 중 스쳐 지나가는 자세는 상태가 되지 않는다(스크롤 오발동 차단)."""
     machine = PoseStateMachine()
-    _feed(machine, "two_fingers", ms=200, landmarks=_hand(0.0, -0.2))  # dwell 300ms 미만
+    _feed(machine, "two_fingers", ms=80, landmarks=_hand(0.0, -0.2))  # dwell 120ms 미만
     assert machine.state == ""
 
 
