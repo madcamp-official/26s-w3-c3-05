@@ -33,7 +33,12 @@ import numpy.typing as npt
 
 from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG, LANDMARK_DIMS, GestureConfig
 from jarvis.gesture_fusion.features import HandFeatureExtractor
-from jarvis.gesture_fusion.landmarks import RawHandLandmarks, normalize_hand
+from jarvis.gesture_fusion.landmarks import (
+    HandObservation,
+    RawHandLandmarks,
+    _lost_tracking_observation,
+    normalize_hand,
+)
 from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 Point2D = tuple[float, float]
@@ -141,6 +146,16 @@ class HandSnapshot:
     # palm-parallel / forearm-axis rotation — the signal 2D discards). MediaPipe z
     # decreases toward the camera. None when the hand is lost.
     model_points_z: tuple[float, ...] | None = None
+    # The exact pre-smoothing ``HandObservation`` for this frame — the model's
+    # normalized landmarks plus wrist_position, i.e. everything
+    # ``observations_to_cached_clip`` needs to write a training clip. Carried here so
+    # the monitor's 파인튜닝 tab can record clips straight from the live stream without
+    # a second landmarker. Present on BOTH detected and lost frames (a lost frame
+    # carries a hand_detected=False observation), so recording accounts for missing
+    # frames exactly like the CLI does. None only if no observation was produced.
+    # **Recording must use this (pre-smoothing), never ``model_points`` (display-
+    # smoothed) — the training cache is raw and re-smooths on read.**
+    observation: HandObservation | None = None
 
 
 def _gesture_recognition_status() -> str:
@@ -351,6 +366,7 @@ class HandProbe:
             wrist_acceleration=wrist_acceleration,
             image_points_smoothed=image_points_smoothed,
             model_points_z=model_points_z,
+            observation=observation,
         )
 
     def _normalized_depth(
@@ -411,6 +427,10 @@ class HandProbe:
             smoothed=self._smoothing,
             wrist_velocity=None,
             wrist_acceleration=None,
+            # Carry a hand_detected=False observation (not None) so a recording in
+            # progress keeps this frame and counts it toward the missing-frame gate,
+            # exactly like the CLI landmarker does on a lost frame.
+            observation=_lost_tracking_observation(timestamp_ms, frame_id),
         )
 
     def close(self) -> None:

@@ -24,13 +24,14 @@ detection is faked, and the untrained gesture model is never shown as recognizin
 from __future__ import annotations
 
 import dataclasses
+import importlib
 import math
 import os
 import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import cv2
 import numpy as np
@@ -39,10 +40,12 @@ from PySide6.QtGui import QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QMainWindow,
     QProgressBar,
@@ -60,6 +63,8 @@ from jarvis.calibration.registry import TargetRecord, TargetRegistry
 from jarvis.calibration.target_registration import TargetRegistrationSession
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
 from jarvis.gaze.calibration_model import GazeCalibrationSample, GazeCalibrationStore
+from jarvis.gesture_fusion.landmarks import HandObservation
+from jarvis.gesture_fusion.model_protocol import DEFAULT_GESTURE_LABELS, EXPECTED_INPUT_FPS
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.lock import GazeLockState
@@ -909,6 +914,136 @@ class StageCard(QFrame):
         layout.addWidget(detail)
 
 
+class _RecordResult(Protocol):
+    """`ClipRecorder.stop()` 반환값의 구조적 타입(training 패키지 static import 회피)."""
+
+    saved: bool
+    detail: str
+    frame_count: int
+
+
+class _ClipRecorder(Protocol):
+    """`training.clip_recorder.ClipRecorder`의 구조적 타입.
+
+    `training/`은 런타임 패키지(jarvis)와 분리돼 있어(pyproject 39행) static import
+    하지 않는다 — 이 Protocol로 타입만 잡고 실제 클래스는 importlib로 런타임에 붙인다.
+    """
+
+    @property
+    def is_recording(self) -> bool: ...
+
+    @property
+    def frame_count(self) -> int: ...
+
+    def start(self, person_id: str, gesture_label: str) -> None: ...
+
+    def add(self, observation: HandObservation) -> None: ...
+
+    def stop(self) -> _RecordResult: ...
+
+
+def _build_clip_recorder() -> _ClipRecorder | None:
+    """training.ClipRecorder를 동적으로 만든다 — 실패하면 None(녹화 정직하게 비활성).
+
+    training 패키지가 없거나(런타임 전용 배포) import에 실패하면 녹화를 비활성화하고
+    UI가 그 사실을 드러낸다(성공을 가장하지 않는다). 저장은 학습 cadence(12fps)로
+    리샘플되도록 `target_fps=EXPECTED_INPUT_FPS`를 준다.
+    """
+    try:
+        recorder_mod = importlib.import_module("training.clip_recorder")
+        config_mod = importlib.import_module("training.config")
+    except Exception:  # noqa: BLE001 - training 부재는 정상(런타임 전용 실행)일 수 있다
+        return None
+    cfg = config_mod.DEFAULT_TRAINING_CONFIG
+    recorder = recorder_mod.ClipRecorder(
+        cache_dir=cfg.cache_dir,
+        max_missing_frame_fraction=cfg.max_missing_frame_fraction,
+        target_fps=EXPECTED_INPUT_FPS,
+    )
+    return cast("_ClipRecorder", recorder)
+
+
+class FinetuneRecordingPanel(QWidget):
+    """파인튜닝 클립 녹화 탭 — 웹캠+스켈레톤 뷰 + 동작 선택 + person_id + REC 버튼.
+
+    표시 계층이라 저장소를 직접 모른다(HandPanel의 `on_smoothing_toggled`과 같은 규약):
+    REC 버튼은 `on_record_toggled` 콜백만 부르고, 실제 녹화 상태·저장은 MainWindow가
+    ClipRecorder로 처리한 뒤 `set_recording`/`set_status`로 결과를 돌려준다.
+    """
+
+    def __init__(
+        self,
+        *,
+        gesture_labels: tuple[str, ...],
+        recording_available: bool,
+        on_record_toggled: Callable[[], None],
+    ) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+
+        # 웹캠+스켈레톤 뷰(실시간 탭과 같은 VideoView) — 녹화 중 손 프레이밍 확인용.
+        # gaze는 설정하지 않으므로 손 오버레이만 그려진다.
+        self.video = VideoView()
+        layout.addWidget(self.video, 1)
+
+        note = QLabel(
+            f"웹캠에서 직접 파인튜닝 클립을 녹화한다. 저장 직전 {EXPECTED_INPUT_FPS:.0f}fps로 "
+            "리샘플해 사전학습(Jester 12fps)과 정합시킨다. person_id는 세션 단위 split을 위해 "
+            "'<이름>-s<세션>' 형식을 권장한다(예: me-s1). 저장 위치: "
+            "training/cache/webcam/<person_id>/."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#6e7681; font-size:11px;")
+        layout.addWidget(note)
+
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("person_id"))
+        self._person_edit = QLineEdit()
+        self._person_edit.setPlaceholderText("예: me-s1")
+        controls.addWidget(self._person_edit, 1)
+        controls.addWidget(QLabel("동작"))
+        self._gesture_combo = QComboBox()
+        for label in gesture_labels:
+            self._gesture_combo.addItem(label)
+        controls.addWidget(self._gesture_combo, 1)
+        self._record_button = QPushButton("녹화 시작")
+        self._record_button.clicked.connect(lambda: on_record_toggled())
+        controls.addWidget(self._record_button)
+        layout.addLayout(controls)
+
+        self._status = QLabel(
+            "녹화 대기"
+            if recording_available
+            else "녹화 비활성 — training 패키지를 불러올 수 없습니다(런타임 전용 실행)"
+        )
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet("color:#8b949e; padding:4px 0;")
+        layout.addWidget(self._status)
+
+        if not recording_available:
+            self._record_button.setEnabled(False)
+            self._person_edit.setEnabled(False)
+            self._gesture_combo.setEnabled(False)
+
+    @property
+    def person_id(self) -> str:
+        return self._person_edit.text().strip()
+
+    @property
+    def gesture(self) -> str:
+        return self._gesture_combo.currentText()
+
+    def set_recording(self, is_recording: bool) -> None:
+        self._record_button.setText("녹화 종료" if is_recording else "녹화 시작")
+        # 녹화 중엔 person/동작 잠금 — 한 클립 도중 라벨이 바뀌면 안 된다.
+        self._person_edit.setEnabled(not is_recording)
+        self._gesture_combo.setEnabled(not is_recording)
+
+    def set_status(self, text: str, *, ok: bool = True) -> None:
+        self._status.setText(text)
+        self._status.setStyleSheet(("color:#3fb950;" if ok else "color:#d29922;") + " padding:4px 0;")
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -968,6 +1103,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_hand_tab(), "손 추적")
         tabs.addTab(self._build_pipeline_tab(), "파이프라인")
         tabs.addTab(self._build_latency_tab(), "지연·어댑터")
+        tabs.addTab(self._build_finetune_tab(), "파인튜닝")
         self.setCentralWidget(tabs)
 
         self._log.info("모니터 시작")
@@ -1073,6 +1209,38 @@ class MainWindow(QMainWindow):
         )
         return self._hand_panel
 
+    def _build_finetune_tab(self) -> QWidget:
+        # 녹화 코어는 training 패키지에 있다(런타임 패키지와 분리) — 동적으로 붙이고,
+        # 없으면 패널이 녹화 비활성 상태로 뜬다.
+        self._recorder: _ClipRecorder | None = _build_clip_recorder()
+        self._finetune_panel = FinetuneRecordingPanel(
+            gesture_labels=DEFAULT_GESTURE_LABELS,
+            recording_available=self._recorder is not None,
+            on_record_toggled=self._toggle_recording,
+        )
+        if self._recorder is None:
+            self._log.warn("파인튜닝 녹화 비활성: training 패키지를 불러올 수 없습니다")
+        return self._finetune_panel
+
+    def _toggle_recording(self) -> None:
+        if self._recorder is None:
+            return
+        if self._recorder.is_recording:
+            result = self._recorder.stop()
+            self._finetune_panel.set_recording(False)
+            self._finetune_panel.set_status(result.detail, ok=result.saved)
+            self._log.info(f"파인튜닝 녹화: {result.detail}")
+            return
+        person = self._finetune_panel.person_id
+        if not person:
+            self._finetune_panel.set_status("person_id를 입력하세요 (예: me-s1)", ok=False)
+            return
+        gesture = self._finetune_panel.gesture
+        self._recorder.start(person, gesture)
+        self._finetune_panel.set_recording(True)
+        self._finetune_panel.set_status(f"녹화 중… [{gesture}] 0프레임")
+        self._log.info(f"파인튜닝 녹화 시작: person={person} 동작={gesture}")
+
     def _build_pipeline_tab(self) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -1121,6 +1289,9 @@ class MainWindow(QMainWindow):
 
     def _on_frame(self, frame: Frame) -> None:
         self._video.show_frame(frame)
+        # 파인튜닝 탭의 웹캠 뷰에도 같은 프레임을 뿌린다(Qt 시그널 fan-out — 각 VideoView가
+        # 자기 복사본에 그리므로 서로 간섭하지 않는다).
+        self._finetune_panel.video.show_frame(frame)
 
     def _on_gaze(self, snapshot: object) -> None:
         assert isinstance(snapshot, GazeSnapshot)
@@ -1408,6 +1579,19 @@ class MainWindow(QMainWindow):
         self._video.set_hand(snapshot)
         self._hand_panel.update_snapshot(snapshot)
         self._sidebar.set_hand_status(snapshot)
+        self._finetune_panel.video.set_hand(snapshot)
+        # 녹화 중이면 이 프레임의 관측값(스무딩 전 원본)을 클립 버퍼에 넣는다. observation은
+        # 검출·손실 프레임 둘 다 존재하므로(hand_probe A단계) 미검출도 클립에 남아 미검출
+        # 게이트가 CLI와 동일하게 동작한다.
+        if (
+            self._recorder is not None
+            and self._recorder.is_recording
+            and snapshot.observation is not None
+        ):
+            self._recorder.add(snapshot.observation)
+            self._finetune_panel.set_status(
+                f"녹화 중… [{self._finetune_panel.gesture}] {self._recorder.frame_count}프레임"
+            )
 
     def _on_camera_failed(self, message: str) -> None:
         self._log.error(message)

@@ -27,13 +27,14 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
     try:
         tabs = window.centralWidget()
         assert tabs is not None
-        # five tabs: 실시간 / Gaze 파이프라인 / 손 추적 / 파이프라인 / 지연·어댑터
-        assert tabs.count() == 5
+        # six tabs: 실시간 / Gaze 파이프라인 / 손 추적 / 파이프라인 / 지연·어댑터 / 파인튜닝
+        assert tabs.count() == 6
         assert tabs.tabText(0) == "실시간"
         assert tabs.tabText(1) == "Gaze 파이프라인"
         assert tabs.tabText(2) == "손 추적"
         assert tabs.tabText(3) == "파이프라인"
         assert tabs.tabText(4) == "지연·어댑터"
+        assert tabs.tabText(5) == "파인튜닝"
         assert window._sample_button.text() == "시선 샘플 저장 (0/10)"
         assert window._sample_list.count() == 0
         assert window._gaze_config.enable_3d_target_matching is False
