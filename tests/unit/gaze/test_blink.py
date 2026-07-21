@@ -53,3 +53,24 @@ def test_naturally_narrow_open_eyes_do_not_latch_closed_forever() -> None:
     assert detector.update(0.10, 0.11)
     assert not detector.update(0.03, 0.03)
     assert detector.update(0.10, 0.11)
+
+
+def test_pose_reduced_eye_opening_rebases_after_sustained_soft_closure() -> None:
+    config = GazeConfig(blink_pose_recovery_frames=4)
+    detector = AdaptiveBlinkDetector(config)
+
+    assert detector.update(0.25, 0.25)
+    assert not detector.update(0.13, 0.13)
+    assert not detector.update(0.13, 0.13)
+    assert not detector.update(0.13, 0.13)
+    assert detector.update(0.13, 0.13)
+    assert detector.eye_baselines == pytest.approx((0.13, 0.13))
+
+
+def test_fully_collapsed_eyes_never_rebase_as_open() -> None:
+    config = GazeConfig(blink_pose_recovery_frames=3)
+    detector = AdaptiveBlinkDetector(config)
+
+    assert detector.update(0.25, 0.25)
+    for _ in range(10):
+        assert not detector.update(0.03, 0.03)

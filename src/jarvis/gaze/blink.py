@@ -19,6 +19,7 @@ class AdaptiveBlinkDetector:
         self._left_open_baseline: float | None = None
         self._right_open_baseline: float | None = None
         self._closed = False
+        self._soft_closed_frames = 0
 
     @property
     def open_baseline(self) -> float | None:
@@ -38,6 +39,7 @@ class AdaptiveBlinkDetector:
         self._left_open_baseline = None
         self._right_open_baseline = None
         self._closed = False
+        self._soft_closed_frames = 0
 
     def update(self, left_ratio: float, right_ratio: float) -> bool:
         """Return false only when both eyelids jointly indicate a blink.
@@ -67,6 +69,26 @@ class AdaptiveBlinkDetector:
         left_threshold = max(collapsed_floor, left_baseline * ratio_factor)
         right_threshold = max(collapsed_floor, right_baseline * ratio_factor)
         self._closed = left_ratio < left_threshold and right_ratio < right_threshold
+
+        if (
+            self._closed
+            and left_ratio >= collapsed_floor
+            and right_ratio >= collapsed_floor
+        ):
+            # Both eyelids are still visibly open, but an old wider-eye
+            # baseline says closed.  A few consecutive frames indicate a head
+            # or gaze-pose change rather than a transient blink. Rebase so the
+            # detector cannot latch CLOSED forever during registration.
+            self._soft_closed_frames += 1
+            if self._soft_closed_frames >= self._config.blink_pose_recovery_frames:
+                self._left_open_baseline = left_ratio
+                self._right_open_baseline = right_ratio
+                left_baseline = left_ratio
+                right_baseline = right_ratio
+                self._closed = False
+                self._soft_closed_frames = 0
+        else:
+            self._soft_closed_frames = 0
 
         if not self._closed:
             # Track a wider opening immediately, but let the baseline decay only

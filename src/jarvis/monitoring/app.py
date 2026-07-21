@@ -1230,13 +1230,28 @@ class MainWindow(QMainWindow):
         self._latency.record(LatencyStage.CAPTURE_TO_INFERENCE, snapshot.inference_ms)
         if self._registration is not None:
             smoothed = self._smoothed_from_snapshot(snapshot)
-            self._registration.add(
+            accepted = self._registration.add(
                 smoothed,
                 snapshot.tracking_confidence,
                 eyes_open=snapshot.eyes_open,
                 face_scale=snapshot.face_scale,
                 feature_sample=snapshot.feature_sample,
             )
+            if (
+                not accepted
+                and not snapshot.eyes_open
+                and snapshot.left_eye_open_ratio is not None
+                and snapshot.right_eye_open_ratio is not None
+                and snapshot.left_eye_open_baseline is not None
+                and snapshot.right_eye_open_baseline is not None
+            ):
+                self._registration.last_rejection_reason = (
+                    "eyes classified closed "
+                    f"(L {snapshot.left_eye_open_ratio:.3f}/"
+                    f"{snapshot.left_eye_open_baseline:.3f}, "
+                    f"R {snapshot.right_eye_open_ratio:.3f}/"
+                    f"{snapshot.right_eye_open_baseline:.3f})"
+                )
             self._update_registration_guidance(snapshot.timestamp_ms)
             if self._registration.is_elapsed(snapshot.timestamp_ms):
                 self._finish_target_registration()

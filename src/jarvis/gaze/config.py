@@ -96,6 +96,14 @@ class GazeConfig:
     blink_reopen_ratio: float = 0.75
     """Reopen above 75% of baseline, balancing recovery speed and chatter."""
 
+    blink_pose_recovery_frames: int = 6
+    """Rebase after this many softly-closed frames caused by a pose change.
+
+    A real bilateral blink normally collapses below the hard eyelid guard.
+    When both eyelids remain visibly above that guard but below an older open
+    baseline, the baseline likely belongs to a different head/eye pose.
+    """
+
     eye_openness_baseline_decay: float = 0.01
     """Per-frame downward adaptation rate of the personal open-eye baseline."""
 
@@ -213,6 +221,8 @@ class GazeConfig:
             raise ValueError("Gaze timing thresholds are invalid")
         if self.blink_hold_ms < 0 or self.blink_recovery_hold_ms < 0:
             raise ValueError("blink hold thresholds must be non-negative")
+        if self.blink_pose_recovery_frames <= 0:
+            raise ValueError("blink_pose_recovery_frames must be positive")
         if self.tracking_loss_hold_ms < 0:
             raise ValueError("tracking_loss_hold_ms must be non-negative")
         if self.smoothing_window_frames <= 0:
