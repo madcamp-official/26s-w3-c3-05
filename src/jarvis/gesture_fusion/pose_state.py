@@ -41,12 +41,12 @@ INDEX_MCP, INDEX_TIP, MIDDLE_MCP, MIDDLE_TIP = 5, 8, 9, 12
 # 자세별 진입 유지 시간(ms). 클릭류는 빠른 반응이 중요해 짧고, 연속 동작인 스크롤은
 # 오발동 비용이 커서 길다(우클릭 준비 중 손가락이 펴진 구간을 확실히 넘기려면 필요).
 DWELL_MS: dict[str, int] = {
-    "index_point": 150,
-    "pinch_index": 120,
-    "pinch_middle": 120,
+    "index_point": 120,
+    "pinch_index": 80,
+    "pinch_middle": 80,
     "two_fingers": 300,
-    "open_palm": 200,
-    "fist": 200,
+    "open_palm": 120,
+    "fist": 120,
 }
 DEFAULT_DWELL_MS = 200
 
