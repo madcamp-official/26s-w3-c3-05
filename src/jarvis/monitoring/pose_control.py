@@ -13,11 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from jarvis.gesture_fusion.pose_state import (
-    CURSOR_REFERENCE_HEIGHT,
-    CURSOR_REFERENCE_WIDTH,
-    PoseEvent,
-)
+from jarvis.gesture_fusion.pose_state import PoseEvent
 from jarvis.runtime_protocol.adapters.windows import InputKey, InputSink, MouseButton
 
 # 스크롤 이벤트는 매 프레임 나온다(30fps). 그대로 보내면 초당 30틱이라 너무 빠르므로
@@ -59,25 +55,6 @@ class PoseControlBridge:
     _dragging: bool = False
     history: list[str] = field(default_factory=list)
     transition_key: InputKey = field(default_factory=_transition_key)
-    # 커서 이동 정규화용 실기기 화면 크기 (너비, 높이). sink에서 한 번 조회해 캐싱한다.
-    _screen_scale: tuple[float, float] | None = None
-
-    def _cursor_scale(self) -> tuple[float, float]:
-        """기준 화면(CURSOR_REFERENCE_*) 대비 실기기 스케일 (sx, sy).
-
-        _cursor_move가 낸 delta는 기준 화면 기준 px이므로 실기기 해상도 비율을 곱해
-        **화면 대비 이동 비율**을 기기 무관하게 맞춘다. 기준 화면과 같은 기기(예: 튜닝한
-        macOS 1440×900)에서는 (1.0, 1.0)이라 이동량이 종전과 완전히 동일하다. 화면 크기는
-        세션 중 잘 안 바뀌므로 한 번만 조회해 캐싱한다.
-        """
-        if self._screen_scale is None:
-            assert self.sink is not None
-            width, height = self.sink.screen_size()
-            self._screen_scale = (
-                width / CURSOR_REFERENCE_WIDTH,
-                height / CURSOR_REFERENCE_HEIGHT,
-            )
-        return self._screen_scale
 
     def apply(self, events: list[PoseEvent]) -> None:
         """이벤트를 실행한다. 꺼져 있으면 기록만 남기고 아무것도 실행하지 않는다."""
@@ -125,12 +102,12 @@ class PoseControlBridge:
     def _execute(self, event: PoseEvent) -> None:
         assert self.sink is not None
         if event.kind == "move":
-            # 기준 화면 기준 delta를 실기기 해상도 비율로 스케일해 체감 속도를 기기 무관하게
-            # 맞춘다(기준 화면과 같은 기기에선 1.0이라 종전과 동일). 드래그 중이면 sink가
-            # 드래그 이벤트를 보내 창이 실시간으로 따라오게 한다.
-            sx, sy = self._cursor_scale()
+            # delta는 절대 픽셀 이동량이다 — 화면 해상도로 스케일하지 않는다. 같은 손동작은
+            # 어떤 기기·해상도에서도 같은 픽셀 수만큼 커서를 옮긴다("절대 길이" 감도). 체감
+            # 속도는 gain(CURSOR_BASE_GAIN) 하나로만 조절한다. 드래그 중이면 sink가 드래그
+            # 이벤트를 보내 창이 실시간으로 따라오게 한다.
             self.sink.move_cursor(
-                round(event.delta[0] * sx), round(event.delta[1] * sy), dragging=self._dragging
+                round(event.delta[0]), round(event.delta[1]), dragging=self._dragging
             )
         elif event.kind == "click":
             self.sink.click(MouseButton.LEFT)

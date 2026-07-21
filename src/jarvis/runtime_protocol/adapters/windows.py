@@ -79,13 +79,6 @@ class InputSink(Protocol):
         """Move the cursor by a relative delta. ``dragging``이면 드래그로 이동한다."""
         ...
 
-    def screen_size(self) -> tuple[int, int]:
-        """주 디스플레이의 (너비, 높이). 커서 이동을 화면 대비 비율로 정규화하는 데 쓴다.
-
-        move_cursor가 쓰는 좌표계와 같은 단위여야 한다(Windows=픽셀, macOS=points).
-        """
-        ...
-
     def switch_window(self, forward: bool, repeat: int) -> None:
         """Switch between application windows ``repeat`` times.
 
@@ -213,8 +206,6 @@ _VK_TAB = 0x09
 _VK_MENU = 0x12  # ALT
 _VK_SHIFT = 0x10
 _VK_LWIN = 0x5B  # 왼쪽 Windows 키 — Task View(Win+Tab)용
-_SM_CXSCREEN = 0  # GetSystemMetrics: 주 디스플레이 너비(px)
-_SM_CYSCREEN = 1  # 〃 높이(px)
 
 
 class Win32InputSink:
@@ -288,10 +279,6 @@ class Win32InputSink:
         point = ctypes.wintypes.POINT()
         user32.GetCursorPos(ctypes.byref(point))
         user32.SetCursorPos(int(point.x + dx), int(point.y + dy))
-
-    def screen_size(self) -> tuple[int, int]:
-        user32 = self._user32()
-        return user32.GetSystemMetrics(_SM_CXSCREEN), user32.GetSystemMetrics(_SM_CYSCREEN)
 
     def switch_window(self, forward: bool, repeat: int) -> None:
         # Alt+Tab (forward) / Alt+Shift+Tab (backward). Hold Alt for the whole
