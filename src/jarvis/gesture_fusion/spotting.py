@@ -51,20 +51,6 @@ class SpotterConfig:
     """제스처를 "활성"으로 인정할 gesture 분류 확신도 하한. 이 값 미만이면 배경과
     같이 비활성으로 본다(시작 인정 안 함, 진행 중이면 종료 신호로 취급)."""
 
-    max_active_frames: int = 18
-    """ONSET 이후 ACTIVE가 이 프레임 수만큼 이어지면 강제로 ENDING시킨다(0=무제한).
-
-    2026-07-21: 모델의 시간 수용영역(29프레임 ≈ 2.4초 @12fps)이 실제 제스처 길이
-    (실측 전경 제스처 중앙값 9~13, p90 17, 최장 rotate 21프레임)보다 훨씬 길어,
-    동작이 끝난 뒤에도 그 프레임이 window에 남아 모델이 계속 활성으로 예측 → ACTIVE가
-    과도하게 오래 붙는다. 실측 제스처가 대부분 15프레임 안에 끝나므로, 이 캡이
-    ACTIVE 지속을 그 근방으로 바운드한다(기본 18 = p90 17 + 여유 1; 최장 rotate는
-    label이 이미 ONSET에서 lock돼 3프레임 일찍 끊겨도 이벤트는 올바르게 커밋된다).
-
-    캡으로 강제 종료된 직후에는 같은 제스처가 아직 window에 남아 즉시 재발화(machine-
-    gun)할 수 있어, 배경(비활성)을 한 번 확정할 때까지 새 ONSET을 보류한다(아래
-    `_rearm_blocked`). 자연 종료(확신 하락·배경 복귀)에는 보류가 걸리지 않는다."""
-
     background_labels: frozenset[str] = frozenset({DEFAULT_GESTURE_LABELS[0]})
     """"제스처 없음"을 뜻하는 배경 label 집합. 이 중 하나면 비활성으로 본다.
 
@@ -82,11 +68,6 @@ class SpotterConfig:
             0.0 <= self.min_onset_gesture_confidence <= 1.0
         ):
             raise ValueError("min_onset_gesture_confidence must be finite and within [0, 1]")
-        if self.max_active_frames < 0:
-            raise ValueError("max_active_frames must be non-negative (0 disables the cap)")
-        if 0 < self.max_active_frames < 2:
-            # ONSET(1) + 최소 1프레임 ACTIVE가 성립해야 캡이 의미가 있다.
-            raise ValueError("max_active_frames must be 0 or at least 2")
         if not self.background_labels:
             raise ValueError("background_labels must not be empty")
         if any(not label for label in self.background_labels):
@@ -111,14 +92,6 @@ class GestureSpotter:
         self._pending_active: bool | None = None
         self._pending_streak = 0
         self._locked_gesture: str | None = None
-        # ONSET 이후 이어진 활성 프레임 수 — max_active_frames 캡 판정용.
-        self._active_frames = 0
-        # 캡으로 강제 종료된 직후 재발화를 막는 플래그. 배경(비활성)을 한 번 확정하면
-        # 풀린다(_advance). reset()으로도 풀린다.
-        self._rearm_blocked = False
-        # 이번 프레임의 ENDING이 캡에 의한 것인지 — push()가 reset 후 재무장 보류를
-        # 걸지 판단하는 데 쓴다.
-        self._cap_ended = False
 
     @property
     def state(self) -> GesturePhase:
@@ -140,9 +113,6 @@ class GestureSpotter:
         self._pending_active = None
         self._pending_streak = 0
         self._locked_gesture = None
-        self._active_frames = 0
-        self._rearm_blocked = False
-        self._cap_ended = False
 
     def push(
         self, prediction: ModelPrediction | None, timestamp_ms: int, frame_id: int
@@ -181,13 +151,7 @@ class GestureSpotter:
         )
 
         if self._state == GesturePhase.ENDING:
-            cap_ended = self._cap_ended
             self.reset()
-            # 캡으로 강제 종료한 경우, 같은 제스처가 아직 모델 window에 남아 즉시
-            # 재-ONSET(machine-gun)하는 것을 막는다 — 배경(비활성)을 한 번 확정할
-            # 때까지 새 이벤트 시작을 보류한다. 자연 종료는 이미 비활성이므로 보류 불필요.
-            if cap_ended:
-                self._rearm_blocked = True
 
         return estimate
 
@@ -225,37 +189,20 @@ class GestureSpotter:
         if confirmed_active is None:
             return  # 아직 디바운스 미확정 — 상태 유지
 
-        if not confirmed_active:
-            # 배경(비활성)이 확정됐다 — 캡으로 강제 종료된 뒤 걸어둔 재무장 보류를 푼다.
-            self._rearm_blocked = False
-
         if self._state == GesturePhase.IDLE:
-            if confirmed_active and not self._rearm_blocked:
+            if confirmed_active:
                 # 비배경 제스처가 확신을 갖고 지속됨 → 시작. 이 프레임의 label을 lock해
                 # 이벤트 내내 유지한다(도중에 raw 예측이 흔들려도 바뀌지 않음).
                 self._locked_gesture = prediction.gesture
                 self._state = GesturePhase.ONSET
-                self._active_frames = 1
         elif self._state == GesturePhase.ONSET:
             # ONSET은 한 프레임짜리 진입 신호 — 계속 활성이면 ACTIVE로, 아니면 중단.
             if confirmed_active:
                 self._state = GesturePhase.ACTIVE
-                self._active_frames += 1
             else:
                 self._state = GesturePhase.IDLE
                 self._locked_gesture = None
-                self._active_frames = 0
         elif self._state == GesturePhase.ACTIVE:
             # 배경으로 돌아가거나 확신이 떨어져 비활성이 확정되면 제스처 종료.
             if not confirmed_active:
                 self._state = GesturePhase.ENDING  # 이벤트 방출 후 push()가 즉시 reset
-            else:
-                # 활성이 계속되면 지속 프레임을 센다. 캡에 도달하면 강제 종료한다 —
-                # 실제 동작보다 오래 ACTIVE가 붙어 있는 것(모델의 긴 기억)을 끊는다.
-                self._active_frames += 1
-                if (
-                    self._config.max_active_frames > 0
-                    and self._active_frames >= self._config.max_active_frames
-                ):
-                    self._state = GesturePhase.ENDING
-                    self._cap_ended = True
