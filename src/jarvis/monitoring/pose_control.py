@@ -79,6 +79,11 @@ class PoseControlBridge:
         if self._dragging and self.sink is not None:
             self.sink.press(MouseButton.LEFT, down=False)
         self._dragging = False
+        # macOS에서 커서가 하단에 머문 채 제어가 꺼졌을 때 Dock이 노출된 채 남지 않게
+        # 원래(자동숨김)로 복구한다. Windows 등 다른 sink엔 없는 메서드라 있으면 부른다.
+        restore_dock = getattr(self.sink, "restore_dock", None)
+        if callable(restore_dock):
+            restore_dock()
 
     def _describe(self, event: PoseEvent) -> str:
         if event.kind == "move":
