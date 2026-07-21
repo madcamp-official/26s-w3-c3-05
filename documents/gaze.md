@@ -67,20 +67,37 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
   화면 위쪽이 양수가 되도록 수정 완료, yaw·roll 최종 확인 필요)
 - [ ] Gesture·Fusion·Runtime과의 실제 통합(코드 조립은 Runtime composition root 몫)
 - [ ] 환경 변화(조명/안경/거리) 조건에서 실측 Target Selection Accuracy 수집
-- [x] 2단계 물체 등록(중앙점 20초 + 경계 16초) + 중앙점 머리 이동 삼각측량
-  3D 위치·유효 반경 추정
-  (`calibration/triangulation.py`, `target_registration.py`)
+- [x] 2단계 테두리 등록(자세·거리별 20초 + 고개 고정 정밀 경계 16초)
+- [x] 8D target profile(gaze/head/face scale/face center) + Mahalanobis 판정
+- [x] 겹침 시 홍채 settle 방향 tie-break
 - [x] 3D geometry ↔ 각도 모드 통합 classifier(`effective_distance_and_variance`) —
   origin 없거나 깊이 퇴화 시 프레임 단위 폴백
 - [x] 모니터링 앱(`gaze_probe.py`/`app.py`) origin 배선 + 재시작 후 3D geometry 보존
-- [ ] 실제 카메라로 삼각측량 baseline/eigenvalue/residual 임계값 재보정(현재는 합성
-  광선으로만 보정한 값)
 
 ## 이슈 / 의사결정 필요 사항
 
 - head yaw/pitch/roll 부호 규약이 실 카메라와 맞는지 아직 확인되지 않음 — Day 1 통합
   테스트에서 확인되면 여기와 models/README.md를 갱신할 것(있으면 [decisions.md](decisions.md)로 옮기기).
-## Device registration update (2026-07-19)
+## Current deterministic target profile (2026-07-21)
+
+현재 런타임에는 MLP, Ridge, Linear-softmax가 없다. 물체별로 다음 8차원 feature의
+평균·공분산·Mahalanobis threshold만 저장한다.
+
+```text
+[gaze_yaw, gaze_pitch, head_yaw, head_pitch, head_roll,
+ face_scale, face_center_x, face_center_y]
+```
+
+1단계에서는 물체 테두리를 훑으며 얼굴·몸을 대각선과 앞뒤로 움직여 자세·거리·
+화면 내 위치 문맥을 모은다. 2단계에서는 고개를 고정하고 테두리를 다시 한 바퀴
+돌아 최종 area를 확정한다. runtime은 area 안 후보만 만들고 8D profile로 검증·
+정렬한다. area 밖 후보는 profile이 가까워도 항상 `UNKNOWN`이다. 겹침에서는 target
+중심 방향과, 빠른 홍채 이동이 정지할 때 저장한 마지막 이동 방향을 추가 근거로 쓴다.
+
+테두리 ray는 서로 다른 표면점을 향하므로 새 등록에서는 3D 한 점으로 삼각측량하지
+않는다. 기존 JSON의 `position_3d`는 하위 호환으로 읽을 수 있다.
+
+## Historical device registration (superseded on 2026-07-21)
 
 Demo target registration follows README section 7 as two strictly separated phases:
 20 seconds on one center point for MLP/center/3D, followed by 16 seconds tracing
@@ -111,7 +128,7 @@ MVP operating assumptions:
 - `CalibratedGaze` uses a validated residual MLP by default when at least three labeled target directions are available;
   otherwise it falls back to Ridge or the raw geometric vector.
 
-## Residual MLP vector calibration (2026-07-21)
+## Historical residual MLP vector calibration (removed on 2026-07-21)
 
 `src/jarvis/gaze/mlp_calibration.py` implements a NumPy-only `12 → 24 → 12 → 2`
 network. Input is raw yaw/pitch, both iris offsets, head yaw/pitch/roll, face center,
@@ -133,7 +150,7 @@ The debug panel exposes `vector model: mlp/ridge/geometric`, raw yaw/pitch, fina
 yaw/pitch, and whether correction was applied. The checkbox disables correction for
 an immediate A/B comparison without changing or deleting the dataset.
 
-## 3D object position update (2026-07-20)
+## Historical 3D object position update (new registration no longer uses it)
 
 현재 등록 1단계는 중앙의 한 점을 20초 동안 보며 다양한 자세·거리에서 머리
 이동(parallax) 광선을 모아 3D 위치를 삼각측량한다. 2단계 경계 프레임은 서로 다른
@@ -225,36 +242,22 @@ final_pitch_deg =  head_pitch_deg * head_pitch_weight + eye_pitch_offset_deg
 | `iris_jump_threshold` | `0.18` | Frame-to-frame iris-offset jump threshold. |
 | `max_valid_eye_offset` | `0.55` | Reject implausible eye-edge iris offsets. |
 | `tracking_loss_hold_ms` | `800` | Keep last gaze briefly during full face-landmarker dropouts. |
-| `small_motion_deadzone_deg` | `5.0` | Absorb tiny smoothed-gaze changes to reduce jitter. |
+| `small_motion_deadzone_deg` | `1.0` | Absorb only tiny jitter without visually freezing the arrow. |
 
-Debug monitor policy: simple `iris jump` no longer freezes the vector completely; it lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames hold both the previous gaze direction and the complete classifier feature, so head/scale changes during a blink cannot switch the ML target. Eye closure uses an adaptive personal open-eye baseline with reopen hysteresis, not only one absolute threshold.
+Debug monitor policy: simple `iris jump` lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames hold the previous gaze. Each eye has its own adaptive open baseline, and both eyes must indicate closure; one foreshortened eye during a head turn no longer freezes the vector.
 
-### Gaze-first personal target scoring
+### Deterministic 8D target scoring
 
-The per-user Linear-softmax classifier standardizes all six target features, then
-applies explicit priority multipliers before training and inference:
+The traced yaw/pitch area is the eligibility gate. Candidates inside that area are
+validated and ranked with an 8D Mahalanobis profile: gaze yaw/pitch, head yaw/pitch/
+roll, face scale, and normalized face center x/y. Per-feature covariance floors keep
+gaze more discriminative while preventing degree units from erasing scale/location.
+No learned classifier is trained during registration.
 
-| Feature group | Weight | Role |
-| --- | ---: | --- |
-| gaze yaw/pitch | `2.0` | Primary target evidence. |
-| head yaw/pitch/roll | `0.4` | Pose context; it must not overpower matching gaze. |
-| face scale | `0.6` | Camera-distance context. |
-
-Scaling alone does not guarantee the learned model will obey the priority because it
-can compensate with larger head coefficients. After fitting, each class therefore
-caps the effective head coefficient norm at 20% of its gaze coefficient norm. If gaze
-contains too little evidence, confidence falls through to the gaze-area matcher rather
-than allowing head pose to decide alone. Legacy model weights are not mixed with the
-new scale. Existing stored registration
-samples are retrained in memory with the current feature weights when the monitor
-loads. A later registration persists the migrated model.
-
-The old per-frame gaze delta remains available for diagnostics and compatibility,
-but live scoring now derives real time-normalized velocity (deg/s) and acceleration
-(deg/s²). Motion toward a registered target center can multiply both the personal
-classifier score and the area score by up to `1 + 0.35 + 0.15 = 1.50`. Opposite
-motion is not rewarded. Blink, recovery, and tracking-hold frames freeze the motion
-history; intervals over 250ms reset derivatives instead of producing a false spike.
+Overlap intent is armed above the iris start speed, emitted only after speed falls
+below the stop threshold, and retained briefly. Acceleration is diagnostic only:
+during deceleration it points opposite the landing direction and is unsafe as a
+target bonus. Blink, recovery, iris-jump and tracking-loss frames reset settle state.
 
 ### Target matching / UNKNOWN rejection
 
@@ -268,13 +271,11 @@ history; intervals over 250ms reset derivatives instead of producing a false spi
 | `dwell_time_ms` | `3000` | Same target must remain the confident engine result for three continuous seconds before confirmation. |
 | `target_lock_ttl_ms` | `1500` | Gesture-wait/input-stream validity window; replacement candidates do not clear the confirmed target. |
 | `confirmed_unknown_timeout_ms` | `2000` | Release the Gaze confirmed target after two continuous seconds of classifier `UNKNOWN`. |
-| `personal_gaze_feature_weight` | `2.0` | Primary gaze contribution to the personal classifier. |
-| `personal_head_feature_weight` | `0.4` | Secondary head-pose context contribution. |
-| `personal_face_scale_feature_weight` | `0.6` | Camera-distance context contribution. |
-| `target_motion_alignment_weight` | `0.35` | Maximum velocity-direction target bonus. |
-| `target_acceleration_alignment_weight` | `0.15` | Maximum acceleration-direction target bonus. |
-| `gaze_motion_min_speed_deg_s` | `6.0` | Ignore slower motion as jitter. |
-| `gaze_motion_min_acceleration_deg_s2` | `80.0` | Ignore smaller acceleration as jitter. |
+| `target_context_tolerance` | `1.35` | Maximum normalized 8D Mahalanobis distance for an in-area candidate. |
+| `target_settle_alignment_weight` | `0.55` | Maximum overlap bonus in the final iris landing direction. |
+| `gaze_settle_start_speed_deg_s` | `12.0` | Speed that arms eye-movement landing detection. |
+| `gaze_settle_stop_speed_deg_s` | `4.0` | Speed below which the armed movement is considered settled. |
+| `gaze_settle_memory_ms` | `500` | Lifetime of the landing-direction tie-break. |
 | `gaze_motion_max_interval_ms` | `250` | Reset derivatives after longer gaps. |
 
 ### Registration / target profile
@@ -286,12 +287,12 @@ history; intervals over 250ms reset derivatives instead of producing a false spi
 | `registration_max_area_radius_deg` | `6.0` | Runtime cap for edge-loop target area radius, even if an old JSON profile saved a larger area. |
 | `target_area_scale_flex` | `0.25` | Allows the target area radius to flex by ±25% from face-scale changes. If the user is closer than during registration, the apparent target area grows slightly; if farther, it shrinks slightly. |
 
-### 3D registration diagnostics
+### Legacy 3D profile compatibility
 
 | Setting | Current value | Meaning |
 | --- | ---: | --- |
-| `enable_3d_target_matching` | `False` | Default live matching remains angle-profile based for demo stability. 3D diagnostics/records may still be stored. |
-| `require_3d_target_registration` | `False` | If 3D triangulation fails, registration falls back to angle profile. |
+| `enable_3d_target_matching` | `False` | Existing records can still be loaded, but new boundary registration does not create 3D points. |
+| `require_3d_target_registration` | `False` | Must remain false for boundary-tracing registration. |
 | `minimum_triangulation_baseline_mm` | `40.0` | Minimum head-origin movement during registration. |
 | `minimum_triangulation_eigenvalue` | `0.0025` | Minimum gaze-ray direction diversity. |
 | `maximum_triangulation_residual_mm` | `35.0` | Maximum RMS residual between estimated point and gaze rays. |
