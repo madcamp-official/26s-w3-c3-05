@@ -32,6 +32,7 @@ import numpy as np
 import numpy.typing as npt
 
 from jarvis.gesture_fusion.pose_protocol import NONE_POSE, PosePrediction
+from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -55,6 +56,8 @@ RELEASE_FRAMES = 3
 
 # 핀치를 이보다 오래 쥐고 있으면 클릭이 아니라 드래그로 본다.
 CLICK_MAX_MS = 400
+# 직전 클릭과 이 간격 안에 다음 클릭이 나오면 더블클릭으로 승격한다(마우스와 동일 UX).
+DOUBLE_CLICK_MS = 400
 # `fist → open_palm` 전이로 인정하는 최대 간격. 중간의 `none` 구간을 건너뛴다.
 TRANSITION_WINDOW_MS = 800
 # 스크롤 방향을 인정할 최소 수직성(|dy| / 길이). 손가락이 옆을 가리키면 위아래를
@@ -64,12 +67,30 @@ MIN_VERTICALITY = 0.5
 # 커서 이동: index_point(이동) 또는 pinch_index(드래그) 상태에서 손 이동을 커서로 옮긴다.
 # 좌표를 1:1로 대응시키지 않고, 마우스처럼 손 이동 **델타**에 이득을 곱한다.
 CURSOR_POSES = ("index_point", "pinch_index")
-CURSOR_BASE_GAIN = 680.0      # 손 이동(팜 단위) → 픽셀 기본 배율
-CURSOR_ACCEL_GAIN = 1.4       # 속도가 빠를수록 이득이 커진다(정밀↔빠른 이동 양립)
-CURSOR_MAX_ACCEL = 3.5        # 이득 상한(급격한 튐 방지)
-CURSOR_DEADZONE = 0.006       # 이보다 작은 손 떨림은 무시(팜 단위)
+CURSOR_BASE_GAIN = 480.0      # 손 이동(팜 단위) → 픽셀 기본 배율. 낮을수록 미세조정 여지↑
+CURSOR_ACCEL_GAIN = 1.4       # 속도가 빠를수록 이득이 커진다(정밀↔빠른 이동 양립). 클수록 공격적
+CURSOR_MAX_ACCEL = 4.0        # 이득 상한(급격한 튐 방지). 클수록 고속 큰 이동이 시원
+CURSOR_DEADZONE = 0.007       # 이보다 작은 손 떨림은 무시(팜 단위)
 CURSOR_MAX_STEP_PX = 220      # 한 프레임 최대 이동(검출 튐이 커서를 순간이동시키지 않게)
 CURSOR_INVERT_X = True        # 거울 뷰가 아닌 실제 손 기준 — 왼손 이동 = 커서 왼쪽
+CURSOR_Y_GAIN_SCALE = 0.5     # y축 이동 감도 배율. x 대비 세로가 과민해 절반으로 낮춘다
+
+# soft deadzone: 데드존을 하드컷(distance<dz면 0)하지 않고, 넘는 순간 이동량이 0부터
+# 연속으로 살아나게 한다 — `distance - deadzone`만큼만 이동에 반영해 경계의 급점프를 없앤다.
+# palm_scale 평활: 커서 speed 분모(raw palm_scale)의 프레임 지터를 One-Euro로 줄인다
+# (features 모델 경로와 동일 파라미터). 정지 잡음 자체엔 효과가 작지만, 이동 중 카메라
+# 거리 변화·손 각도에 따른 palm_scale 흔들림이 이동량으로 새는 것을 완화한다.
+CURSOR_PALM_SMOOTHING_MIN_CUTOFF = 1.0
+CURSOR_PALM_SMOOTHING_BETA = 0.0
+CURSOR_PALM_SMOOTHING_D_CUTOFF = 1.0
+
+
+def _make_cursor_palm_smoother() -> OneEuroFilter:
+    return OneEuroFilter(
+        min_cutoff=CURSOR_PALM_SMOOTHING_MIN_CUTOFF,
+        beta=CURSOR_PALM_SMOOTHING_BETA,
+        d_cutoff=CURSOR_PALM_SMOOTHING_D_CUTOFF,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +133,7 @@ class PoseStateMachine:
     dwell_ms: dict[str, int] = field(default_factory=lambda: dict(DWELL_MS))
     release_frames: int = RELEASE_FRAMES
     click_max_ms: int = CLICK_MAX_MS
+    double_click_ms: int = DOUBLE_CLICK_MS
     transition_window_ms: int = TRANSITION_WINDOW_MS
 
     # 확정된 현재 상태(진입 조건을 통과한 자세). 없으면 "".
@@ -124,10 +146,15 @@ class PoseStateMachine:
     # `none`이 덮어쓰지 않는 "마지막 명령 자세" — 전이 판정이 빈 구간을 건너뛴다.
     _last_pose: str = ""
     _last_pose_end: int = 0
+    # 직전에 확정된 클릭 시각 — 다음 클릭이 double_click_ms 안이면 더블클릭으로 승격한다.
+    # 첫 클릭이 오인되지 않도록 "아주 오래전"으로 시작한다(0은 작은 timestamp에서 위험).
+    _last_click_ms: int = -1_000_000
     _dragging: bool = False
     # 커서 이동 참조점(이미지 좌표)과 시각 — 델타 계산용. 상태 진입 때 초기화한다.
     _cursor_ref: tuple[float, float] | None = None
     _cursor_ref_ms: int = 0
+    # 커서 speed 분모로 쓰는 palm_scale의 One-Euro 평활기(raw palm_scale 지터 완화).
+    _palm_smoother: OneEuroFilter = field(default_factory=_make_cursor_palm_smoother)
 
     def reset(self) -> None:
         """추적 손실 등으로 이력을 신뢰할 수 없을 때 — 상태를 지어내지 않는다."""
@@ -135,7 +162,9 @@ class PoseStateMachine:
         self._pending = ""
         self._missing = 0
         self._last_pose = ""
+        self._last_click_ms = -1_000_000
         self._dragging = False
+        self._palm_smoother.reset()
 
     def update(
         self,
@@ -152,6 +181,12 @@ class PoseStateMachine:
         `palm_scale`로 나눠 카메라 거리에 무관하게 만든다(멀든 가깝든 같은 손 이동 = 같은
         커서 이동).
         """
+        # palm_scale(커서 speed 분모)을 One-Euro로 평활한다. 손 손실 프레임(palm 없음)엔
+        # 평활기를 리셋해 재개 시 옛 상태가 새 값에 섞이지 않게 한다.
+        if palm_scale is not None and palm_scale > 0.0:
+            palm_scale = float(self._palm_smoother.filter(palm_scale, timestamp_ms))
+        else:
+            self._palm_smoother.reset()
         self._cursor_ctx = (reference_point, palm_scale)
         # 규칙 2: 믿을 수 없는 판정은 상태를 바꾸지도 끊지도 않는다.
         if not prediction.trusted:
@@ -181,13 +216,17 @@ class PoseStateMachine:
         self._cursor_ref, prev_ms = reference_point, self._cursor_ref_ms
         self._cursor_ref_ms = timestamp_ms
         distance = math.hypot(dx, dy)
-        if distance < CURSOR_DEADZONE:  # 정지 시 손 떨림 무시
+        if distance <= CURSOR_DEADZONE:  # 정지 시 손 떨림 무시
             return None
+        # soft deadzone: 데드존만큼 뺀 이동량만 반영해 경계에서 0부터 연속으로 살아나게
+        # 한다(하드컷의 급점프 제거). 방향은 유지하고 크기만 (distance-dz)/distance로 줄인다.
+        soft = (distance - CURSOR_DEADZONE) / distance
+        dx, dy = dx * soft, dy * soft
         dt_s = max((timestamp_ms - prev_ms) / 1000.0, 1e-3)
         speed = distance / dt_s
         gain = CURSOR_BASE_GAIN * min(CURSOR_MAX_ACCEL, 1.0 + CURSOR_ACCEL_GAIN * speed)
         px = (-dx if CURSOR_INVERT_X else dx) * gain
-        py = dy * gain
+        py = dy * gain * CURSOR_Y_GAIN_SCALE
         step = math.hypot(px, py)
         if step > CURSOR_MAX_STEP_PX:  # 검출 튐 방지
             scale = CURSOR_MAX_STEP_PX / step
@@ -245,7 +284,14 @@ class PoseStateMachine:
             if self._dragging:
                 events.append(PoseEvent("drag_end", timestamp_ms))
             elif held <= self.click_max_ms:
-                events.append(PoseEvent("click", timestamp_ms))
+                # 직전 클릭과 간격이 짧으면 더블클릭으로 승격한다. 첫 클릭은 이미
+                # 나갔지만(마우스와 동일) 두 번째를 double_click으로 낸다.
+                if timestamp_ms - self._last_click_ms <= self.double_click_ms:
+                    events.append(PoseEvent("double_click", timestamp_ms))
+                    self._last_click_ms = -1_000_000  # 3연속 핀치가 또 더블클릭 되지 않게 초기화
+                else:
+                    events.append(PoseEvent("click", timestamp_ms))
+                    self._last_click_ms = timestamp_ms
         elif self.state == "pinch_middle" and held <= self.click_max_ms:
             events.append(PoseEvent("right_click", timestamp_ms))
         if self.state:
