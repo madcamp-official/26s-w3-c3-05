@@ -73,6 +73,7 @@ from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.lock import GazeLockState
 from jarvis.gaze.smoothing import SmoothedGaze
+from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
@@ -93,10 +94,10 @@ from jarvis.monitoring.overlay import (
     draw_hud,
     placeholder_frame,
     render_normalized_hand,
-    render_normalized_hand_depth,
     render_vector,
 )
 from jarvis.monitoring.pipeline_status import StageState, StageStatus, detect_pipeline_status
+from jarvis.monitoring.pose_control import PoseControlBridge, default_input_sink
 from jarvis.runtime_protocol.config import read_env_file
 from jarvis.runtime_protocol.telemetry.latency import LatencyAggregator, LatencyStage
 
@@ -472,6 +473,7 @@ class HandPanel(QScrollArea):
         *,
         smoothing: bool = True,
         on_smoothing_toggled: Callable[[bool], None] | None = None,
+        on_control_toggled: Callable[[bool], None] | None = None,
     ) -> None:
         super().__init__()
         self.setWidgetResizable(True)
@@ -516,15 +518,16 @@ class HandPanel(QScrollArea):
             self._smooth_toggle.toggled.connect(on_smoothing_toggled)
         layout.addWidget(self._smooth_toggle)
 
-        # Toggle: 2D 뷰(모델이 실제로 보는 것) vs z 부활 뷰(표시 전용 비교). 모델 경로는
-        # 어느 쪽이든 2D 그대로다 — 이 버튼은 캔버스 렌더링만 바꾼다. 손바닥이 카메라와
-        # 평행해지는 회전(팔뚝축 회전)에서 z가 담는 신호를 눈으로 비교하기 위한 것.
-        self._show_depth = False
-        self._depth_toggle = QCheckBox("z축(깊이) 부활 뷰 · 표시 전용, 모델은 2D 그대로")
-        self._depth_toggle.setChecked(False)
-        self._depth_toggle.toggled.connect(self._on_depth_toggled)
-        layout.addWidget(self._depth_toggle)
-        self._last_snapshot: HandSnapshot | None = None
+        # 실제 OS 제어 스위치. 이 경로는 사용자의 진짜 데스크톱을 클릭하고 스크롤한다.
+        self._control_toggle = QCheckBox("🖱 손동작으로 컴퓨터 제어 (실제 클릭·스크롤이 실행됩니다)")
+        self._control_toggle.setChecked(True)
+        self._control_toggle.setStyleSheet("color:#f0b429; font-weight:600;")
+        if on_control_toggled is not None:
+            self._control_toggle.toggled.connect(on_control_toggled)
+        layout.addWidget(self._control_toggle)
+        self._control_status = QLabel("제어 꺼짐")
+        self._control_status.setStyleSheet(_MONO)
+        layout.addWidget(self._control_status)
 
         # The one thing that must not be misread: recognition is OFF (untrained).
         banner = QLabel("⚠ 제스처 인식 비활성\n" + gesture_status)
@@ -571,18 +574,7 @@ class HandPanel(QScrollArea):
         outer.addStretch(1)
         self.setWidget(body)
 
-    def _on_depth_toggled(self, checked: bool) -> None:
-        """Switch the canvas between the 2D model-input view and the z-revived view.
-
-        Display-only — the model path is 2D regardless. Re-renders the last frame so
-        the toggle responds immediately instead of waiting for the next webcam frame.
-        """
-        self._show_depth = checked
-        if self._last_snapshot is not None:
-            self.update_snapshot(self._last_snapshot)
-
-    def update_snapshot(self, s: HandSnapshot) -> None:
-        self._last_snapshot = s
+    def update_snapshot(self, s: HandSnapshot, control_action: str = "") -> None:
         self._status.setText(f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame")
         self._status.setStyleSheet("color:#3fb950;" if s.hand_detected else "color:#8b949e;")
         self._detected.setText(
@@ -596,33 +588,51 @@ class HandPanel(QScrollArea):
         # Render the actual model input: smoothed (real) or raw normalized per toggle.
         points = s.model_points if s.smoothed else s.model_points_raw
         # Mirror to match the selfie (거울상) webcam view — display only; points unchanged.
-        if self._show_depth and s.model_points_z is not None:
-            # z 부활 비교 뷰 — 깊이 채색 + 상단(x·z) 투영. z는 스무딩 경로에 없어 raw
-            # 정규화 x·y와 짝짓는다(모델 입력이 아니라 진단 뷰라 문제없다).
-            canvas = render_normalized_hand_depth(
-                s.model_points_raw, s.model_points_z, mirror=True
-            )
-        else:
-            canvas = render_normalized_hand(points, smoothed=s.smoothed, mirror=True)
+        canvas = render_normalized_hand(points, smoothed=s.smoothed, mirror=True)
         rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         image = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
         self._model_canvas.setPixmap(QPixmap.fromImage(image))
 
+        enabled = self._control_toggle.isChecked()
+        self._control_status.setText(
+            ("제어 켜짐 · " if enabled else "제어 꺼짐 · ") + (control_action or "대기")
+        )
+        self._control_status.setStyleSheet(_MONO + ("color:#3fb950;" if enabled else ""))
         if s.hand_detected:
             mode = "스무딩됨 (모델 실제 입력)" if s.smoothed else "raw (스무딩 꺼짐)"
-            text = (
+            # 기울기 판정도 자세별 한계를 따른다 — 전역 한계(20°)를 보여주면 40°까지
+            # 허용되는 two_fingers에 "손을 세우세요"가 떠 오버레이와 어긋난다.
+            if s.palm_tilt_degrees is None:
+                tilt = "?  (소스가 z를 내지 않아 게이트 없음)"
+            elif s.pose is not None and s.pose.label:
+                limit = DEFAULT_POSE_TILT_LIMITS.get(s.pose.label)
+                allowed = "허용 ?" if limit is None else f"허용 {limit:.0f}°"
+                verdict = "정상" if s.pose.trusted else "판정 거부 — 손을 세우세요"
+                tilt = f"{s.palm_tilt_degrees:5.1f}°  / {allowed} ({s.pose.label})  {verdict}"
+            else:
+                tilt = f"{s.palm_tilt_degrees:5.1f}°  " + (
+                    "판정 거부 — 손을 세우세요" if s.palm_tilted else "정상"
+                )
+            if s.pose is None:
+                pose_line = "-"
+            elif s.pose.trusted:
+                pose_line = f"{s.pose.label}  ({s.pose.confidence:.0%})"
+            else:
+                pose_line = f"거부 — {s.pose.reason}" + (
+                    f"  [{s.pose.label} {s.pose.confidence:.0%}]" if s.pose.label else ""
+                )
+            self._numeric.setText(
                 f"모델 입력   : {mode}\n"
+                f"자세 판정   : {pose_line}\n"
+                f"확정 상태   : {s.pose_state or '—'}"
+                + (f"   → {', '.join(e.kind for e in s.pose_events)}" if s.pose_events else "")
+                + "\n"
+                f"손 기울기   : {tilt}\n"
                 f"palm scale  : {s.palm_scale:.4f}\n"
                 f"landmarks   : {s.landmark_count} points (정규화·손목 원점)\n"
                 f"handedness  : {s.handedness}  score {s.handedness_score:.3f}"
             )
-            if self._show_depth and s.model_points_z is not None:
-                # 깊이 스프레드 = 이번 프레임 z의 max−min(palm-width). 손바닥이 카메라와
-                # 평행할수록(회전) 커진다 — z 신호가 실제로 얼마나 있는지 보여주는 단일 수치.
-                spread = max(s.model_points_z) - min(s.model_points_z)
-                text += f"\n깊이 스프레드: {spread:.3f} palm-width (z max−min, 표시 전용)"
-            self._numeric.setText(text)
         else:
             self._numeric.setText("손 없음 (추적 손실)")
 
@@ -787,6 +797,8 @@ class VideoView(QLabel):
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
         self._hand: HandSnapshot | None = None
+        self._control_action = ""
+        self._control_enabled = False
         self._show_target_heatmap = False
         self._show_placeholder("카메라 시작 중…")
 
@@ -798,6 +810,11 @@ class VideoView(QLabel):
 
     def set_hand(self, snapshot: HandSnapshot) -> None:
         self._hand = snapshot
+
+    def set_control(self, action: str, enabled: bool) -> None:
+        """실시간 탭에도 제어 상태를 띄운다 — 3번 탭에만 있으면 자세를 보며 못 고친다."""
+        self._control_action = action
+        self._control_enabled = enabled
 
     def _show_placeholder(self, text: str) -> None:
         self._render(placeholder_frame(text=text))
@@ -819,7 +836,13 @@ class VideoView(QLabel):
                 draw_target_heatmap(display, self._gaze, mirror=True)
             draw_gaze_overlay(display, self._gaze, mirror=True)
         if self._hand is not None:
-            draw_hand_overlay(display, self._hand, mirror=True)
+            draw_hand_overlay(
+                display,
+                self._hand,
+                mirror=True,
+                control_action=self._control_action,
+                control_enabled=self._control_enabled,
+            )
         self._render(display)
 
     def _current_fps(self) -> float:
@@ -1140,7 +1163,11 @@ class MainWindow(QMainWindow):
             config=self._gaze_config,
             calibration_model=self._active_calibration_model,
         )
-        self._hand_probe = HandProbe(model_path=self._hand_model_path)
+        self._hand_probe = HandProbe(
+            model_path=self._hand_model_path, pose_model_path=_default_pose_model_path()
+        )
+        # 판정과 실행의 분리: 상태기계는 순수 로직이고, 실제 OS 입력은 이 브리지만 한다.
+        self._pose_control = PoseControlBridge(sink=default_input_sink(), enabled=True)
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
@@ -1196,6 +1223,12 @@ class MainWindow(QMainWindow):
     def _build_live_tab(self) -> QWidget:
         self._video = VideoView()
         self._sidebar = GestureSidebar(self._gesture_source)
+        # 손 추적 탭과 상태를 공유하는 제어 토글 — 자세를 취하며 보는 화면이 실시간
+        # 탭이라 여기서도 켜고 끌 수 있어야 한다.
+        self._control_toggle_live = QCheckBox("🖱 손동작으로 컴퓨터 제어 (실제 클릭·스크롤이 실행됩니다)")
+        self._control_toggle_live.setChecked(True)
+        self._control_toggle_live.setStyleSheet("color:#f0b429; font-weight:600;")
+        self._control_toggle_live.toggled.connect(self._on_control_toggled_live)
         top = QSplitter(Qt.Orientation.Horizontal)
         top.addWidget(self._video)
         top.addWidget(self._sidebar)
@@ -1210,6 +1243,7 @@ class MainWindow(QMainWindow):
 
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.addWidget(self._control_toggle_live)
         layout.addWidget(split)
         self._sample_button = QPushButton()
         self._sample_button.clicked.connect(self._save_gaze_sample)
@@ -1269,6 +1303,7 @@ class MainWindow(QMainWindow):
             self._hand_probe.gesture_recognition_status,
             smoothing=self._hand_probe.smoothing,
             on_smoothing_toggled=self._hand_probe.set_smoothing,
+            on_control_toggled=self._set_control_enabled,
         )
         return self._hand_panel
 
@@ -1303,6 +1338,30 @@ class MainWindow(QMainWindow):
         self._finetune_panel.set_recording(True)
         self._finetune_panel.set_status(f"녹화 중… [{gesture}] 0프레임")
         self._log.info(f"파인튜닝 녹화 시작: person={person} 동작={gesture}")
+
+    def _on_control_toggled_live(self, enabled: bool) -> None:
+        """실시간 탭 토글 → 손 추적 탭 토글과 상태를 맞춘다(무한 재귀 없이)."""
+        panel = self._hand_panel._control_toggle
+        if panel.isChecked() != enabled:
+            panel.blockSignals(True)
+            panel.setChecked(enabled)
+            panel.blockSignals(False)
+        self._set_control_enabled(enabled)
+
+    def _set_control_enabled(self, enabled: bool) -> None:
+        """실제 OS 제어를 켜고 끈다. 끌 때는 눌린 버튼을 반드시 놓는다."""
+        # 손 추적 탭에서 토글되면 실시간 탭 토글도 맞춘다.
+        if hasattr(self, "_control_toggle_live") and self._control_toggle_live.isChecked() != enabled:
+            self._control_toggle_live.blockSignals(True)
+            self._control_toggle_live.setChecked(enabled)
+            self._control_toggle_live.blockSignals(False)
+        if not enabled:
+            self._pose_control.release()  # 드래그 중 껐을 때 버튼이 눌린 채 남지 않게
+        self._pose_control.enabled = enabled
+        if enabled and self._pose_control.sink is None:
+            self._log.warn("이 플랫폼에는 입력 어댑터가 없어 제어를 실행할 수 없습니다")
+        else:
+            self._log.info(f"손동작 제어 {'켜짐' if enabled else '꺼짐'}")
 
     def _build_pipeline_tab(self) -> QWidget:
         body = QWidget()
@@ -1640,7 +1699,12 @@ class MainWindow(QMainWindow):
     def _on_hand(self, snapshot: object) -> None:
         assert isinstance(snapshot, HandSnapshot)
         self._video.set_hand(snapshot)
-        self._hand_panel.update_snapshot(snapshot)
+        # 손을 놓치면 드래그가 눌린 채 남지 않게 먼저 정리한다.
+        if not snapshot.hand_detected:
+            self._pose_control.release()
+        self._pose_control.apply(list(snapshot.pose_events))
+        self._video.set_control(self._pose_control.last_action, self._pose_control.enabled)
+        self._hand_panel.update_snapshot(snapshot, self._pose_control.last_action)
         self._sidebar.set_hand_status(snapshot)
         self._finetune_panel.video.set_hand(snapshot)
         # 학습된 모델이 로드됐으면 HandProbe의 관측값을 그대로 인식 파이프라인에 흘린다
@@ -1674,6 +1738,17 @@ class MainWindow(QMainWindow):
         self._messages.refresh()
         self._latency_panel.refresh()
 
+    def keyPressEvent(self, event: object) -> None:  # noqa: N802 - Qt override name
+        """ESC로 창을 닫는다 — 카메라 정리는 closeEvent가 맡는다.
+
+        디버깅 툴은 자세를 바꿔가며 반복해서 띄웠다 닫는 도구라, 창 버튼까지 마우스를
+        옮기지 않고 닫을 수 있어야 한다.
+        """
+        if event.key() == Qt.Key.Key_Escape:  # type: ignore[attr-defined]
+            self.close()
+            return
+        super().keyPressEvent(event)  # type: ignore[arg-type]
+
     def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt override name
         if self._camera is not None:
             self._camera.stop()
@@ -1692,6 +1767,11 @@ def _default_hand_model_path() -> Path | None:
 
 def _default_models_dir() -> Path:
     return Path("models")
+
+
+def _default_pose_model_path() -> Path:
+    """`training/train_pose.py`의 기본 산출물 경로. 없으면 프로브가 사유를 표시한다."""
+    return Path("models/hand_pose_classifier.pt")
 
 
 def _default_profiles_path() -> Path:

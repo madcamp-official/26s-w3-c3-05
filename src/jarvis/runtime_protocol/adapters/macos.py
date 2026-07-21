@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from jarvis.runtime_protocol.adapters.windows import InputKey
+from jarvis.runtime_protocol.adapters.windows import InputKey, MouseButton
 
 # NX_KEYTYPE_* — macOS 시스템 정의 미디어 키 코드(IOKit/hidsystem/ev_keymap.h).
 _NX_KEYTYPE = {
@@ -41,6 +41,7 @@ _SCROLL_UNIT_LINE = 1
 _KEYCODE_TAB = 0x30
 _KEYCODE_COMMAND = 0x37
 _KEYCODE_SHIFT = 0x38
+_KEYCODE_F11 = 0x67  # 바탕화면 표시
 
 
 class MacOSInputSink:
@@ -56,6 +57,23 @@ class MacOSInputSink:
 
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
+    def press(self, button: MouseButton, *, down: bool) -> None:
+        """버튼 상태를 바꾼다. 드래그는 누른 채 이동해야 해서 click과 분리돼 있다."""
+        import Quartz
+
+        if button is MouseButton.RIGHT:
+            event_type = Quartz.kCGEventRightMouseDown if down else Quartz.kCGEventRightMouseUp
+            mouse_button = Quartz.kCGMouseButtonRight
+        else:
+            event_type = Quartz.kCGEventLeftMouseDown if down else Quartz.kCGEventLeftMouseUp
+            mouse_button = Quartz.kCGMouseButtonLeft
+        location = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+        self._post(Quartz.CGEventCreateMouseEvent(None, event_type, location, mouse_button))
+
+    def click(self, button: MouseButton) -> None:
+        self.press(button, down=True)
+        self.press(button, down=False)
+
     def scroll(self, ticks: int) -> None:
         import Quartz
 
@@ -65,6 +83,22 @@ class MacOSInputSink:
         self._post(event)
 
     def tap_key(self, key: InputKey) -> None:
+        """키 하나를 누름→뗌으로 전송한다.
+
+        F11(바탕화면) 같은 표준 키는 일반 키보드 이벤트로, 볼륨·재생 같은 미디어 키는
+        시스템 정의 이벤트로 보낸다 — 미디어 키는 표준 keycode 경로로는 OS가 인식하지
+        않기 때문에 경로가 갈린다.
+        """
+        if key is InputKey.SHOW_DESKTOP:
+            import Quartz
+
+            for key_down in (True, False):
+                event = Quartz.CGEventCreateKeyboardEvent(None, _KEYCODE_F11, key_down)
+                self._post(event)
+            return
+        self._tap_media_key(key)
+
+    def _tap_media_key(self, key: InputKey) -> None:
         """미디어 키 하나를 누름→뗌으로 전송한다.
 
         표준 키보드 keycode가 아니라 macOS의 "시스템 정의" 이벤트(`NSEvent.
@@ -83,18 +117,21 @@ class MacOSInputSink:
             )
             self._post(event.CGEvent())
 
-    def move_cursor(self, dx: int, dy: int) -> None:
-        """현재 커서 위치에서 상대 이동(Win32의 `MOUSEEVENTF_MOVE`와 같은 의미).
+    def move_cursor(self, dx: int, dy: int, *, dragging: bool = False) -> None:
+        """현재 커서 위치에서 상대 이동. `dragging`이면 드래그 이벤트를 보낸다.
 
-        CGEvent의 마우스 이동은 절대좌표만 받으므로, 현재 위치를 읽어 델타를
-        더한 뒤 그 절대좌표로 이동 이벤트를 만든다.
+        CGEvent의 마우스 이동은 절대좌표만 받으므로, 현재 위치를 읽어 델타를 더한 뒤
+        그 절대좌표로 이벤트를 만든다. **드래그 중에는 `MouseMoved`가 아니라
+        `LeftMouseDragged`를 보내야** 창·선택 영역이 실시간으로 따라온다 — MouseMoved만
+        보내면 버튼을 뗄 때까지 대상이 안 움직이고 최종 위치로만 튄다.
         """
         import Quartz
 
         current = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
         target = (current.x + dx, current.y + dy)
+        event_type = Quartz.kCGEventLeftMouseDragged if dragging else Quartz.kCGEventMouseMoved
         event = Quartz.CGEventCreateMouseEvent(
-            None, Quartz.kCGEventMouseMoved, target, Quartz.kCGMouseButtonLeft
+            None, event_type, target, Quartz.kCGMouseButtonLeft
         )
         self._post(event)
 

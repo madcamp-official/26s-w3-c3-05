@@ -60,10 +60,19 @@ class RawHandLandmarks:
     handedness: str
     detection_confidence: float
     handedness_score: float
+    # 손바닥 축이 이미지 평면과 이루는 각(도). z가 있어야 계산되므로 **소스가 채운다**
+    # — 여기 `points`는 2D라 이 값을 되계산할 수 없다. z를 좌표로 쓰지 않는다는 결정
+    # (LANDMARK_DIMS=2)은 그대로 두고, 화면 밖 회전이라는 z만 아는 정보 하나만 각도로
+    # 요약해 넘긴다. z를 못 내는 소스는 None을 두며, 그때 게이트는 적용되지 않는다.
+    palm_tilt_degrees: float | None = None
 
     def __post_init__(self) -> None:
         if self.timestamp_ms < 0 or self.frame_id < 0:
             raise ValueError("timestamp_ms and frame_id must be non-negative")
+        if self.palm_tilt_degrees is not None and (
+            not math.isfinite(self.palm_tilt_degrees) or not 0.0 <= self.palm_tilt_degrees <= 90.0
+        ):
+            raise ValueError("palm_tilt_degrees must be finite and within [0, 90]")
         if self.points.shape != (HAND_LANDMARK_COUNT, LANDMARK_DIMS):
             raise ValueError(
                 f"points must have shape ({HAND_LANDMARK_COUNT}, {LANDMARK_DIMS}), got {self.points.shape}"
@@ -113,6 +122,16 @@ class HandObservation:
     wrist_position: FloatArray = field(
         default_factory=lambda: np.zeros(LANDMARK_DIMS, dtype=np.float64)
     )
+    # 소스가 보고한 손바닥 기울기(도). None이면 소스가 z를 못 내 게이트를 걸 수 없다.
+    palm_tilt_degrees: float | None = None
+
+    @property
+    def palm_tilted(self) -> bool:
+        """이 관측값이 기울기 게이트에 걸리는가 — `DEFAULT_GESTURE_CONFIG` 기준.
+
+        다른 임계로 판단하려면 `is_palm_tilted(observation, config)`를 쓴다.
+        """
+        return is_palm_tilted(self, DEFAULT_GESTURE_CONFIG)
 
     def __post_init__(self) -> None:
         if self.timestamp_ms < 0 or self.frame_id < 0:
@@ -135,6 +154,52 @@ class HandObservation:
             raise ValueError("detection_confidence must be finite and within [0, 1]")
         if not math.isfinite(self.handedness_score) or not 0.0 <= self.handedness_score <= 1.0:
             raise ValueError("handedness_score must be finite and within [0, 1]")
+        if self.palm_tilt_degrees is not None and (
+            not math.isfinite(self.palm_tilt_degrees) or not 0.0 <= self.palm_tilt_degrees <= 90.0
+        ):
+            raise ValueError("palm_tilt_degrees must be finite and within [0, 90]")
+
+
+def palm_tilt_degrees(
+    points_3d: FloatArray,
+    config: GestureConfig = DEFAULT_GESTURE_CONFIG,
+) -> float | None:
+    """손바닥 축이 이미지 평면과 이루는 각(도)을 (x, y, z) 랜드마크에서 계산한다.
+
+    손바닥 축 = `palm_scale_root_index` → `palm_scale_tip_index`(기본: 손목→중지 MCP).
+    2D 길이 / 3D 길이 = cos(기울기각)이므로 arccos로 각을 얻는다. 0°는 손바닥 축이
+    화면과 나란한 상태, 90°는 카메라를 정면으로 겨눈 상태다.
+
+    **z를 좌표로 쓰는 것이 아니다.** z는 노이즈가 커 좌표에서 뺐지만(LANDMARK_DIMS=2),
+    화면 밖 회전은 원리적으로 z에만 있는 정보다. 여기서는 각도 하나로 요약해 굵은 임계
+    판정에만 쓰므로, 좌표로 쓸 때만큼 노이즈에 민감하지 않다.
+
+    퇴화한 입력(길이 0)에서는 각을 정의할 수 없어 `None`을 반환한다 — 0°로 지어내면
+    기울어진 손이 게이트를 통과해 버린다.
+    """
+    if points_3d.shape != (HAND_LANDMARK_COUNT, 3) or not np.all(np.isfinite(points_3d)):
+        return None
+    axis = points_3d[config.palm_scale_tip_index] - points_3d[config.palm_scale_root_index]
+    length_3d = float(np.linalg.norm(axis))
+    length_2d = float(np.linalg.norm(axis[:2]))
+    if not math.isfinite(length_3d) or length_3d < config.min_palm_scale:
+        return None
+    return float(math.degrees(math.acos(min(length_2d / length_3d, 1.0))))
+
+
+def is_palm_tilted(
+    observation: HandObservation,
+    config: GestureConfig = DEFAULT_GESTURE_CONFIG,
+) -> bool:
+    """자세 판정을 거부해야 할 만큼 손이 기울었는가.
+
+    기울기를 모르면(소스가 z를 못 냄) **거부하지 않는다** — 알 수 없는 것을 위험으로
+    간주해 전부 막으면 z 없는 소스에서 시스템이 통째로 멈춘다. 게이트가 없는 것과 같은
+    동작이 되며, 그 사실은 `palm_tilt_degrees is None`으로 상위 계층에 드러나 있다.
+    """
+    if config.max_palm_tilt_degrees <= 0.0 or observation.palm_tilt_degrees is None:
+        return False
+    return observation.palm_tilt_degrees > config.max_palm_tilt_degrees
 
 
 def _lost_tracking_observation(timestamp_ms: int, frame_id: int) -> HandObservation:
@@ -191,6 +256,7 @@ def normalize_hand(
         handedness_score=raw.handedness_score,
         hand_detected=True,
         wrist_position=wrist_position.astype(np.float64, copy=False),
+        palm_tilt_degrees=raw.palm_tilt_degrees,
     )
 
 

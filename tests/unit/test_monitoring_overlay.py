@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -23,7 +25,9 @@ from jarvis.monitoring.overlay import (  # noqa: E402
 )
 
 
-def _hand_snapshot(*, detected: bool) -> HandSnapshot:
+def _hand_snapshot(
+    *, detected: bool, tilt: float | None = 5.0, tilted: bool = False
+) -> HandSnapshot:
     points = tuple((0.4 + 0.01 * i, 0.4 + 0.01 * i) for i in range(21)) if detected else None
     model = tuple((0.1 * i - 1.0, 0.1 * i - 1.0) for i in range(21)) if detected else None
     return HandSnapshot(
@@ -42,6 +46,8 @@ def _hand_snapshot(*, detected: bool) -> HandSnapshot:
         smoothed=True,
         wrist_velocity=(1.5, -0.5) if detected else None,
         wrist_acceleration=(0.2, 0.1) if detected else None,
+        palm_tilt_degrees=tilt if detected else None,
+        palm_tilted=tilted if detected else False,
     )
 
 
@@ -189,40 +195,6 @@ def test_render_normalized_hand_handles_no_hand() -> None:
     assert canvas.shape == (120, 120, 3)
 
 
-def test_render_normalized_hand_depth_draws_skeleton() -> None:
-    from jarvis.monitoring.overlay import render_normalized_hand_depth
-
-    points = tuple((0.1 * i - 1.0, 0.05 * i) for i in range(21))
-    depths = tuple(0.1 * i - 1.0 for i in range(21))
-    canvas = render_normalized_hand_depth(points, depths, size=200)
-    assert canvas.shape == (200, 200, 3)
-    assert canvas.any()
-
-
-def test_render_normalized_hand_depth_handles_missing_depth() -> None:
-    """z가 없거나(추적 손실) 길이가 안 맞으면 빈 캔버스로 물러난다 — 지어내지 않는다."""
-    from jarvis.monitoring.overlay import render_normalized_hand_depth
-
-    points = tuple((0.1 * i - 1.0, 0.05 * i) for i in range(21))
-    assert render_normalized_hand_depth(points, None, size=120).shape == (120, 120, 3)
-    assert render_normalized_hand_depth(None, None, size=120).shape == (120, 120, 3)
-    # 길이 불일치도 빈 캔버스
-    assert render_normalized_hand_depth(points, (0.0, 1.0), size=120).shape == (120, 120, 3)
-
-
-def test_render_normalized_hand_depth_colors_near_and_far_differently() -> None:
-    """가까운(z<0) 관절과 먼(z>0) 관절이 다른 색으로 그려져야 한다 — z 신호의 시각화."""
-    from jarvis.monitoring.overlay import _depth_color
-
-    near = _depth_color(-1.0, 1.0)
-    far = _depth_color(1.0, 1.0)
-    neutral = _depth_color(0.0, 1.0)
-    assert near != far
-    assert near[2] > near[0]  # 가까움 = 따뜻한(빨강 우세, BGR의 R)
-    assert far[0] > far[2]  # 멂 = 차가운(파랑 우세, BGR의 B)
-    assert neutral == (235, 235, 235)
-
-
 def test_render_normalized_hand_is_not_vertically_flipped() -> None:
     """Fingers-up (negative y in image convention) must draw ABOVE the wrist.
 
@@ -308,3 +280,53 @@ def test_placeholder_frame_shape_and_content() -> None:
     assert frame.shape == (240, 320, 3)
     assert frame.dtype == np.uint8
     assert frame.any()  # not all black — has text and background
+
+
+def test_tilt_gate_state_is_visible_on_overlay() -> None:
+    """게이트에 걸린 프레임은 화면이 눈에 띄게 달라져야 한다.
+
+    거부를 조용히 무시하면 사용자는 왜 반응이 없는지 알 수 없어 손을 세울 기회조차
+    얻지 못한다. 거부 표시(붉은 테두리 + 안내 문구)가 실제로 픽셀을 바꾸는지 본다.
+    """
+    ok = draw_hand_overlay(placeholder_frame(), _hand_snapshot(detected=True, tilt=5.0))
+    rejected = draw_hand_overlay(
+        placeholder_frame(), _hand_snapshot(detected=True, tilt=42.0, tilted=True)
+    )
+    assert not np.array_equal(ok, rejected)
+
+
+def test_unknown_tilt_renders_without_crashing() -> None:
+    """z를 못 내는 소스(각도 None)에서도 오버레이가 그려진다 — 게이트만 없을 뿐."""
+    frame = draw_hand_overlay(
+        placeholder_frame(), _hand_snapshot(detected=True, tilt=None)
+    )
+    assert frame is not None
+
+
+def test_per_class_tilt_limit_overrides_global_gate() -> None:
+    """자세별 한계가 전역 한계를 이긴다.
+
+    two_fingers는 40°까지 허용되는데 전역 게이트는 20°다. 전역 게이트를 그대로
+    보여주면 실제로는 허용된 자세에 "손을 세우세요"가 떠 사용자가 혼란스러워진다
+    (실사용에서 발견: 스크롤 자세가 35°에서 거부로 표시됨).
+    """
+    from jarvis.gesture_fusion.pose_protocol import PosePrediction
+
+    trusted = PosePrediction(
+        label="two_fingers", confidence=0.98, trusted=True, palm_tilt_degrees=35.0
+    )
+    snapshot = dataclasses.replace(
+        _hand_snapshot(detected=True, tilt=35.0, tilted=True), pose=trusted
+    )
+    allowed = draw_hand_overlay(placeholder_frame(), snapshot)
+
+    rejected_pose = PosePrediction(
+        label="index_point", confidence=0.71, trusted=False,
+        reason="기울기 35° > index_point 허용 20°", palm_tilt_degrees=35.0,
+    )
+    rejected = draw_hand_overlay(
+        placeholder_frame(),
+        dataclasses.replace(_hand_snapshot(detected=True, tilt=35.0, tilted=True), pose=rejected_pose),
+    )
+    # 같은 기울기·같은 전역 게이트 상태인데 자세에 따라 화면이 달라져야 한다.
+    assert not np.array_equal(allowed, rejected)

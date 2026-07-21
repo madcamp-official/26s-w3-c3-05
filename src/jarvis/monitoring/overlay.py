@@ -75,20 +75,30 @@ def draw_hud(frame: Frame, lines: list[str], *, recording: bool = True) -> Frame
     return frame
 
 
-def _text_block(frame: Frame, lines: list[tuple[str, tuple[int, int, int]]], origin: tuple[int, int]) -> None:
-    """Draw colored text lines with a translucent backing at ``origin`` (top-left)."""
+def _text_block(
+    frame: Frame,
+    lines: list[tuple[str, tuple[int, int, int]]],
+    origin: tuple[int, int],
+    scale: float = 0.48,
+) -> None:
+    """Draw colored text lines with a translucent backing at ``origin`` (top-left).
+
+    ``scale``을 키우면 글자와 배경 상자가 함께 커진다 — 실시간 탭은 멀리서 보며
+    자세를 취하는 화면이라 기본보다 크게 그린다.
+    """
     if not lines:
         return
     x, y = origin
-    line_h = 20
-    width = 8 + max(len(t) for t, _ in lines) * 10
+    line_h = int(20 * scale / 0.48)
+    width = 8 + int(max(len(t) for t, _ in lines) * 10 * scale / 0.48)
     height = 6 + line_h * len(lines)
     overlay = frame.copy()
     cv2.rectangle(overlay, (x, y), (x + width, y + height), (0, 0, 0), thickness=-1)
     cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, dst=frame)
     for i, (text, color) in enumerate(lines):
         ty = y + line_h * (i + 1) - 5
-        cv2.putText(frame, text, (x + 5, ty), _FONT, 0.48, color, 1, cv2.LINE_AA)
+        thickness = 2 if scale >= 0.7 else 1
+        cv2.putText(frame, text, (x + 5, ty), _FONT, scale, color, thickness, cv2.LINE_AA)
 
 
 def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = False) -> Frame:
@@ -269,7 +279,14 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
     return frame
 
 
-def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot, *, mirror: bool = False) -> Frame:
+def draw_hand_overlay(
+    frame: Frame,
+    snapshot: HandSnapshot,
+    *,
+    mirror: bool = False,
+    control_action: str = "",
+    control_enabled: bool = False,
+) -> Frame:
     """Overlay the real hand skeleton (21 landmarks) and tracking info.
 
     Draws only when a hand is actually tracked; a lost frame draws nothing (never
@@ -300,15 +317,52 @@ def draw_hand_overlay(frame: Frame, snapshot: HandSnapshot, *, mirror: bool = Fa
 
     label = snapshot.handedness or "?"
     src_tag = "스무딩" if use_smoothed else "raw"
-    _text_block(
-        frame,
-        [
-            # image-space detection (smoothed for display) — where the hand is
-            (f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [{src_tag} 검출]", color),
-            (f"palm scale  {snapshot.palm_scale:.3f}", (170, 170, 170)),
-        ],
-        (8, 58),  # below the FPS HUD (top-left) so they do not overlap
-    )
+    lines = [
+        # image-space detection (smoothed for display) — where the hand is
+        (f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [{src_tag} 검출]", color),
+        (f"palm scale  {snapshot.palm_scale:.3f}", (170, 170, 170)),
+    ]
+    # 게이트 상태를 항상 드러낸다. 거부를 조용히 무시하면 사용자는 왜 반응이 없는지
+    # 알 수 없어 자세를 고칠 기회조차 얻지 못한다(development-principles.md).
+    #
+    # **자세별 한계가 전역 한계보다 우선한다.** 기울기 내성은 자세마다 크게 달라
+    # (two_fingers 40° vs index_point 20°), 분류 결과를 아는 지금은 그쪽이 실제 결정권을
+    # 가진다. 전역 `palm_tilted`는 분류기가 없을 때만 쓰는 대비책이다 — 둘을 함께
+    # 보여주면 40°가 허용된 자세에 "손을 세우세요"가 뜨는 모순이 생긴다.
+    pose = snapshot.pose
+    tilt_text = "?" if snapshot.palm_tilt_degrees is None else f"{snapshot.palm_tilt_degrees:.0f}°"
+    if pose is not None and pose.label:
+        if pose.trusted:
+            lines.append((f"tilt {tilt_text}   {pose.label}  {pose.confidence:.0%}", (120, 200, 120)))
+        else:
+            lines.append((f"tilt {tilt_text}   거부 — {pose.reason}", (60, 90, 240)))
+    elif snapshot.palm_tilt_degrees is None:
+        lines.append(("tilt  ?  (기울기 미상 — 게이트 없음)", (170, 170, 170)))
+    elif snapshot.palm_tilted:
+        lines.append((f"tilt {tilt_text}  손을 세우세요 (판정 거부)", (60, 90, 240)))
+    else:
+        lines.append((f"tilt {tilt_text}", (120, 200, 120)))
+    # 확정 상태(유지 조건을 통과한 자세)와 방금 실행한 동작 — 3번 탭에만 있던 정보를
+    # 여기에도 둔다. 자세를 취하면서 보는 화면은 실시간 탭이라, 판정 결과가 여기 없으면
+    # 손을 보며 고칠 수가 없다.
+    if snapshot.pose_state:
+        lines.append((f"상태  {snapshot.pose_state}", (120, 220, 160)))
+    if snapshot.pose_events:
+        lines.append((f"동작  {', '.join(e.kind for e in snapshot.pose_events)}", (80, 220, 240)))
+    if control_action:
+        lines.append((
+            f"제어  {control_action}",
+            (80, 220, 120) if control_enabled else (170, 170, 170),
+        ))
+    # 실시간 탭은 멀리서 보며 자세를 취하는 화면이라 기본보다 크게 그린다.
+    _text_block(frame, lines, (8, 58), scale=0.72)
+    rejected = pose.trusted is False if (pose is not None and pose.label) else snapshot.palm_tilted
+    if rejected:
+        # 골격 자체를 붉게 감싸 주변시로도 거부 상태를 알아채게 한다.
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        cv2.rectangle(frame, (min(xs) - 12, min(ys) - 12), (max(xs) + 12, max(ys) + 12),
+                      (60, 90, 240), 2, cv2.LINE_AA)
     return frame
 
 
@@ -353,101 +407,6 @@ def render_normalized_hand(
     for x, y in px:
         cv2.circle(canvas, (x, y), 3, (235, 235, 235), thickness=-1)
     cv2.circle(canvas, px[0], 5, (60, 150, 230), thickness=-1)  # wrist (origin)
-    return canvas
-
-
-# 깊이 발산형 colormap 양끝(BGR): 카메라에 가까움(z<0) → 따뜻한 빨강, 멀어짐(z>0) →
-# 차가운 파랑, 손목 깊이(0) → 밝은 회색. MediaPipe z는 카메라에 가까울수록 감소한다.
-_DEPTH_NEUTRAL = (235, 235, 235)
-_DEPTH_NEAR = (60, 60, 235)
-_DEPTH_FAR = (235, 150, 60)
-
-
-def _depth_color(z: float, z_scale: float) -> tuple[int, int, int]:
-    """Map a normalized depth to a diverging BGR color (near=warm, far=cool)."""
-    t = 0.0 if z_scale <= 0.0 else max(-1.0, min(1.0, z / z_scale))
-    end = _DEPTH_NEAR if t < 0 else _DEPTH_FAR
-    f = abs(t)
-    return (
-        int(_DEPTH_NEUTRAL[0] + (end[0] - _DEPTH_NEUTRAL[0]) * f),
-        int(_DEPTH_NEUTRAL[1] + (end[1] - _DEPTH_NEUTRAL[1]) * f),
-        int(_DEPTH_NEUTRAL[2] + (end[2] - _DEPTH_NEUTRAL[2]) * f),
-    )
-
-
-def render_normalized_hand_depth(
-    points: tuple[tuple[float, float], ...] | None,
-    depths: tuple[float, ...] | None,
-    *,
-    size: int = 260,
-    mirror: bool = False,
-) -> Frame:
-    """Render normalized landmarks with per-joint depth (z) encoded — **display only**.
-
-    Answers one question visually: would reviving z help the cases 2D can't see?
-    Two views share the canvas:
-
-    - **Frontal (x·y)**: the same skeleton as ``render_normalized_hand``, but each
-      joint is colored by its normalized depth (warm = toward camera, cool = away).
-      During forearm-axis rotation — the palm turning to face the camera edge-on —
-      the x·y positions barely move, yet the depth gradient across the palm flips.
-      That flip is exactly the signal ``config.LANDMARK_DIMS = 2`` discards.
-    - **Top-down inset (x·z)**: the palm seen from above, so that same rotation shows
-      up as a plain in-plane turn.
-
-    The model never consumes z (``LANDMARK_DIMS = 2``); this is purely a comparison
-    aid. ``depths`` aligns index-wise with ``points`` (both length 21), in palm-width
-    units with the wrist at 0. Falls back to the flat "no hand" canvas if either is
-    missing or malformed.
-    """
-    canvas: Frame = np.zeros((size, size, 3), dtype=np.uint8)
-    canvas[:] = (18, 20, 26)
-    cv2.putText(canvas, "z 부활 (표시 전용 · 모델은 z 미사용)", (8, 18), _FONT, 0.42,
-                (150, 150, 150), 1, cv2.LINE_AA)
-
-    if points is None or depths is None or len(points) != 21 or len(depths) != 21:
-        cv2.putText(canvas, "no hand", (size // 2 - 34, size // 2), _FONT, 0.6,
-                    (90, 90, 100), 1, cv2.LINE_AA)
-        return canvas
-
-    # 깊이 스케일: 이번 프레임 최대 |z|(바닥값으로 0으로 나눔 방지). 프레임마다 적응해
-    # 손바닥이 평평할 때의 미세 깊이도, 회전 시 큰 깊이도 함께 읽힌다.
-    z_scale = max(1e-3, max(abs(z) for z in depths))
-
-    # --- 정면 뷰 (x·y), 관절을 깊이로 채색 ---
-    cx, cy = size // 2, int(size * 0.72)
-    scale = size * 0.15
-    px = [
-        (int(cx - x * scale) if mirror else int(cx + x * scale), int(cy + y * scale))
-        for x, y in points
-    ]
-    for a, b in _HAND_CONNECTIONS:
-        cv2.line(canvas, px[a], px[b], (70, 74, 82), 2, cv2.LINE_AA)
-    for (x, y), z in zip(px, depths, strict=True):
-        cv2.circle(canvas, (x, y), 4, _depth_color(z, z_scale), thickness=-1)
-    cv2.circle(canvas, px[0], 5, (60, 150, 230), thickness=2)  # wrist (origin) 링
-
-    # --- 상단 뷰 인셋 (x·z): 팔뚝축 회전이 곧바로 in-plane 회전으로 보인다 ---
-    inset = int(size * 0.40)
-    x0, y0 = size - inset - 6, 26
-    cv2.rectangle(canvas, (x0, y0), (x0 + inset, y0 + inset), (48, 52, 60), 1)
-    cv2.putText(canvas, "top view x·z", (x0 + 4, y0 + 14), _FONT, 0.34,
-                (120, 124, 132), 1, cv2.LINE_AA)
-    icx = x0 + inset // 2
-    icy = y0 + inset // 2
-    ix_scale = inset * 0.30
-    iz_scale = (inset * 0.34) / z_scale
-    ipx = [
-        (
-            int(icx - x * ix_scale) if mirror else int(icx + x * ix_scale),
-            int(icy + z * iz_scale),  # +z(카메라에서 멂) = 아래
-        )
-        for (x, _y), z in zip(points, depths, strict=True)
-    ]
-    for a, b in _HAND_CONNECTIONS:
-        cv2.line(canvas, ipx[a], ipx[b], (70, 74, 82), 1, cv2.LINE_AA)
-    for (x, y), z in zip(ipx, depths, strict=True):
-        cv2.circle(canvas, (x, y), 2, _depth_color(z, z_scale), thickness=-1)
     return canvas
 
 

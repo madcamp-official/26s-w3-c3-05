@@ -37,8 +37,12 @@ from jarvis.gesture_fusion.landmarks import (
     HandObservation,
     RawHandLandmarks,
     _lost_tracking_observation,
+    is_palm_tilted,
     normalize_hand,
+    palm_tilt_degrees,
 )
+from jarvis.gesture_fusion.pose_protocol import NullPoseClassifier, PoseClassifier, PosePrediction
+from jarvis.gesture_fusion.pose_state import PoseEvent, PoseStateMachine
 from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 Point2D = tuple[float, float]
@@ -138,14 +142,6 @@ class HandSnapshot:
     # None when smoothing is off or the hand is lost. Display-only — this is *never*
     # fed to the model or logged for training (that path uses the raw ``points``).
     image_points_smoothed: tuple[Point2D, ...] | None = None
-    # Per-landmark normalized depth (z), wrist-origin + palm-scaled (same transform
-    # ``normalize_hand`` applies to x·y), in palm-width units — aligned index-wise
-    # with ``model_points``/``model_points_raw``. **Display-only.** The model never
-    # consumes z (``config.LANDMARK_DIMS = 2``); this exists solely so the 손 추적 tab
-    # can visualize what a z-revived pipeline *would* see (foreshortening during
-    # palm-parallel / forearm-axis rotation — the signal 2D discards). MediaPipe z
-    # decreases toward the camera. None when the hand is lost.
-    model_points_z: tuple[float, ...] | None = None
     # The exact pre-smoothing ``HandObservation`` for this frame — the model's
     # normalized landmarks plus wrist_position, i.e. everything
     # ``observations_to_cached_clip`` needs to write a training clip. Carried here so
@@ -156,6 +152,18 @@ class HandSnapshot:
     # **Recording must use this (pre-smoothing), never ``model_points`` (display-
     # smoothed) — the training cache is raw and re-smooths on read.**
     observation: HandObservation | None = None
+    # 손바닥 축이 이미지 평면과 이루는 각(도). z에서만 구할 수 있어 소스가 계산한다.
+    # None = 알 수 없음(게이트를 걸지 않는다). ``palm_tilted``는 이 값이 설정된 임계를
+    # 넘어 자세 판정이 거부되는 상태 — 조용히 무시하지 않고 화면에 드러내기 위한 필드다.
+    palm_tilt_degrees: float | None = None
+    palm_tilted: bool = False
+    # 정적 자세 판정. 모델이 없으면 `trusted=False`에 사유가 담긴다 — 자세를 지어내지
+    # 않으며, 학습 안 한 상태가 "인식이 안 된다"로 오해되지 않게 UI에 그대로 드러낸다.
+    pose: PosePrediction | None = None
+    # 시간축 상태기계의 현재 상태와 이번 프레임에 발생한 동작. 상태는 유지 조건을
+    # 통과한 자세이고(순간적인 전이는 여기 오지 않는다), 이벤트는 실행 대상이다.
+    pose_state: str = ""
+    pose_events: tuple[PoseEvent, ...] = ()
 
 
 def _gesture_recognition_status() -> str:
@@ -175,6 +183,22 @@ def _gesture_recognition_status() -> str:
     return " · ".join(parts) + " — 인식 비활성 (손 추적만 라이브)"
 
 
+def _load_pose_classifier(path: Path | None, config: GestureConfig) -> PoseClassifier:
+    """자세 분류기를 싣되, 실패해도 프로브 전체를 죽이지 않는다.
+
+    모델이 없거나 전처리가 어긋나면 `NullPoseClassifier`로 대체하고 그 사유를 판정
+    결과에 담는다 — 손 추적 자체는 계속 보여야 원인을 진단할 수 있다.
+    """
+    if path is None:
+        return NullPoseClassifier()
+    try:
+        from jarvis.gesture_fusion.pose_classifier import TorchPoseClassifier
+
+        return TorchPoseClassifier(path, config)
+    except Exception as exc:  # noqa: BLE001 - 어떤 실패든 사유를 그대로 노출한다
+        return NullPoseClassifier(reason=f"자세 모델 로드 실패: {exc}")
+
+
 class HandProbe:
     """Owns the live MediaPipe Hand Landmarker and turns BGR frames into snapshots.
 
@@ -189,8 +213,11 @@ class HandProbe:
         config: GestureConfig = DEFAULT_GESTURE_CONFIG,
         smoothing: bool = True,
         image_smoothing: ImageSmoothingConfig = DEFAULT_IMAGE_SMOOTHING,
+        pose_model_path: Path | None = None,
     ) -> None:
         self._model_path = model_path
+        self._pose_classifier: PoseClassifier = _load_pose_classifier(pose_model_path, config)
+        self._pose_state = PoseStateMachine()
         self._config = config
         self._landmarker: object | None = None
         self._available = False
@@ -316,13 +343,14 @@ class HandProbe:
 
         landmarks = result.hand_landmarks[0]
         # z(깊이)는 단안 웹캠 추정값이라 노이즈가 커 모델은 x·y만 쓴다(config.LANDMARK_DIMS).
-        # 여기서는 z까지 담은 3D 배열을 만들되, 모델 경로에 넘기는 ``points``는 앞 2열을
-        # **슬라이스**로 파생한다 — 슬라이스라 x·y가 기존과 비트 단위로 동일하고, z는
-        # 아래에서 표시 전용으로만 쓴다(손 추적 탭의 z 부활 비교).
+        # z까지 담은 3D 배열을 만들되 모델 경로에 넘기는 ``points``는 앞 2열 슬라이스로
+        # 파생하고(x·y가 기존과 비트 단위 동일), z는 기울기 각도 계산에만 쓴다.
         points_3d = np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float64)
         points = points_3d[:, :2]
         if points.shape != (21, LANDMARK_DIMS):
             return self._lost(timestamp_ms, frame_id, inference_ms)
+        # 기울기만 z에서 계산해 넘긴다(좌표는 2D 유지) — 화면 밖 회전은 z에만 있다.
+        tilt = palm_tilt_degrees(points_3d, self._config)
 
         handedness, score = self._primary_handedness(result)
         raw = RawHandLandmarks(
@@ -332,6 +360,7 @@ class HandProbe:
             handedness=handedness,
             detection_confidence=score,
             handedness_score=score,
+            palm_tilt_degrees=tilt,
         )
         observation = normalize_hand(raw, self._config)
         if not observation.hand_detected:
@@ -345,7 +374,22 @@ class HandProbe:
         image_points_smoothed = self._smooth_image_points(points[:, :2], timestamp_ms)
         model_points = None if model is None else tuple((float(p[0]), float(p[1])) for p in model)
         model_points_raw = tuple((float(p[0]), float(p[1])) for p in observation.landmarks)
-        model_points_z = self._normalized_depth(points_3d, observation.palm_scale)
+        pose = self._classify_pose(model, observation.palm_tilt_degrees)
+        # 상태기계는 **모델 입력과 같은 좌표**를 본다 — 스크롤 방향(손가락이 가리키는
+        # 쪽)을 여기서 계산하므로 판정과 같은 값을 써야 어긋나지 않는다.
+        # 커서 이동 기준: 손목의 이미지 좌표(손 전체 위치). 정규화 좌표는 손목이 원점이라
+        # 손 전체 이동이 사라지므로, 상태기계에 이미지 좌표를 따로 넘긴다. **평활된 좌표**를
+        # 쓴다 — 1번 탭에 그려지는 스켈레톤과 커서가 같은 값을 따라야 하고, raw 손목은
+        # 지터가 커서를 떨게 한다. 평활이 꺼져 있으면(스무딩 토글 OFF) raw로 폴백한다.
+        wrist_src = image_points_smoothed if image_points_smoothed is not None else image_points
+        wrist_xy = (float(wrist_src[0][0]), float(wrist_src[0][1]))
+        events = self._pose_state.update(
+            pose,
+            timestamp_ms,
+            None if model is None else np.asarray(model),
+            reference_point=wrist_xy,
+            palm_scale=observation.palm_scale,
+        )
         wrist_velocity = _as_vec2(self._extractor.last_wrist_velocity)
         wrist_acceleration = _as_vec2(self._extractor.last_wrist_acceleration)
         return HandSnapshot(
@@ -365,25 +409,13 @@ class HandProbe:
             wrist_velocity=wrist_velocity,
             wrist_acceleration=wrist_acceleration,
             image_points_smoothed=image_points_smoothed,
-            model_points_z=model_points_z,
             observation=observation,
+            palm_tilt_degrees=observation.palm_tilt_degrees,
+            palm_tilted=is_palm_tilted(observation, self._config),
+            pose=pose,
+            pose_state=self._pose_state.state,
+            pose_events=tuple(events),
         )
-
-    def _normalized_depth(
-        self, points_3d: npt.NDArray[np.float64], palm_scale: float
-    ) -> tuple[float, ...] | None:
-        """Wrist-origin + palm-scaled depth (z) per landmark, for display only.
-
-        Applies the same origin-shift and palm-scale division ``normalize_hand``
-        uses for x·y, so the returned z is in the same palm-width units as
-        ``model_points`` — a fair "what a z-revived pipeline would see" view. Returns
-        ``None`` when ``palm_scale`` is non-positive (no valid scale to divide by).
-        The model does not consume this (``config.LANDMARK_DIMS = 2``).
-        """
-        if palm_scale <= 0.0:
-            return None
-        origin_z = float(points_3d[self._config.origin_index, 2])
-        return tuple(float((z - origin_z) / palm_scale) for z in points_3d[:, 2])
 
     def _smooth_image_points(
         self, xy: npt.NDArray[np.float64], timestamp_ms: int
@@ -409,6 +441,7 @@ class HandProbe:
     def _lost(self, timestamp_ms: int, frame_id: int, inference_ms: float) -> HandSnapshot:
         # Reset the extractor on tracking loss so smoothing never bridges the gap.
         self._extractor.reset()
+        self._pose_state.reset()
         if self._image_smoother is not None:
             self._image_smoother.reset()
         return HandSnapshot(
@@ -432,6 +465,20 @@ class HandProbe:
             # exactly like the CLI landmarker does on a lost frame.
             observation=_lost_tracking_observation(timestamp_ms, frame_id),
         )
+
+    def _classify_pose(
+        self, model_points: object, tilt: float | None
+    ) -> PosePrediction:
+        """평활된 모델 입력 좌표로 자세를 판정한다 — 학습과 동일한 값을 넣는다.
+
+        `model_points`가 없으면(첫 프레임 등) 지어내지 않고 거부 사유를 남긴다.
+        """
+        if model_points is None:
+            return PosePrediction(
+                label="", confidence=0.0, trusted=False,
+                reason="모델 입력 준비 전", palm_tilt_degrees=tilt,
+            )
+        return self._pose_classifier.classify(np.asarray(model_points), tilt)
 
     def close(self) -> None:
         if self._landmarker is not None:

@@ -40,10 +40,26 @@ class InputKey(StrEnum):
     VOLUME_UP = "volume_up"
     VOLUME_DOWN = "volume_down"
     MUTE = "mute"
+    SHOW_DESKTOP = "show_desktop"  # F11 — 바탕화면 표시(누를 때마다 토글)
+
+
+class MouseButton(StrEnum):
+    """클릭에 쓰는 마우스 버튼."""
+
+    LEFT = "left"
+    RIGHT = "right"
 
 
 class InputSink(Protocol):
     """Low-level OS input operations. The real implementation touches hardware."""
+
+    def click(self, button: MouseButton) -> None:
+        """버튼 하나를 누름→뗌으로 전송한다(현재 커서 위치)."""
+        ...
+
+    def press(self, button: MouseButton, *, down: bool) -> None:
+        """버튼을 누르거나 뗀다 — 드래그는 누른 채 커서를 옮겨야 하므로 분리한다."""
+        ...
 
     def scroll(self, ticks: int) -> None:
         """Scroll the wheel by ``ticks`` (positive up, negative down)."""
@@ -171,9 +187,14 @@ _VK = {
     InputKey.VOLUME_UP: 0xAF,
     InputKey.VOLUME_DOWN: 0xAE,
     InputKey.MUTE: 0xAD,
+    InputKey.SHOW_DESKTOP: 0x7A,  # VK_F11
 }
 _KEYEVENTF_KEYUP = 0x0002
 _MOUSEEVENTF_WHEEL = 0x0800
+_MOUSEEVENTF_LEFTDOWN = 0x0002
+_MOUSEEVENTF_LEFTUP = 0x0004
+_MOUSEEVENTF_RIGHTDOWN = 0x0008
+_MOUSEEVENTF_RIGHTUP = 0x0010
 _WHEEL_DELTA = 120
 _VK_TAB = 0x09
 _VK_MENU = 0x12  # ALT
@@ -198,6 +219,20 @@ class Win32InputSink:
         # host (a per-line ignore would flip to unused when checked on Windows).
         return getattr(ctypes, "windll").user32
 
+    def press(self, button: MouseButton, *, down: bool) -> None:
+        """버튼 상태를 바꾼다. 드래그는 누른 채 이동해야 해서 click과 분리돼 있다."""
+        flags = {
+            (MouseButton.LEFT, True): _MOUSEEVENTF_LEFTDOWN,
+            (MouseButton.LEFT, False): _MOUSEEVENTF_LEFTUP,
+            (MouseButton.RIGHT, True): _MOUSEEVENTF_RIGHTDOWN,
+            (MouseButton.RIGHT, False): _MOUSEEVENTF_RIGHTUP,
+        }[(button, down)]
+        self._user32().mouse_event(flags, 0, 0, 0, 0)
+
+    def click(self, button: MouseButton) -> None:
+        self.press(button, down=True)
+        self.press(button, down=False)
+
     def scroll(self, ticks: int) -> None:
         self._user32().mouse_event(_MOUSEEVENTF_WHEEL, 0, 0, ticks * _WHEEL_DELTA, 0)
 
@@ -207,8 +242,9 @@ class Win32InputSink:
         user32.keybd_event(vk, 0, 0, 0)
         user32.keybd_event(vk, 0, _KEYEVENTF_KEYUP, 0)
 
-    def move_cursor(self, dx: int, dy: int) -> None:
-        # MOUSEEVENTF_MOVE (0x0001) moves relative to the current cursor position.
+    def move_cursor(self, dx: int, dy: int, *, dragging: bool = False) -> None:
+        # MOUSEEVENTF_MOVE (0x0001)는 버튼이 눌린 채면 OS가 드래그로 해석하므로,
+        # Windows에서는 드래그 여부와 무관하게 같은 상대 이동으로 충분하다.
         self._user32().mouse_event(0x0001, dx, dy, 0, 0)
 
     def switch_window(self, forward: bool, repeat: int) -> None:
