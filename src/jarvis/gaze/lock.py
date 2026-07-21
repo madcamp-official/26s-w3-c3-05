@@ -55,15 +55,22 @@ class GazeLockStateMachine:
 
     @property
     def locked_device(self) -> str | None:
-        """TARGET_LOCKED 또는 GESTURE_WAIT 상태일 때만 값을 가진다."""
-        if self._state in (GazeLockState.TARGET_LOCKED, GazeLockState.GESTURE_WAIT):
+        """Last confirmed target, retained through handoff and gesture events."""
+        if self._state in (
+            GazeLockState.TARGET_LOCKED,
+            GazeLockState.GESTURE_WAIT,
+            GazeLockState.EXPIRED,
+            GazeLockState.COMMITTED,
+        ):
             return self._locked_device
         return None
 
     @property
     def candidate_device(self) -> str | None:
         """Target currently accumulating dwell time, before confirmation."""
-        return self._candidate_device if self._state == GazeLockState.CANDIDATE else None
+        if self._state in (GazeLockState.CANDIDATE, GazeLockState.TARGET_LOCKED):
+            return self._candidate_device
+        return None
 
     @property
     def candidate_elapsed_ms(self) -> int:
@@ -73,10 +80,8 @@ class GazeLockStateMachine:
     @property
     def dwell_progress(self) -> float:
         """Normalized 0..1 progress toward the configured gaze confirmation."""
-        if self._state in (GazeLockState.TARGET_LOCKED, GazeLockState.GESTURE_WAIT):
-            return 1.0
-        if self._state != GazeLockState.CANDIDATE:
-            return 0.0
+        if self.candidate_device is None:
+            return 1.0 if self.locked_device is not None else 0.0
         if self._config.dwell_time_ms == 0:
             return 1.0
         return min(1.0, self._candidate_elapsed_ms / self._config.dwell_time_ms)
@@ -104,9 +109,13 @@ class GazeLockStateMachine:
         confident = _is_confident(classification, self._config)
 
         if self._state in (GazeLockState.EXPIRED, GazeLockState.COMMITTED):
-            # EXPIRED·COMMITTED는 한 프레임짜리 이벤트다 — 그다음 프레임부터
-            # SEARCHING/CANDIDATE로 새로 시작한다.
-            self.reset()
+            # Gesture lifecycle events are one-frame events, but they do not
+            # discard the user's confirmed selection.
+            if self._locked_device is not None:
+                self._state = GazeLockState.TARGET_LOCKED
+                self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
+            else:
+                self.reset()
 
         if self._state == GazeLockState.SEARCHING:
             if not confident:
@@ -133,20 +142,37 @@ class GazeLockStateMachine:
                 return self._state
             self._state = GazeLockState.TARGET_LOCKED
             self._locked_device = self._candidate_device
-            self._candidate_elapsed_ms = self._config.dwell_time_ms
+            self._clear_candidate()
             self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
             return self._state
 
-        if self._state in (GazeLockState.TARGET_LOCKED, GazeLockState.GESTURE_WAIT):
+        if self._state == GazeLockState.TARGET_LOCKED:
             assert self._lock_expires_at_ms is not None
             if confident and classification.target == self._locked_device:
-                # 계속 같은 기기를 보고 있다 — 유예 시간을 갱신해 Lock을 유지한다.
+                self._clear_candidate()
+                self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
+                return self._state
+            if not confident:
+                # Cancel only the replacement attempt; retain the last confirmed target.
+                self._clear_candidate()
+                self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
+                return self._state
+            if classification.target != self._candidate_device:
+                self._start_candidate(classification.target, timestamp_ms)
+            assert self._candidate_started_at_ms is not None
+            self._candidate_elapsed_ms = max(0, timestamp_ms - self._candidate_started_at_ms)
+            self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
+            if self._candidate_elapsed_ms >= self._config.dwell_time_ms:
+                self._locked_device = classification.target
+                self._clear_candidate()
+            return self._state
+
+        if self._state == GazeLockState.GESTURE_WAIT:
+            assert self._lock_expires_at_ms is not None
+            if confident and classification.target == self._locked_device:
                 self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
             elif timestamp_ms >= self._lock_expires_at_ms:
                 self._state = GazeLockState.EXPIRED
-                return self._state
-            # 다른 곳을 보거나 추적이 불안정해도 TTL 안에서는 Lock을 유지한다
-            # (README 7장: "손을 보기 위해 시선을 잠깐 이동해도 선택을 일정 시간 유지").
             return self._state
 
         return self._state
@@ -154,10 +180,8 @@ class GazeLockStateMachine:
     def notify_gesture_started(self, timestamp_ms: int) -> GazeLockState:
         """TARGET_LOCKED 상태에서 Fusion이 gesture 시작을 감지했을 때 호출한다."""
         if self._state == GazeLockState.TARGET_LOCKED:
-            assert self._lock_expires_at_ms is not None
-            if timestamp_ms >= self._lock_expires_at_ms:
-                self._state = GazeLockState.EXPIRED
-                return self._state
+            self._clear_candidate()
+            self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
             self._state = GazeLockState.GESTURE_WAIT
         return self._state
 
@@ -170,3 +194,13 @@ class GazeLockStateMachine:
                 return self._state
             self._state = GazeLockState.COMMITTED
         return self._state
+
+    def _start_candidate(self, device_id: str, timestamp_ms: int) -> None:
+        self._candidate_device = device_id
+        self._candidate_started_at_ms = timestamp_ms
+        self._candidate_elapsed_ms = 0
+
+    def _clear_candidate(self) -> None:
+        self._candidate_device = None
+        self._candidate_started_at_ms = None
+        self._candidate_elapsed_ms = 0

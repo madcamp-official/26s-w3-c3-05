@@ -40,9 +40,11 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
 - `UNKNOWN`은 기기 간 상대 확률(`unknown_probability_threshold`)뿐 아니라 가장 가까운
   등록 방향과의 절대 각도(`unknown_max_angle_deg`, 기본 25도)도 함께 검사한다. 등록
   기기가 하나일 때 상대 확률이 항상 1.0이 되는 경우에도 먼 시선을 거부하기 위해서다.
-- Gaze Lock TTL은 마지막으로 같은 대상을 확신 있게 본 시각을 기준으로 한다. Gesture
-  시작은 기존 TTL을 연장하지 않으며, gesture 시작과 commit 이벤트 모두 자신의
-  `timestamp_ms`가 만료 시각에 도달했으면 `EXPIRED`로 거부한다.
+- 3초 확정 대상은 새 후보가 dwell을 모두 채울 때까지 sticky하게 유지한다. 새 후보가
+  `UNKNOWN`/저신뢰로 취소돼도 이전 대상은 유지되고, 새 후보가 3초를 채운 프레임에서
+  공백 없이 원자적으로 교체된다. 확정 대상 삭제·명시적 reset은 Lock을 해제한다.
+- `target_lock_ttl_ms`는 확정 선택 자체를 1.5초마다 지우는 타이머가 아니라, gesture
+  wait와 Fusion 입력 스트림 중단 시 안전하게 intent를 거부하는 유효 시간이다.
 - `jarvis-gaze calibrate`는 카메라 관측을 기기 프로필로 축약해 저장하고,
   `inspect-head-pose`는 실카메라 축/부호 점검값을 출력한다. `evaluate`는 정답 CSV에서
   dataset_id·환경 조건을 포함한 재현 가능한 정확도 JSON을 만든다(`tools/README.md`).
@@ -231,7 +233,7 @@ Debug monitor policy: simple `iris jump` no longer freezes the vector completely
 | `minimum_probability` | `0.80` | Minimum probability for Gaze Lock candidate/hold. |
 | `minimum_margin` | `0.20` | Minimum top-1 vs top-2 margin for confident lock. |
 | `dwell_time_ms` | `3000` | Same target must remain the confident engine result for three continuous seconds before confirmation. |
-| `target_lock_ttl_ms` | `1500` | Lock validity window while waiting for gesture. |
+| `target_lock_ttl_ms` | `1500` | Gesture-wait/input-stream validity window; replacement candidates do not clear the confirmed target. |
 
 ### Registration / target profile
 

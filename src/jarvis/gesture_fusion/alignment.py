@@ -35,11 +35,11 @@ class AlignmentConfig:
     """TARGET_CANDIDATE가 TARGET_LOCKED로 승격하기 전 유지해야 하는 최소 시간."""
 
     target_lock_ttl_ms: int = 1500
-    """lock이 계속 갱신되지 않을 때(시선이 흔들리거나 벗어날 때) 만료까지의 유예 시간.
+    """입력 스트림 중단 또는 gesture wait를 판정하는 만료 유예 시간.
 
-    lock이 붙어 있는 동안 유효한 프레임이 들어올 때마다 `timestamp_ms + 이 값`으로
-    갱신되는 슬라이딩 윈도우다 — 한 대상을 계속 응시하는데 1.5초마다 재-dwell해야
-    하는 것은 비현실적이라는 판단(documents/decisions.md에 기록).
+    실시간 TargetEstimate 프레임이 계속 들어오는 동안에는 UNKNOWN이나 교체 후보가
+    보여도 마지막 확정 대상을 유지하면서 `timestamp_ms + 이 값`으로 갱신한다.
+    새 대상이 dwell을 채우면 한 프레임에서 원자적으로 교체된다.
     """
 
     min_target_probability: float = 0.80
@@ -83,7 +83,8 @@ class TargetLockState:
     """아직 dwell을 못 채워 lock되지 않았지만 후보로 쌓이는 중인 대상(있으면).
 
     `locked=False`일 때 `IDLE`과 `TARGET_CANDIDATE`(README 9장 Intent 상태 머신)를
-    구분하는 데 쓴다(task 6). `locked=True`일 때는 항상 None이다.
+    구분한다. `locked=True`일 때 값이 있으면 기존 확정 대상을 유지한 채 새 대상의
+    3초 교체 dwell을 쌓는 중이라는 뜻이다.
     """
 
 
@@ -105,6 +106,8 @@ class TargetLockTracker:
         self._expires_at_ms: int | None = None
         self._last_confidence = 0.0
         self._last_stability = 0.0
+        self._locked_confidence = 0.0
+        self._locked_stability = 0.0
 
     @property
     def state(self) -> TargetLockState:
@@ -121,9 +124,9 @@ class TargetLockTracker:
             target=self._locked_target,
             locked_at_ms=self._locked_at_ms,
             expires_at_ms=self._expires_at_ms,
-            target_confidence=self._last_confidence,
-            stability=self._last_stability,
-            candidate=None,
+            target_confidence=self._locked_confidence,
+            stability=self._locked_stability,
+            candidate=self._candidate_target,
         )
 
     def reset(self) -> None:
@@ -155,17 +158,30 @@ class TargetLockTracker:
             self._push_while_unlocked(estimate, valid)
             return
         if valid and estimate.target == self._locked_target:
+            self._clear_candidate()
             self._expires_at_ms = estimate.timestamp_ms + self._config.target_lock_ttl_ms
-            self._last_confidence = estimate.probability
-            self._last_stability = estimate.stability
+            self._locked_confidence = estimate.probability
+            self._locked_stability = estimate.stability
             return
         if valid and estimate.target != self._locked_target:
-            # 다른 기기로 확실히 옮겨감 — 기존 lock을 놓고 새 candidate부터 다시 쌓는다.
-            self._release_lock()
-            self._start_candidate(estimate)
+            # 기존 lock은 유지한 채 새 대상을 교체 후보로 쌓는다. dwell을 모두 채운
+            # 순간에만 atomic하게 바꿔 UNKNOWN/미선택 공백이 생기지 않게 한다.
+            if self._candidate_target != estimate.target:
+                self._start_candidate(estimate)
+            assert self._candidate_since_ms is not None
+            if estimate.timestamp_ms - self._candidate_since_ms >= self._config.target_dwell_ms:
+                self._locked_target = estimate.target
+                self._locked_at_ms = estimate.timestamp_ms
+                self._locked_confidence = estimate.probability
+                self._locked_stability = estimate.stability
+                self._clear_candidate()
+            self._expires_at_ms = estimate.timestamp_ms + self._config.target_lock_ttl_ms
             return
-        # invalid하지만 아직 TTL 안 — 유예 기간이므로 lock은 유지하되 confidence는
-        # 갱신하지 않는다(이 프레임이 실제로 그 대상을 본 게 아니므로).
+        # 후보가 UNKNOWN/저신뢰로 취소되어도 마지막 확정 대상은 유지한다. 연속 카메라
+        # 프레임이 도착하는 동안 선택은 sticky하고, 스트림 자체가 끊긴 경우에만
+        # 마지막 expires_at_ms를 기준으로 gesture alignment를 거부한다.
+        self._clear_candidate()
+        self._expires_at_ms = estimate.timestamp_ms + self._config.target_lock_ttl_ms
 
     def _push_while_unlocked(self, estimate: TargetEstimate, valid: bool) -> None:
         if not valid:
@@ -184,6 +200,9 @@ class TargetLockTracker:
                 self._locked_target = estimate.target
                 self._locked_at_ms = estimate.timestamp_ms
                 self._expires_at_ms = estimate.timestamp_ms + self._config.target_lock_ttl_ms
+                self._locked_confidence = estimate.probability
+                self._locked_stability = estimate.stability
+                self._clear_candidate()
 
         self._last_confidence = estimate.probability
         self._last_stability = estimate.stability
@@ -192,10 +211,16 @@ class TargetLockTracker:
         self._candidate_target = estimate.target
         self._candidate_since_ms = estimate.timestamp_ms
 
+    def _clear_candidate(self) -> None:
+        self._candidate_target = None
+        self._candidate_since_ms = None
+
     def _release_lock(self) -> None:
         self._locked_target = None
         self._locked_at_ms = None
         self._expires_at_ms = None
+        self._locked_confidence = 0.0
+        self._locked_stability = 0.0
 
 
 @dataclass(frozen=True, slots=True)

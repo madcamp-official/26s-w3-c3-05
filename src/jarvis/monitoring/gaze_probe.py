@@ -792,6 +792,9 @@ class GazeProbe:
         existed = device_id in self._classifier.profiles
         self._classifier.unregister_profile(device_id)
         self._target_labels.pop(device_id, None)
+        if self._lock.locked_device == device_id:
+            # Sticky confirmation must not keep pointing at a deleted target.
+            self._lock.reset()
         if existed:
             self._profile_count = max(0, self._profile_count - 1)
 

@@ -265,8 +265,10 @@ class GazePanel(QScrollArea):
         if s.candidate_label is not None:
             dwell_seconds = s.dwell_elapsed_ms / 1000.0
             required_seconds = s.dwell_required_ms / 1000.0
+            confirmed = s.locked_target_label or "--"
+            confirmed_id = s.locked_device or "--"
             self._confirmed_target.setText(
-                f"3초 확정 응시 대상: --  | 후보 {s.candidate_label} "
+                f"3초 확정 응시 대상: {confirmed} [{confirmed_id}]  | 교체 후보 {s.candidate_label} "
                 f"{dwell_seconds:.1f}/{required_seconds:.1f}s"
             )
             self._confirmed_target.setStyleSheet(_MONO + " color:#58a6ff;")
@@ -964,6 +966,7 @@ class MainWindow(QMainWindow):
         self._active_calibration_model: GazeCalibrationCorrector | None = (
             self._calibration_store.preferred_model
         )
+        self._gaze_regression_user_disabled = False
         self._registration: TargetRegistrationSession | None = None
         self._registration_points: list[tuple[float, float]] = []
         self._registration_calibration_features: list[tuple[float, ...]] = []
@@ -1090,6 +1093,7 @@ class MainWindow(QMainWindow):
         return container
 
     def _set_gaze_regression_enabled(self, enabled: bool) -> None:
+        self._gaze_regression_user_disabled = not enabled
         preferred = getattr(self._calibration_store, "preferred_model", None)
         if preferred is None:
             fallback = getattr(self._calibration_store, "model", None)
@@ -1106,6 +1110,9 @@ class MainWindow(QMainWindow):
         self._active_calibration_model = None
         self._probe.set_calibration_model(None)
         if enabled:
+            # The user asked to enable correction, but no model exists yet.
+            # Auto-enable it after enough target registrations have trained one.
+            self._gaze_regression_user_disabled = False
             self._gaze_regression_toggle.blockSignals(True)
             self._gaze_regression_toggle.setChecked(False)
             self._gaze_regression_toggle.blockSignals(False)
@@ -1339,9 +1346,16 @@ class MainWindow(QMainWindow):
                 replace_target_id=record.target_id,
             )
             preferred_model = self._calibration_store.preferred_model
+            auto_enable = (
+                preferred_model is not None and not self._gaze_regression_user_disabled
+            )
+            if auto_enable:
+                self._gaze_regression_toggle.blockSignals(True)
+                self._gaze_regression_toggle.setChecked(True)
+                self._gaze_regression_toggle.blockSignals(False)
             self._active_calibration_model = (
                 preferred_model
-                if self._gaze_regression_toggle.isChecked() and preferred_model is not None
+                if auto_enable
                 else None
             )
             self._probe.set_calibration_model(self._active_calibration_model)
