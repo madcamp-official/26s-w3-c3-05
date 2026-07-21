@@ -61,7 +61,7 @@ CLICK_MAX_MS = 400
 # 확정 지연을 예산에서 빼야 사용자가 체감하는 간격과 맞는다.
 DOUBLE_CLICK_MS = 600
 # `fist → open_palm` 전이로 인정하는 최대 간격. 중간의 `none` 구간을 건너뛴다.
-TRANSITION_WINDOW_MS = 800
+TRANSITION_WINDOW_MS = 1000
 # 스크롤 방향을 인정할 최소 수직성(|dy| / 길이). 손가락이 옆을 가리키면 위아래를
 # 지어내지 않는다 — 0.5는 수평에서 30° 이상 기울어야 방향을 인정한다는 뜻이다.
 MIN_VERTICALITY = 0.5
