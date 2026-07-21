@@ -1427,6 +1427,7 @@ class MainWindow(QMainWindow):
                 geometry_3d=record.to_geometry_3d(),
                 feature_profile=record.feature_profile,
                 area_profile=record.area_profile,
+                pose_correction=record.pose_correction,
                 label=record.name,
             )
             self._log.info(
@@ -1496,6 +1497,7 @@ class MainWindow(QMainWindow):
                 geometry_3d=updated.to_geometry_3d(),
                 feature_profile=updated.feature_profile,
                 area_profile=updated.area_profile,
+                pose_correction=updated.pose_correction,
                 label=updated.name,
             )
             self._refresh_targets()

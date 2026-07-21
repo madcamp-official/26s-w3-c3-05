@@ -264,6 +264,31 @@ below the stop threshold, and retained briefly. Acceleration is diagnostic only:
 during deceleration it points opposite the landing direction and is unsafe as a
 target bonus. Blink, recovery, iris-jump and tracking-loss frames reset settle state.
 
+### Pose-conditioned gaze correction (2026-07-22)
+
+`jarvis-gaze diagnose-composition` 실측(모니터 응시 + 고개 스윕, 유효 494프레임,
+head yaw -38°~+45°)으로 확인한 사실:
+
+- 중앙 |head yaw| ≤ 10°에서는 iris↔head 회귀가 R²=0.90으로 선형이고 implied
+  head_yaw_weight ≈ 0.43이 나온다.
+- ±15°를 넘으면 좌우 모두 회귀 기울기의 부호가 반전된다 — MediaPipe iris 추정이
+  극단 눈 위치에서 포화·역행하므로, 어떤 전역 `head_yaw_weight`로도 자세 불변을
+  만들 수 없다(0.43으로 올리면 중앙은 좋아지고 head yaw 35°는 -4°→-10°로 악화).
+- 클램프(`max_valid_eye_offset`) 포화와 근안(近眼) 우선 가설은 기각(p95 0.38,
+  양쪽 눈 모두 큰 yaw에서 무신호).
+
+이 편향은 전역 수식으로 고칠 수 없지만 자세별로는 반복 가능하므로, 등록 1단계
+샘플을 head-yaw 구간(`pose_correction_bin_edges_deg`)별로 묶어 `bin gaze 중앙값
+− area 중심`을 target별 `TargetPoseCorrection`으로 저장한다(`feature_profile.py`
+`build_pose_correction`). 2단계(고개 고정)의 median head yaw를 기준 자세로 삼아
+그 자세에서 보정이 0이 되게 정규화하고, 런타임에는 classifier의 area 판정
+직전에 현재 head yaw로 보간(piecewise-linear, 양끝 상수)한 오프셋을 gaze에서
+뺀다. 8D Mahalanobis는 원시 샘플 그대로 쓴다(그 분포 자체가 편향 포함 원시
+프레임으로 학습되므로). 표본이 부족한 bin은 만들지 않고, 유효 bin이 2개
+미만이면 보정을 저장하지 않으며, 예전 JSON은 보정 없이(None) 그대로 로드된다.
+기존 등록 target이 보정을 얻으려면 고개를 좌우로 크게 돌리는 1단계를 포함해
+재등록해야 한다. 디버그 패널의 area 거리도 같은 보정 거리를 쓴다.
+
 ### Target matching / UNKNOWN rejection
 
 | Setting | Current value | Meaning |
@@ -290,6 +315,9 @@ target bonus. Blink, recovery, iris-jump and tracking-loss frames reset settle s
 | `registration_min_spread_deg` | `4.0` | Minimum angular spread saved for a registered target. Prevents overly tiny target regions. |
 | `registration_max_spread_deg` | `8.0` | Maximum angular spread saved for a registered target. Prevents one target from swallowing too much space. |
 | `registration_max_area_radius_deg` | `6.0` | Runtime cap for edge-loop target area radius, even if an old JSON profile saved a larger area. |
+| `pose_correction_bin_edges_deg` | `(-30, -20, -10, 10, 20, 30)` | Head-yaw bin boundaries for the pose-conditioned gaze correction learned from phase-1 samples. |
+| `pose_correction_min_bin_samples` | `8` | Bins with fewer phase-1 samples do not produce a correction point. |
+| `pose_correction_max_offset_deg` | `10.0` | Per-bin cap on the stored gaze correction offset. Measured bias was 4~8° at head yaw 35°. |
 
 Profiles saved before `boundary_polygon` existed continue to use the legacy ellipse for compatibility. Re-register the target to collect a real hull. The debug heatmap fills and outlines the stored polygon and the target list shows its hull vertex count.
 
@@ -316,3 +344,4 @@ Profiles saved before `boundary_polygon` existed continue to use the legacy elli
 - Not looking at a target but it is still selected: check duplicate target records, `registration_max_area_radius_deg`, and the saved target profile/area.
 - Blink causes vector spikes: check `blink_hold_ms`, `blink_recovery_hold_ms`, and `iris_jump_threshold`.
 - Vector freezes too much: `iris_jump_threshold` may be too low, or blink-recovery hold may be too aggressive.
+- Target matches at neutral pose but goes `UNKNOWN` when the head turns 20°+ toward it: the target likely has no pose correction (old registration, or phase 1 never reached that head yaw). Re-register with wide head turns during phase 1 and check `pose_correction` in the saved JSON.

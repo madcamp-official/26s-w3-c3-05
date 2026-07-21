@@ -21,6 +21,7 @@ from jarvis.gaze.feature_profile import (
     TargetAreaProfile,
     TargetFeatureProfile,
     TargetFeatureSample,
+    TargetPoseCorrection,
 )
 from jarvis.gaze.features import Vector3
 
@@ -163,6 +164,7 @@ class TargetClassifier:
         self._geometries: dict[str, TargetGeometry3D] = {}
         self._feature_profiles: dict[str, TargetFeatureProfile] = {}
         self._area_profiles: dict[str, TargetAreaProfile] = {}
+        self._pose_corrections: dict[str, TargetPoseCorrection] = {}
 
     def register_profile(
         self,
@@ -170,6 +172,7 @@ class TargetClassifier:
         geometry_3d: TargetGeometry3D | None = None,
         feature_profile: TargetFeatureProfile | None = None,
         area_profile: TargetAreaProfile | None = None,
+        pose_correction: TargetPoseCorrection | None = None,
     ) -> None:
         """기기 gaze profile을 등록하거나 갱신한다.
 
@@ -190,12 +193,17 @@ class TargetClassifier:
             self._area_profiles[profile.device_id] = area_profile
         else:
             self._area_profiles.pop(profile.device_id, None)
+        if pose_correction is not None:
+            self._pose_corrections[profile.device_id] = pose_correction
+        else:
+            self._pose_corrections.pop(profile.device_id, None)
 
     def unregister_profile(self, device_id: str) -> None:
         self._profiles.pop(device_id, None)
         self._geometries.pop(device_id, None)
         self._feature_profiles.pop(device_id, None)
         self._area_profiles.pop(device_id, None)
+        self._pose_corrections.pop(device_id, None)
 
     @property
     def profiles(self) -> dict[str, DeviceGazeProfile]:
@@ -218,6 +226,25 @@ class TargetClassifier:
     @property
     def area_profiles(self) -> dict[str, TargetAreaProfile]:
         return dict(self._area_profiles)
+
+    @property
+    def pose_corrections(self) -> dict[str, TargetPoseCorrection]:
+        """모니터링 UI가 `classify()`와 동일한 보정 거리를 재계산할 때 쓴다."""
+        return dict(self._pose_corrections)
+
+    def corrected_gaze_for(
+        self, device_id: str, sample: TargetFeatureSample
+    ) -> tuple[float, float]:
+        """이 기기의 pose 보정을 적용한 (gaze yaw, gaze pitch).
+
+        보정이 등록되지 않은 기기는 원시 gaze를 그대로 돌려준다. `classify()`의
+        area 판정과 모니터링 패널이 같은 값을 쓰도록 한 곳에 둔다.
+        """
+        correction = self._pose_corrections.get(device_id)
+        if correction is None:
+            return sample.gaze_yaw, sample.gaze_pitch
+        offset_yaw, offset_pitch = correction.offset_for(sample.head_yaw)
+        return sample.gaze_yaw - offset_yaw, sample.gaze_pitch - offset_pitch
 
     def classify(
         self,
@@ -464,9 +491,13 @@ class TargetClassifier:
         # small. The traced area still controls eligibility.
         alignment_radius = self._config.registration_min_spread_deg
         for device_id, profile in self._area_profiles.items():
+            # 등록 1단계에서 배운 자세별 iris 포화 편향을 되돌린 gaze로 area를
+            # 판정한다. 8D Mahalanobis는 원시 샘플 그대로 쓴다 — 그 분포 자체가
+            # 편향이 포함된 원시 프레임으로 학습됐기 때문이다.
+            gaze_yaw, gaze_pitch = self.corrected_gaze_for(device_id, feature_sample)
             normalized_distance = profile.normalized_distance(
-                feature_sample.gaze_yaw,
-                feature_sample.gaze_pitch,
+                gaze_yaw,
+                gaze_pitch,
                 self._config.registration_max_area_radius_deg,
             )
             if normalized_distance > self._config.target_match_tolerance:
@@ -477,8 +508,8 @@ class TargetClassifier:
                 area_score *= 0.75
             center_score = math.exp(-0.5 * normalized_distance**2)
             center_distance_deg = math.hypot(
-                feature_sample.gaze_yaw - profile.center_yaw,
-                feature_sample.gaze_pitch - profile.center_pitch,
+                gaze_yaw - profile.center_yaw,
+                gaze_pitch - profile.center_pitch,
             )
             absolute_gaze_score = math.exp(
                 -0.5 * (center_distance_deg / alignment_radius) ** 2
@@ -500,7 +531,8 @@ class TargetClassifier:
                 )
                 feature_score = math.exp(-0.5 * context_distance**2)
             motion_alignment_score = self._settle_alignment_score(
-                feature_sample,
+                gaze_yaw,
+                gaze_pitch,
                 profile,
                 gaze_settle_velocity_deg_s,
             )
@@ -538,14 +570,15 @@ class TargetClassifier:
 
     def _settle_alignment_score(
         self,
-        sample: TargetFeatureSample,
+        gaze_yaw: float,
+        gaze_pitch: float,
         profile: TargetAreaProfile | None,
         gaze_settle_velocity_deg_s: tuple[float, float] | None,
     ) -> float:
         if profile is None:
             return 1.0
-        target_yaw = profile.center_yaw - sample.gaze_yaw
-        target_pitch = profile.center_pitch - sample.gaze_pitch
+        target_yaw = profile.center_yaw - gaze_yaw
+        target_pitch = profile.center_pitch - gaze_pitch
         target_norm = math.hypot(target_yaw, target_pitch)
         if not math.isfinite(target_norm) or target_norm < 0.25:
             return 1.0

@@ -42,6 +42,7 @@ from jarvis.gaze.feature_profile import (
     TargetAreaProfile,
     TargetFeatureProfile,
     TargetFeatureSample,
+    TargetPoseCorrection,
 )
 from jarvis.gaze.features import (
     FaceObservation,
@@ -391,9 +392,11 @@ def _area_details(
     details = [
         AreaProfileDetail(
             device_id=device_id,
+            # classify()의 area 판정과 동일하게 pose 보정된 gaze로 계산한다 —
+            # 그러지 않으면 보정이 켜져도 디버그 패널은 계속 원시 거리를 보여줘
+            # 실동작과 어긋난다.
             normalized_distance=profile.normalized_distance(
-                sample.gaze_yaw,
-                sample.gaze_pitch,
+                *classifier.corrected_gaze_for(device_id, sample),
                 config.registration_max_area_radius_deg,
             ),
             tolerance=config.target_match_tolerance,
@@ -835,6 +838,7 @@ class GazeProbe:
                 geometry_3d=record.to_geometry_3d(),
                 feature_profile=record.feature_profile,
                 area_profile=record.area_profile,
+                pose_correction=record.pose_correction,
             )
             self._target_labels[record.target_id] = record.name
             count += 1
@@ -858,6 +862,7 @@ class GazeProbe:
         geometry_3d: TargetGeometry3D | None = None,
         feature_profile: TargetFeatureProfile | None = None,
         area_profile: TargetAreaProfile | None = None,
+        pose_correction: TargetPoseCorrection | None = None,
         label: str | None = None,
     ) -> None:
         """Add or replace one target profile in the live classifier."""
@@ -867,6 +872,7 @@ class GazeProbe:
             geometry_3d=geometry_3d,
             feature_profile=feature_profile,
             area_profile=area_profile,
+            pose_correction=pose_correction,
         )
         if label is not None:
             self._target_labels[profile.device_id] = label

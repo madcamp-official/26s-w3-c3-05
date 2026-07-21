@@ -14,8 +14,10 @@ from jarvis.gaze.classifier import DeviceGazeProfile, TargetGeometry3D
 from jarvis.gaze.direction import direction_to_yaw_pitch, yaw_pitch_to_direction
 from jarvis.gaze.feature_profile import (
     FEATURE_DIMENSION,
+    PoseCorrectionPoint,
     TargetAreaProfile,
     TargetFeatureProfile,
+    TargetPoseCorrection,
 )
 
 
@@ -68,6 +70,7 @@ class TargetRecord:
     reference_face_scale: float | None = None
     feature_profile: TargetFeatureProfile | None = None
     area_profile: TargetAreaProfile | None = None
+    pose_correction: TargetPoseCorrection | None = None
     """10초 등록 동안 모은 시선 광선의 삼각측량 결과(calibration/triangulation.py).
 
     품질 기준(baseline·각도 다양성·잔차)을 만족했을 때만 채워지며, 그렇지 않으면
@@ -132,6 +135,7 @@ class TargetRegistry:
             reference_face_scale=current.reference_face_scale,
             feature_profile=current.feature_profile,
             area_profile=current.area_profile,
+            pose_correction=current.pose_correction,
         )
         self.upsert(updated)
         return updated
@@ -179,6 +183,7 @@ class TargetRegistry:
                 reference_face_scale=self._parse_positive_float(item.get("reference_face_scale")),
                 feature_profile=self._parse_feature_profile(item.get("feature_profile")),
                 area_profile=self._parse_area_profile(item.get("area_profile")),
+                pose_correction=self._parse_pose_correction(item.get("pose_correction")),
             )
             self._records[record.target_id] = record
 
@@ -249,6 +254,35 @@ class TargetRegistry:
                 threshold=float(threshold),
             )
         except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_pose_correction(payload: object) -> TargetPoseCorrection | None:
+        """예전 JSON에는 필드가 없으므로 None으로 로드된다(하위 호환)."""
+        if not isinstance(payload, dict):
+            return None
+        points_payload = payload.get("points")
+        if not isinstance(points_payload, list) or not points_payload:
+            return None
+        try:
+            points = tuple(
+                PoseCorrectionPoint(
+                    head_yaw_deg=float(point["head_yaw_deg"]),
+                    offset_yaw_deg=float(point["offset_yaw_deg"]),
+                    offset_pitch_deg=float(point["offset_pitch_deg"]),
+                    sample_count=int(point["sample_count"]),
+                )
+                for point in points_payload
+                if isinstance(point, dict)
+            )
+            reference = payload.get("reference_head_yaw_deg")
+            return TargetPoseCorrection(
+                points=points,
+                reference_head_yaw_deg=(
+                    float(reference) if isinstance(reference, (int, float)) else None
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
             return None
 
     @staticmethod

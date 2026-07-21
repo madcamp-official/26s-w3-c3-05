@@ -18,6 +18,7 @@ from jarvis.gaze.feature_profile import (
     TargetFeatureSample,
     build_area_profile,
     build_feature_profile,
+    build_pose_correction,
 )
 from jarvis.gaze.smoothing import SmoothedGaze
 
@@ -260,6 +261,28 @@ class TargetRegistrationSession:
             minimum_radius_deg=self.config.registration_min_spread_deg,
             maximum_radius_deg=self.config.registration_max_area_radius_deg,
         )
+        # 2단계는 고개를 고정하고 hull을 그리므로 그 head yaw가 보정의 기준
+        # 자세다 — 이 자세에서 pose 보정이 0이 되도록 정규화된다.
+        reference_head_yaw = (
+            float(
+                np.median(
+                    np.asarray(
+                        [sample.head_yaw for sample in self._boundary_feature_samples],
+                        dtype=np.float64,
+                    )
+                )
+            )
+            if self._boundary_feature_samples
+            else None
+        )
+        pose_correction = build_pose_correction(
+            list(self._center_feature_samples),
+            center_yaw_pitch=(float(center[0]), float(center[1])),
+            reference_head_yaw_deg=reference_head_yaw,
+            bin_edges_deg=self.config.pose_correction_bin_edges_deg,
+            minimum_bin_samples=self.config.pose_correction_min_bin_samples,
+            maximum_offset_deg=self.config.pose_correction_max_offset_deg,
+        )
         return TargetRecord(
             target_id=self.target_id,
             name=self.name,
@@ -275,6 +298,7 @@ class TargetRegistrationSession:
             ),
             feature_profile=feature_profile,
             area_profile=area_profile,
+            pose_correction=pose_correction,
         )
     def diagnostic_summary(self) -> str:
         """Human-readable counts explaining why registration frames were rejected."""

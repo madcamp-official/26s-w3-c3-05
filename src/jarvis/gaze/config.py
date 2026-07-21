@@ -191,6 +191,22 @@ class GazeConfig:
     registration_max_area_radius_deg: float = 6.0
     """Runtime/storage cap for edge-loop target area radii."""
 
+    pose_correction_bin_edges_deg: tuple[float, ...] = (-30.0, -20.0, -10.0, 10.0, 20.0, 30.0)
+    """등록 1단계 샘플을 나누는 head-yaw 구간 경계(도).
+
+    MediaPipe iris 추정이 |head yaw| 15도 밖에서 포화·역행하는 편향
+    (2026-07-22 diagnose-composition 실측: 중앙 ±10도 R²=0.90, 그 밖 기울기
+    부호 반전)을 자세별로 저장해 되돌리기 위한 bin이다. 경계 밖(<-30, >30)도
+    양끝 open bin으로 수집된다.
+    """
+
+    pose_correction_min_bin_samples: int = 8
+    """이보다 표본이 적은 head-yaw bin은 보정점을 만들지 않는다(지어내지 않는다)."""
+
+    pose_correction_max_offset_deg: float = 10.0
+    """한 bin의 gaze 보정 오프셋 상한(도) — 오염된 등록이 시선을 원거리로
+    순간이동시키지 않도록 막는다. 실측 편향은 head yaw 35도에서 약 4~8도였다."""
+
     target_settle_alignment_weight: float = 0.55
     """Overlap bonus for a target in the final settling direction of the iris."""
 
@@ -319,6 +335,28 @@ class GazeConfig:
             raise ValueError(
                 "registration_max_area_radius_deg must satisfy min_spread <= area <= max_spread"
             )
+        if (
+            len(self.pose_correction_bin_edges_deg) < 2
+            or not all(math.isfinite(edge) for edge in self.pose_correction_bin_edges_deg)
+            or any(
+                later <= earlier
+                for earlier, later in zip(
+                    self.pose_correction_bin_edges_deg,
+                    self.pose_correction_bin_edges_deg[1:],
+                    strict=False,
+                )
+            )
+        ):
+            raise ValueError(
+                "pose_correction_bin_edges_deg must contain at least two strictly increasing finite edges"
+            )
+        if self.pose_correction_min_bin_samples <= 0:
+            raise ValueError("pose_correction_min_bin_samples must be positive")
+        if (
+            not math.isfinite(self.pose_correction_max_offset_deg)
+            or self.pose_correction_max_offset_deg <= 0.0
+        ):
+            raise ValueError("pose_correction_max_offset_deg must be finite and positive")
         for name, value in {
             "target_settle_alignment_weight": self.target_settle_alignment_weight,
         }.items():

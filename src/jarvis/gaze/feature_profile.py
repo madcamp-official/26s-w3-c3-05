@@ -452,6 +452,154 @@ def build_area_profile(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class PoseCorrectionPoint:
+    """한 head-yaw 구간의 대표점: bin 중앙값 head yaw와 그 자세의 gaze 편향."""
+
+    head_yaw_deg: float
+    offset_yaw_deg: float
+    offset_pitch_deg: float
+    sample_count: int
+
+    def __post_init__(self) -> None:
+        values = (self.head_yaw_deg, self.offset_yaw_deg, self.offset_pitch_deg)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("pose correction point values must be finite")
+        if self.sample_count <= 0:
+            raise ValueError("pose correction sample_count must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class TargetPoseCorrection:
+    """Head-yaw 구간별 gaze 편향의 piecewise-linear 보정 테이블.
+
+    MediaPipe iris 추정은 |head yaw| 약 15도 밖에서 포화·역행해(2026-07-22
+    diagnose-composition 실측, documents/gaze.md) 합성 시선이 자세 불변이 되지
+    못한다. 이 편향은 전역 가중치로 고칠 수 없지만 자세별로는 반복 가능하므로,
+    등록 1단계에서 관측한 `bin gaze 중앙값 − area 중심`을 그대로 저장했다가
+    런타임에 빼 준다. 기준 자세(2단계 head yaw)에서는 보정이 정확히 0이 되도록
+    빌드 시 정규화한다.
+
+    점 사이는 선형 보간, 양 끝 밖은 상수 유지(외삽하지 않는다). plain tuple만
+    담아 `TargetRecord`처럼 `asdict()`로 그대로 JSON 직렬화된다.
+    """
+
+    points: tuple[PoseCorrectionPoint, ...]
+    reference_head_yaw_deg: float | None = None
+
+    def __post_init__(self) -> None:
+        if not self.points:
+            raise ValueError("pose correction requires at least one point")
+        yaws = [point.head_yaw_deg for point in self.points]
+        if any(later <= earlier for earlier, later in zip(yaws, yaws[1:], strict=False)):
+            raise ValueError("pose correction points must be sorted by strictly increasing head yaw")
+        if self.reference_head_yaw_deg is not None and not math.isfinite(
+            self.reference_head_yaw_deg
+        ):
+            raise ValueError("reference_head_yaw_deg must be finite")
+
+    def offset_for(self, head_yaw_deg: float) -> tuple[float, float]:
+        """현재 head yaw에 대한 (gaze yaw, gaze pitch) 보정 오프셋."""
+        points = self.points
+        if head_yaw_deg <= points[0].head_yaw_deg:
+            return points[0].offset_yaw_deg, points[0].offset_pitch_deg
+        if head_yaw_deg >= points[-1].head_yaw_deg:
+            return points[-1].offset_yaw_deg, points[-1].offset_pitch_deg
+        for lower, upper in zip(points, points[1:], strict=False):
+            if head_yaw_deg <= upper.head_yaw_deg:
+                span = upper.head_yaw_deg - lower.head_yaw_deg
+                blend = (head_yaw_deg - lower.head_yaw_deg) / span
+                return (
+                    lower.offset_yaw_deg + blend * (upper.offset_yaw_deg - lower.offset_yaw_deg),
+                    lower.offset_pitch_deg
+                    + blend * (upper.offset_pitch_deg - lower.offset_pitch_deg),
+                )
+        return points[-1].offset_yaw_deg, points[-1].offset_pitch_deg
+
+
+def build_pose_correction(
+    samples: list[TargetFeatureSample],
+    *,
+    center_yaw_pitch: tuple[float, float],
+    reference_head_yaw_deg: float | None,
+    bin_edges_deg: tuple[float, ...],
+    minimum_bin_samples: int,
+    maximum_offset_deg: float,
+) -> TargetPoseCorrection | None:
+    """등록 1단계 샘플에서 head-yaw 구간별 gaze 보정 테이블을 만든다.
+
+    각 bin의 오프셋은 `median(bin gaze) − area 중심`이다 — 1단계가 물체
+    테두리를 자세를 바꿔가며 훑으므로, bin 안에서 테두리를 한 바퀴 이상
+    돌았다면 중앙값이 area 중심에 수렴하고 남는 차이가 곧 그 자세의 편향이다.
+    표본이 `minimum_bin_samples` 미만인 bin은 만들지 않고(지어내지 않는다),
+    유효 bin이 2개 미만이면 보정 자체를 저장하지 않는다(상수 보정은 무의미).
+    `reference_head_yaw_deg`(2단계 head yaw 중앙값)가 주어지면 그 자세의 보간
+    오프셋을 전체에서 빼서, hull을 그린 기준 자세에서 보정이 0이 되게 한다.
+    """
+    if minimum_bin_samples <= 0:
+        raise ValueError("minimum_bin_samples must be positive")
+    if not math.isfinite(maximum_offset_deg) or maximum_offset_deg <= 0.0:
+        raise ValueError("maximum_offset_deg must be finite and positive")
+    edges = tuple(float(edge) for edge in bin_edges_deg)
+    if any(later <= earlier for earlier, later in zip(edges, edges[1:], strict=False)):
+        raise ValueError("bin_edges_deg must be strictly increasing")
+
+    boundaries = (-math.inf, *edges, math.inf)
+    bins: list[list[TargetFeatureSample]] = [[] for _ in range(len(boundaries) - 1)]
+    for sample in samples:
+        for index, (lower, upper) in enumerate(zip(boundaries, boundaries[1:], strict=False)):
+            if lower <= sample.head_yaw < upper:
+                bins[index].append(sample)
+                break
+
+    center_yaw, center_pitch = float(center_yaw_pitch[0]), float(center_yaw_pitch[1])
+    raw_points: list[PoseCorrectionPoint] = []
+    for members in bins:
+        if len(members) < minimum_bin_samples:
+            continue
+        head_yaws = np.asarray([sample.head_yaw for sample in members], dtype=np.float64)
+        gaze_yaws = np.asarray([sample.gaze_yaw for sample in members], dtype=np.float64)
+        gaze_pitches = np.asarray([sample.gaze_pitch for sample in members], dtype=np.float64)
+        raw_points.append(
+            PoseCorrectionPoint(
+                head_yaw_deg=float(np.median(head_yaws)),
+                offset_yaw_deg=float(np.median(gaze_yaws)) - center_yaw,
+                offset_pitch_deg=float(np.median(gaze_pitches)) - center_pitch,
+                sample_count=len(members),
+            )
+        )
+    if len(raw_points) < 2:
+        return None
+
+    raw_points.sort(key=lambda point: point.head_yaw_deg)
+    reference_offset = (0.0, 0.0)
+    if reference_head_yaw_deg is not None and math.isfinite(reference_head_yaw_deg):
+        reference_offset = TargetPoseCorrection(
+            points=tuple(raw_points)
+        ).offset_for(reference_head_yaw_deg)
+
+    def clamp(value: float) -> float:
+        return max(-maximum_offset_deg, min(maximum_offset_deg, value))
+
+    normalized_points = tuple(
+        PoseCorrectionPoint(
+            head_yaw_deg=point.head_yaw_deg,
+            offset_yaw_deg=clamp(point.offset_yaw_deg - reference_offset[0]),
+            offset_pitch_deg=clamp(point.offset_pitch_deg - reference_offset[1]),
+            sample_count=point.sample_count,
+        )
+        for point in raw_points
+    )
+    return TargetPoseCorrection(
+        points=normalized_points,
+        reference_head_yaw_deg=(
+            float(reference_head_yaw_deg)
+            if reference_head_yaw_deg is not None and math.isfinite(reference_head_yaw_deg)
+            else None
+        ),
+    )
+
+
 def build_feature_profile(
     samples: list[TargetFeatureSample],
     *,
