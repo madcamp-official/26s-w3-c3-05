@@ -147,19 +147,66 @@ class TargetFeatureProfile:
 def _mahalanobis_operands(
     profile: TargetFeatureProfile,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Cache the mean vector and pseudo-inverse covariance per (immutable) profile.
+    """Cache the mean vector and inverse covariance per immutable profile.
 
-    `pinv` runs an SVD; recomputing it for every frame × every registered target
-    dominated the whole pure pipeline (>50% of `evaluate()` time). The profile is
-    a frozen, hashable dataclass, so the pair is computed once per registration.
-    Returned arrays are shared — marked read-only so a caller cannot corrupt the
-    cache in place.
+    The profile is a frozen, hashable dataclass, so this pair is computed only
+    once per registration. Returned arrays are read-only so callers cannot
+    corrupt the shared cache.
     """
     mean = np.asarray(profile.mean, dtype=np.float64)
-    inverse = np.linalg.pinv(np.asarray(profile.covariance, dtype=np.float64))
+    inverse = _invert_covariance(profile.covariance)
     mean.setflags(write=False)
     inverse.setflags(write=False)
     return mean, inverse
+
+
+def _invert_covariance(
+    covariance: tuple[tuple[float, ...], ...],
+) -> npt.NDArray[np.float64]:
+    """Invert the fixed 8D covariance without a native LAPACK call.
+
+    New profiles are positive definite because every feature receives a
+    variance floor. Pivoting Gauss-Jordan is stable enough for this tiny matrix
+    and avoids a Windows NumPy/MKL crash when Torch has loaded another OpenMP
+    runtime. A malformed singular legacy matrix falls back to diagonal scoring.
+    """
+    size = FEATURE_DIMENSION
+    matrix = [
+        [float(value) for value in row]
+        + [1.0 if row_index == column else 0.0 for column in range(size)]
+        for row_index, row in enumerate(covariance)
+    ]
+    scale = max(abs(value) for row in covariance for value in row)
+    pivot_floor = max(1e-12, scale * 1e-12)
+
+    for column in range(size):
+        pivot_row = max(range(column, size), key=lambda row: abs(matrix[row][column]))
+        if abs(matrix[pivot_row][column]) <= pivot_floor:
+            diagonal = np.zeros((size, size), dtype=np.float64)
+            for index in range(size):
+                variance = max(
+                    abs(float(covariance[index][index])),
+                    float(FEATURE_STD_FLOORS[index] ** 2),
+                )
+                diagonal[index, index] = 1.0 / variance
+            return diagonal
+        if pivot_row != column:
+            matrix[column], matrix[pivot_row] = matrix[pivot_row], matrix[column]
+
+        pivot = matrix[column][column]
+        matrix[column] = [value / pivot for value in matrix[column]]
+        for row in range(size):
+            if row == column:
+                continue
+            factor = matrix[row][column]
+            if factor == 0.0:
+                continue
+            matrix[row] = [
+                current - factor * pivot_value
+                for current, pivot_value in zip(matrix[row], matrix[column], strict=True)
+            ]
+
+    return np.asarray([row[size:] for row in matrix], dtype=np.float64)
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,7 +337,13 @@ def build_feature_profile(
     if len(kept) == 1:
         covariance = np.eye(FEATURE_DIMENSION, dtype=np.float64)
     else:
-        covariance = np.cov(kept, rowvar=False)
+        # ``np.cov`` can abort the Windows process when NumPy/MKL and Torch's
+        # OpenMP runtime have both been loaded.  This is the same unbiased
+        # sample-covariance formula, expressed directly for our tiny 8D
+        # matrix, and avoids that separate native code path.
+        centered = kept - mean
+        covariance = np.einsum("ni,nj->ij", centered, centered, optimize=False)
+        covariance /= float(len(kept) - 1)
     covariance = np.asarray(covariance, dtype=np.float64)
     covariance += np.diag(FEATURE_STD_FLOORS**2)
     covariance += np.eye(FEATURE_DIMENSION, dtype=np.float64) * regularization
