@@ -185,7 +185,8 @@ class GestureProbe:
 
         학습 cadence(`EXPECTED_INPUT_FPS`)로 솎아 넣는다. 단 손실 프레임은 **항상 처리**해
         파이프라인을 즉시 리셋한다 — 솎으면 velocity가 손실 구간을 가로질러 튀고, 리미터도
-        리셋해 복귀 첫 프레임을 바로 채택한다. 채택 안 된 프레임은 직전 스냅샷을 돌려준다.
+        리셋해 복귀 첫 프레임을 바로 채택한다. **솎여 처리하지 않은 프레임은 None**을
+        반환한다(호출자가 12fps tick만 골라내기 쉽도록 — process_bgr의 표시 재사용과 다름).
         """
         if self._model is None or self._window is None:
             return None
@@ -195,7 +196,7 @@ class GestureProbe:
         elif self._rate_limiter is not None and not self._rate_limiter.should_accept(
             observation.timestamp_ms
         ):
-            return self._last_snapshot
+            return None
         snapshot = self._advance(observation, time.monotonic())
         self._last_snapshot = snapshot
         return snapshot

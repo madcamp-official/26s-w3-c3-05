@@ -23,7 +23,12 @@ from jarvis.monitoring.app import MainWindow, _REGISTRATION_GUIDANCE_PHASES  # n
 
 def test_main_window_builds_offscreen(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(env={}, start_camera=False, samples_path=tmp_path / "samples.json")
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        samples_path=tmp_path / "samples.json",
+        gesture_models_dir=tmp_path,  # 앰비언트 체크포인트에 좌우되지 않게 빈 디렉토리
+    )
     try:
         tabs = window.centralWidget()
         assert tabs is not None
@@ -109,6 +114,7 @@ def test_target_registration_uses_auto_id(tmp_path: Path) -> None:
         start_camera=False,
         profiles_path=tmp_path / "profiles.json",
         samples_path=tmp_path / "samples.json",
+        gesture_models_dir=tmp_path,
     )
     try:
         assert window._next_target_id() == "target_001"
@@ -128,14 +134,45 @@ def test_registration_guidance_prompts_diagonal_and_depth_motion() -> None:
     assert any("NEAR/FAR" in label for label in labels)
 
 
-def test_startup_logs_gesture_recognition_off() -> None:
-    """The gesture pipeline exists but its model is untrained — startup says so
-    honestly ("미학습"), never claiming recognition is running."""
+def test_startup_logs_gesture_recognition_off(tmp_path: Path) -> None:
+    """학습 체크포인트가 없으면(빈 models_dir) 인식은 정직하게 off로 뜬다("미학습").
+
+    gesture_models_dir을 빈 임시 디렉토리로 주입해 앰비언트 models/의 체크포인트 유무에
+    좌우되지 않게 한다(있으면 인식이 켜진다 — 아래 별도 테스트).
+    """
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(env={}, start_camera=False)
+    window = MainWindow(env={}, start_camera=False, gesture_models_dir=tmp_path)
     try:
         texts = [m.text for m in window._log.recent()]
         assert any("미학습" in t for t in texts)
+        assert window._recognizer is None  # 인식기 미활성
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_startup_activates_recognition_with_trained_checkpoint(tmp_path: Path) -> None:
+    """학습된(trained=True) 체크포인트가 있으면 실시간 인식이 활성화된다(관측값 재사용 배선)."""
+    import json
+
+    torch = pytest.importorskip("torch")
+    from jarvis.gesture_fusion.config import DEFAULT_GESTURE_CONFIG
+    from jarvis.gesture_fusion.features import feature_dimension
+    from jarvis.gesture_fusion.model import CausalTCN, ModelConfig
+
+    net = CausalTCN(ModelConfig(feature_dim=feature_dimension(DEFAULT_GESTURE_CONFIG)))
+    torch.save(net.state_dict(), tmp_path / "gesture_tcn_jester.pt")
+    (tmp_path / "gesture_tcn_jester.pt.metadata.json").write_text(
+        json.dumps({"version": "pretrain-epoch24", "trained": True}), encoding="utf-8"
+    )
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(env={}, start_camera=False, gesture_models_dir=tmp_path)
+    try:
+        assert window._recognizer is not None
+        assert window._gesture_source.available is True
+        texts = [m.text for m in window._log.recent()]
+        assert any("인식 활성" in t for t in texts)
     finally:
         window.close()
         app.processEvents()

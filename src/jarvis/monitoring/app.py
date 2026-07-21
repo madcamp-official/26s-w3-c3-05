@@ -64,7 +64,11 @@ from jarvis.calibration.target_registration import TargetRegistrationSession
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
 from jarvis.gaze.calibration_model import GazeCalibrationSample, GazeCalibrationStore
 from jarvis.gesture_fusion.landmarks import HandObservation
-from jarvis.gesture_fusion.model_protocol import DEFAULT_GESTURE_LABELS, EXPECTED_INPUT_FPS
+from jarvis.gesture_fusion.model_protocol import (
+    DEFAULT_BACKGROUND_LABELS,
+    DEFAULT_GESTURE_LABELS,
+    EXPECTED_INPUT_FPS,
+)
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.direction import direction_to_yaw_pitch
 from jarvis.gaze.lock import GazeLockState
@@ -74,6 +78,7 @@ from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
 from jarvis.monitoring.gesture_probe import (
     GestureProbe,
+    GestureSnapshot,
     ProbeGestureSource,
     load_trained_gesture_model,
 )
@@ -836,18 +841,26 @@ class VideoView(QLabel):
 
 
 class GestureSidebar(QWidget):
-    """Recognized-gesture list bound to a GestureSource, plus a live hand-track line.
+    """Terminal-style live readout of per-inference recognition + a hand-track line.
 
-    The recognized-gesture list stays empty while the classifier is untrained
-    (the source yields nothing) — no fabricated detections. The separate hand line
-    reflects real MediaPipe hand tracking so the sidebar still shows live signal.
+    The terminal streams one line per model inference tick (decimated to the training
+    cadence, ``EXPECTED_INPUT_FPS``) — gesture · confidence · phase — like a log. It
+    stays empty while the classifier is untrained/absent (nothing is fed) — no
+    fabricated detections; the status header says why. The hand line reflects real
+    MediaPipe tracking so the sidebar shows live signal even with recognition off.
     """
+
+    _TERMINAL_STYLE = (
+        "QListWidget{background:#0a0d12; border:1px solid #1f2630;"
+        " font-family:Consolas,monospace; font-size:11px; color:#c9d1d9;}"
+    )
+    _MAX_LINES = 300
 
     def __init__(self, source: GestureSource) -> None:
         super().__init__()
         self._source = source
         layout = QVBoxLayout(self)
-        title = QLabel("인식된 제스처")
+        title = QLabel(f"인식 스트림 ({int(EXPECTED_INPUT_FPS)}fps · frame · gesture · conf · phase)")
         title.setStyleSheet("font-weight:600; color:#58a6ff; padding:4px 0;")
         self._status = QLabel(source.status_text)
         self._status.setWordWrap(True)
@@ -855,12 +868,13 @@ class GestureSidebar(QWidget):
         self._hand_line = QLabel("손 추적: —")
         self._hand_line.setWordWrap(True)
         self._hand_line.setStyleSheet(_MONO)
-        self._list = QListWidget()
+        self._terminal = QListWidget()
+        self._terminal.setStyleSheet(self._TERMINAL_STYLE)
         layout.addWidget(title)
         layout.addWidget(self._status)
         layout.addWidget(self._hand_line)
-        layout.addWidget(self._list, 1)
-        self.setMinimumWidth(220)
+        layout.addWidget(self._terminal, 1)
+        self.setMinimumWidth(240)
 
     def set_hand_status(self, snapshot: HandSnapshot) -> None:
         if snapshot.hand_detected:
@@ -871,11 +885,27 @@ class GestureSidebar(QWidget):
             self._hand_line.setText("손 추적: 손 없음")
             self._hand_line.setStyleSheet(_MONO + " color:#8b949e;")
 
-    def poll(self) -> None:
-        for g in self._source.poll():
-            self._list.insertItem(0, f"{g.gesture}  {g.confidence:.0%}  [{g.phase}]")
-            while self._list.count() > 100:
-                self._list.takeItem(self._list.count() - 1)
+    def append_tick(self, snapshot: GestureSnapshot) -> None:
+        """Append one recognition line for a processed inference tick (~12fps)."""
+        estimate = snapshot.estimate
+        phase = getattr(estimate.phase, "name", str(estimate.phase))
+        if not snapshot.hand_detected:
+            text = f"{snapshot.frame_id:>6}  {'— 손 없음':<18} {'':>4}  {phase}"
+            color = "#6e7681"
+        else:
+            text = (
+                f"{snapshot.frame_id:>6}  {estimate.gesture:<18} "
+                f"{estimate.gesture_confidence:>4.0%}  {phase}"
+            )
+            # 배경(none·drumming·doing_other)은 흐리게, 액션 제스처는 초록으로 강조.
+            color = "#6e7681" if estimate.gesture in DEFAULT_BACKGROUND_LABELS else "#3fb950"
+        self._terminal.addItem(text)
+        item = self._terminal.item(self._terminal.count() - 1)
+        if item is not None:
+            item.setForeground(QColor(color))
+        while self._terminal.count() > self._MAX_LINES:
+            self._terminal.takeItem(0)
+        self._terminal.scrollToBottom()
 
 
 class MessagePanel(QListWidget):
@@ -1059,6 +1089,7 @@ class MainWindow(QMainWindow):
         profiles_path: Path | None = None,
         hand_model_path: Path | None = None,
         samples_path: Path | None = None,
+        gesture_models_dir: Path | None = None,
         start_camera: bool = True,
         gaze_enabled: bool = True,
     ) -> None:
@@ -1069,8 +1100,12 @@ class MainWindow(QMainWindow):
         # 학습된 체크포인트가 models/에 있으면 실시간 탭에 인식을 표시한다(finetuned 우선,
         # 없으면 Jester 사전학습). 없거나 torch 미설치면 정직하게 off(UntrainedGestureSource).
         # 인식은 HandProbe의 관측값을 재사용하므로 두 번째 landmarker를 돌리지 않는다.
+        # models_dir은 테스트에서 주입 가능(기본은 models/) — 앰비언트 체크포인트 유무에
+        # 좌우되지 않게 한다.
+        self._gesture_models_dir = (
+            gesture_models_dir if gesture_models_dir is not None else _default_models_dir()
+        )
         self._recognizer: GestureProbe | None = None
-        self._probe_source: ProbeGestureSource | None = None
         self._gesture_source: GestureSource = self._make_gesture_source()
         self._env = env if env is not None else _load_env()
         self._model_path = model_path if model_path is not None else _default_model_path()
@@ -1149,15 +1184,14 @@ class MainWindow(QMainWindow):
         `GestureProbe`는 landmarker를 시작하지 않고 `activate_headless()`로 모델·윈도우만
         준비한다. 프레임 구동은 `_on_hand`가 `advance(observation)`로 한다.
         """
-        model = load_trained_gesture_model(_default_models_dir())
+        model = load_trained_gesture_model(self._gesture_models_dir)
         if model is None:
             return UntrainedGestureSource()
         probe = GestureProbe(model_asset_path=None, model=model)
         if not probe.activate_headless():
             return UntrainedGestureSource()
         self._recognizer = probe
-        self._probe_source = ProbeGestureSource(probe)
-        return self._probe_source
+        return ProbeGestureSource(probe)
 
     def _build_live_tab(self) -> QWidget:
         self._video = VideoView()
@@ -1610,13 +1644,14 @@ class MainWindow(QMainWindow):
         self._sidebar.set_hand_status(snapshot)
         self._finetune_panel.video.set_hand(snapshot)
         # 학습된 모델이 로드됐으면 HandProbe의 관측값을 그대로 인식 파이프라인에 흘린다
-        # (두 번째 landmarker 없이). advance가 12fps로 솎아 넣고, 결과는 사이드바가 poll한다.
-        if (
-            self._recognizer is not None
-            and self._probe_source is not None
-            and snapshot.observation is not None
-        ):
-            self._probe_source.submit(self._recognizer.advance(snapshot.observation))
+        # (두 번째 landmarker 없이). advance는 12fps로 솎아 처리한 tick에서만 스냅샷을
+        # 반환하므로(그 외엔 None), 그때마다 실시간 탭 터미널에 한 줄씩 찍는다.
+        if self._recognizer is not None and snapshot.observation is not None:
+            tick = self._recognizer.advance(snapshot.observation)
+            # 검출된 tick만 스트림에 찍는다 — 추적 손실은 위의 손 추적 라인이 보여주므로
+            # 터미널을 손실 프레임(솎이지 않아 30fps)으로 도배하지 않는다.
+            if tick is not None and tick.hand_detected:
+                self._sidebar.append_tick(tick)
         # 녹화 중이면 이 프레임의 관측값(스무딩 전 원본)을 클립 버퍼에 넣는다. observation은
         # 검출·손실 프레임 둘 다 존재하므로(hand_probe A단계) 미검출도 클립에 남아 미검출
         # 게이트가 CLI와 동일하게 동작한다.
@@ -1635,7 +1670,7 @@ class MainWindow(QMainWindow):
         self._video._show_placeholder("NO CAMERA")
 
     def _on_tick(self) -> None:
-        self._sidebar.poll()
+        # 인식 스트림은 _on_hand에서 프레임마다(12fps로 솎아) 직접 찍는다 — 여기선 안 건드림.
         self._messages.refresh()
         self._latency_panel.refresh()
 

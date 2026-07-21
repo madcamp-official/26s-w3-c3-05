@@ -186,14 +186,15 @@ def test_advance_from_observation_produces_estimate() -> None:
 
 
 def test_advance_decimates_to_target_fps() -> None:
-    """30fps(33ms) 입력에서 target 간격 미만 프레임은 skip돼 직전 스냅샷을 돌려준다."""
+    """30fps(33ms) 입력에서 target 간격 미만 프레임은 skip돼 None을 돌려준다(12fps만 처리)."""
     probe = GestureProbe(model_asset_path=None, model=_FakeModel(GesturePhase.ONSET))
     probe.activate_headless()
     snap0 = probe.advance(_observation(hand_detected=True, timestamp_ms=0, frame_id=0))
+    assert snap0 is not None  # 첫 프레임 채택
     snap1 = probe.advance(_observation(hand_detected=True, timestamp_ms=33, frame_id=1))
-    assert snap1 is snap0  # 33ms < 83ms → skip, 같은 스냅샷 재사용
+    assert snap1 is None  # 33ms < 83ms → skip
     snap2 = probe.advance(_observation(hand_detected=True, timestamp_ms=100, frame_id=3))
-    assert snap2 is not snap0  # 100ms ≥ 83ms → 새로 처리
+    assert snap2 is not None  # 100ms ≥ 83ms → 새로 처리
 
 
 def test_advance_lost_frame_resets_and_is_always_processed() -> None:
