@@ -104,7 +104,7 @@ class GazeConfig:
     tracking_loss_hold_ms: int = 800
     """Briefly keep the last gaze during full face-landmarker dropouts."""
 
-    small_motion_deadzone_deg: float = 5.0
+    small_motion_deadzone_deg: float = 1.0
     """Ignore tiny smoothed-gaze changes below this angle to reduce jitter."""
 
     UNKNOWN_TARGET: str = "UNKNOWN"

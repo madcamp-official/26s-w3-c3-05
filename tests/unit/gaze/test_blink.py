@@ -30,3 +30,18 @@ def test_open_baseline_decays_slowly_instead_of_learning_a_partial_blink() -> No
     assert detector.update(0.24, 0.24)
 
     assert detector.open_baseline == pytest.approx(0.2475)
+
+
+def test_one_foreshortened_eye_does_not_freeze_gaze_during_head_turn() -> None:
+    detector = AdaptiveBlinkDetector()
+
+    assert detector.update(0.25, 0.25)
+    assert detector.update(0.08, 0.24)
+    assert detector.eye_baselines[1] == pytest.approx(0.2475)
+
+
+def test_both_eyes_must_close_before_gaze_is_held() -> None:
+    detector = AdaptiveBlinkDetector()
+
+    assert detector.update(0.25, 0.25)
+    assert not detector.update(0.08, 0.09)
