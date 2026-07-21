@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -305,3 +307,58 @@ def test_sustained_untrusted_stops_cursor_but_keeps_state() -> None:
     # 각도 회복(trusted) — dwell 재대기 없이 즉시 재개.
     resumed = _feed_cursor(machine, "index_point", ((0.6, 0.5), (0.8, 0.5)), ms=150, start=t)
     assert any(e.kind == "move" for e in resumed), "각도 회복 시 dwell 없이 즉시 재개"
+
+
+# --- 검지 회전 → 볼륨 ---
+
+def _hand_pointing(theta_deg: float) -> np.ndarray:
+    """검지 MCP(5)→TIP(8)가 theta_deg 방향을 가리키는 최소 랜드마크."""
+    p = np.zeros((21, 3))
+    p[5] = (0.5, 0.5, 0.0)
+    th = math.radians(theta_deg)
+    p[8] = (0.5 + 0.1 * math.cos(th), 0.5 + 0.1 * math.sin(th), 0.0)
+    return p
+
+
+def _enter_index(machine: PoseStateMachine, *, start: int = 0) -> int:
+    """낮은 tilt(trusted) index_point로 진입시키고 다음 timestamp를 돌려준다."""
+    t = start
+    while t <= start + 200:
+        machine.update(_pose("index_point"), t, _hand_pointing(0.0))
+        t += 33
+    return t
+
+
+def test_index_rotation_drives_volume() -> None:
+    """index_point 상태에서 검지를 돌리면 방향에 따라 볼륨 스텝이 나온다(고tilt·untrusted 포함)."""
+    machine = PoseStateMachine()
+    t = _enter_index(machine)
+    assert machine.state == "index_point"
+
+    # 시계방향(각도 증가)을 고tilt(untrusted)로 — 회전은 trusted와 무관하게 잡혀야 한다.
+    up, theta = [], 0.0
+    for _ in range(20):
+        theta += 15.0
+        up += [e.kind for e in machine.update(_pose("index_point", trusted=False), t, _hand_pointing(theta))]
+        t += 33
+    assert up.count("volume_up") > 0 and up.count("volume_down") == 0
+    assert machine.state == "index_point"  # 회전 내내 상태 유지
+
+    # 반시계(각도 감소) → 반대 방향
+    down = []
+    for _ in range(20):
+        theta -= 15.0
+        down += [e.kind for e in machine.update(_pose("index_point", trusted=False), t, _hand_pointing(theta))]
+        t += 33
+    assert down.count("volume_down") > 0 and down.count("volume_up") == 0
+
+
+def test_pointing_without_rotation_does_not_change_volume() -> None:
+    """검지가 한 방향을 가리킨 채(회전 없음) 있으면 볼륨 이벤트가 없다 — 포인팅과 회전의 분리."""
+    machine = PoseStateMachine()
+    t = _enter_index(machine)
+    events = []
+    for _ in range(30):
+        events += [e.kind for e in machine.update(_pose("index_point", trusted=False), t, _hand_pointing(0.0))]
+        t += 33
+    assert not any(e.startswith("volume") for e in events)

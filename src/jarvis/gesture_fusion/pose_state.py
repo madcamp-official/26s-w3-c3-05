@@ -78,6 +78,16 @@ MIN_VERTICALITY = 0.5
 # 강건하도록 정규화 좌표로 잰다. 실기기에서 편 두 손가락 vs 접히는 중 값으로 튜닝한다.
 MIN_FINGER_EXTENSION = 0.55
 
+# 검지 회전 → 볼륨. index_point 상태에서 검지(MCP→TIP) 방향이 도는 각도를 누적해,
+# ROT_STEP_DEG마다 볼륨 1스텝을 낸다(시계=증가/반시계=감소). 커서 포인팅은 손 **평행이동**
+# 이라 이 각도가 거의 안 변해 볼륨을 건드리지 않고, 회전만 각도를 누적시킨다 — 두 조작이
+# 자연히 갈린다. 회전은 대부분 tilt>10°(커서 게이트 초과)라 커서는 이미 멈춰 있다.
+# 파라미터는 실측(2026-07-22 rotation_probe: 각속도 중앙 ~400deg/s, 회전 중 tilt 중앙 16°,
+# index_point 유지 88%) 기반이며 실기기 튜닝 대상이다.
+ROT_STEP_DEG = 60.0       # 누적 회전 이만큼마다 볼륨 1스텝(작을수록 민감)
+ROT_MIN_SPEED = 60.0      # deg/s. 이 미만 각속도는 누적하지 않는다(포인팅 지터·드리프트 차단)
+ROT_SIGN = 1.0            # +누적(화면 시계방향)을 볼륨 증가로. 실기기에서 CW/CCW 뒤집히면 -1로
+
 # 커서 이동: index_point(이동) 또는 pinch_index(드래그) 상태에서 손 이동을 커서로 옮긴다.
 # 좌표를 1:1로 대응시키지 않고, 마우스처럼 손 이동 **델타**에 이득을 곱한다.
 CURSOR_POSES = ("index_point", "pinch_index")
@@ -195,6 +205,10 @@ class PoseStateMachine:
     _cursor_ref_ms: int = 0
     # 커서 speed 분모로 쓰는 palm_scale의 One-Euro 평활기(raw palm_scale 지터 완화).
     _palm_smoother: OneEuroFilter = field(default_factory=_make_cursor_palm_smoother)
+    # 검지 회전 누적(볼륨용). index_point를 벗어나면 리셋한다.
+    _rot_prev_angle: float | None = None
+    _rot_prev_ms: int = 0
+    _rot_accum: float = 0.0
 
     def reset(self) -> None:
         """추적 손실 등으로 이력을 신뢰할 수 없을 때 — 상태를 지어내지 않는다."""
@@ -205,6 +219,8 @@ class PoseStateMachine:
         self._last_pose = ""
         self._last_click_ms = -1_000_000
         self._dragging = False
+        self._rot_prev_angle = None
+        self._rot_accum = 0.0
         self._palm_smoother.reset()
 
     def update(
@@ -229,6 +245,9 @@ class PoseStateMachine:
         else:
             self._palm_smoother.reset()
         self._cursor_ctx = (reference_point, palm_scale)
+        # 검지 회전 → 볼륨: index_point 상태가 유지되는 한 trusted와 무관하게 추적한다.
+        # 회전은 대부분 tilt>10°(untrusted)라 아래 규칙 2 게이트 **앞**에서 잡아야 한다.
+        rotation = self._track_rotation(timestamp_ms, landmarks)
         # 규칙 2: 믿을 수 없는 판정은 상태·진입 dwell을 건드리지 않는다. 짧은 각도 튐
         # (관용 프레임 이내)은 그대로 흘려 연속 동작을 유지하지만, 지속적으로 초과하면
         # 커서·스크롤을 멈춘다 — 이때도 상태는 남아 각도를 낮추면 즉시 재개된다. 멈추는
@@ -236,15 +255,15 @@ class PoseStateMachine:
         if not prediction.trusted:
             self._untrusted += 1
             if self._untrusted <= self.untrusted_grace_frames:
-                return self._continuous(timestamp_ms, landmarks)
+                return rotation + self._continuous(timestamp_ms, landmarks)
             self._cursor_ref = None
-            return []
+            return rotation
         self._untrusted = 0
 
         label = prediction.label
         if label in ("", NONE_POSE):
-            return self._absent(timestamp_ms, landmarks)
-        return self._present(label, timestamp_ms, landmarks)
+            return rotation + self._absent(timestamp_ms, landmarks)
+        return rotation + self._present(label, timestamp_ms, landmarks)
 
     def _cursor_move(self, timestamp_ms: int) -> PoseEvent | None:
         """참조점 델타를 커서 이동으로 바꾼다 — 1:1 대응이 아니라 마우스식 상대 이동.
@@ -281,6 +300,43 @@ class PoseStateMachine:
             scale = CURSOR_MAX_STEP_PX / step
             px, py = px * scale, py * scale
         return PoseEvent("move", timestamp_ms, 0.0, (px, py))
+
+    def _track_rotation(
+        self, timestamp_ms: int, landmarks: FloatArray | None
+    ) -> list[PoseEvent]:
+        """index_point 상태에서 검지 방향의 회전을 누적해 볼륨 스텝 이벤트를 낸다.
+
+        검지 MCP→TIP 벡터의 각도를 프레임마다 unwrap해 더한다. 각속도가 `ROT_MIN_SPEED`
+        미만이면(포인팅 중 손떨림·손 평행이동으로 방향이 거의 안 변하는 경우) 누적하지
+        않는다. 누적이 `ROT_STEP_DEG`를 넘을 때마다 부호에 따라 volume_up/volume_down을
+        낸다 — 빠르게 돌수록 초당 스텝이 많아져 비례 제어가 된다. index_point를 벗어나면
+        누적을 버린다(다음 회전은 처음부터).
+        """
+        if self.state != "index_point" or landmarks is None:
+            self._rot_prev_angle, self._rot_accum = None, 0.0
+            return []
+        points = np.asarray(landmarks, dtype=np.float64)
+        if points.ndim != 2 or points.shape[0] <= INDEX_TIP:
+            return []
+        vec = points[INDEX_TIP][:2] - points[INDEX_MCP][:2]
+        if not np.all(np.isfinite(vec)) or (vec[0] == 0.0 and vec[1] == 0.0):
+            return []
+        angle = math.degrees(math.atan2(vec[1], vec[0]))
+        if self._rot_prev_angle is None:
+            self._rot_prev_angle, self._rot_prev_ms = angle, timestamp_ms
+            return []
+        delta = (angle - self._rot_prev_angle + 180.0) % 360.0 - 180.0  # 프레임 간 회전(unwrap)
+        dt_s = max((timestamp_ms - self._rot_prev_ms) / 1000.0, 1e-3)
+        self._rot_prev_angle, self._rot_prev_ms = angle, timestamp_ms
+        if abs(delta) / dt_s < ROT_MIN_SPEED:  # 회전으로 볼 만큼 빠르지 않으면 무시
+            return []
+        self._rot_accum += delta
+        steps = int(self._rot_accum / ROT_STEP_DEG)  # 0을 향해 버림
+        if steps == 0:
+            return []
+        self._rot_accum -= steps * ROT_STEP_DEG
+        kind = "volume_up" if steps * ROT_SIGN > 0 else "volume_down"
+        return [PoseEvent(kind, timestamp_ms) for _ in range(abs(steps))]
 
     # --- 내부 ---
 
