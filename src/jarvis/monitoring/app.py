@@ -35,7 +35,7 @@ from typing import Any, cast
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPixmap, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QInputDialog,
     QMessageBox,
+    QPlainTextEdit,
     QScrollArea,
     QSplitter,
     QTabWidget,
@@ -62,6 +63,7 @@ from jarvis.calibration.target_registration import RegistrationPhase, TargetRegi
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.lock import GazeLockState
+from jarvis.gaze.session_report import build_report, format_report, load_session
 from jarvis.gaze.smoothing import SmoothedGaze
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
@@ -1003,6 +1005,7 @@ class MainWindow(QMainWindow):
         profiles_path: Path | None = None,
         hand_model_path: Path | None = None,
         samples_path: Path | None = None,
+        diagnostics_dir: Path | None = None,
         start_camera: bool = True,
         gaze_enabled: bool = True,
     ) -> None:
@@ -1025,6 +1028,7 @@ class MainWindow(QMainWindow):
         )
         self._session_recorder = GazeSessionRecorder()
         self._session_label: str | None = None
+        self._diagnostics_dir = diagnostics_dir or Path("data/diagnostics")
         self._gaze_config = GazeConfig(
             enable_3d_target_matching=False,
             require_3d_target_registration=False,
@@ -1120,10 +1124,25 @@ class MainWindow(QMainWindow):
         self._session_label_combo.currentIndexChanged.connect(self._on_session_label_changed)
         self._session_status = QLabel("세션 녹화 대기")
         self._session_status.setStyleSheet(_MONO)
+        self._session_report_button = QPushButton("최근 세션 분석")
+        self._session_report_button.clicked.connect(self._analyze_latest_session)
+        self._session_report_button.setEnabled(self._latest_session_path() is not None)
         session_controls.addWidget(self._session_record_button)
         session_controls.addWidget(self._session_label_combo, 1)
         session_controls.addWidget(self._session_status, 1)
+        session_controls.addWidget(self._session_report_button)
         layout.addLayout(session_controls)
+        self._session_report_view = QPlainTextEdit()
+        self._session_report_view.setReadOnly(True)
+        self._session_report_view.setMaximumHeight(240)
+        self._session_report_view.setPlaceholderText(
+            "세션을 녹화하면 target별 정확도, 자세·거리·얼굴 위치 구간과 "
+            "대표 실패 프레임이 여기에 표시됩니다."
+        )
+        self._session_report_view.setStyleSheet(
+            "font-family:Consolas,monospace; font-size:11px;"
+        )
+        layout.addWidget(self._session_report_view)
         QShortcut(QKeySequence("F9"), self, self._toggle_session_recording)
         for digit in range(10):
             QShortcut(
@@ -1621,8 +1640,10 @@ class MainWindow(QMainWindow):
             )
             self._session_record_button.setText("세션 녹화 시작 (F9)")
             self._update_session_status()
+            if path is not None:
+                self._show_session_report(path)
             return
-        path = Path("data/diagnostics") / time.strftime("session_%Y%m%d_%H%M%S.jsonl")
+        path = self._diagnostics_dir / time.strftime("session_%Y%m%d_%H%M%S.jsonl")
         self._session_recorder.start(
             path,
             config=self._gaze_config,
@@ -1631,6 +1652,31 @@ class MainWindow(QMainWindow):
         self._log.info(f"세션 녹화 시작: {path} (숫자키로 정답 라벨 표시)")
         self._session_record_button.setText("세션 녹화 종료 (F9)")
         self._update_session_status()
+
+    def _latest_session_path(self) -> Path | None:
+        if not self._diagnostics_dir.is_dir():
+            return None
+        paths = list(self._diagnostics_dir.glob("session_*.jsonl"))
+        return max(paths, key=lambda item: item.stat().st_mtime_ns) if paths else None
+
+    def _analyze_latest_session(self) -> None:
+        path = self._latest_session_path()
+        if path is None:
+            self._log.warn("분석할 gaze 세션 파일이 없습니다")
+            return
+        self._show_session_report(path)
+
+    def _show_session_report(self, path: Path) -> None:
+        try:
+            report = build_report(load_session(path), path=path)
+            rendered = format_report(report)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self._session_report_view.setPlainText(f"세션 분석 실패: {error}")
+            self._log.warn(f"gaze 세션 분석 실패: {error}")
+            return
+        self._session_report_view.setPlainText(rendered)
+        self._session_report_view.moveCursor(QTextCursor.MoveOperation.Start)
+        self._log.info(f"gaze 세션 분석 완료: {path}")
 
     def _update_session_status(self) -> None:
         label = self._session_label if self._session_label is not None else "(없음)"
@@ -1644,6 +1690,7 @@ class MainWindow(QMainWindow):
         else:
             self._session_status.setText(f"세션 녹화 대기 | label: {label}")
             self._session_status.setStyleSheet(_MONO)
+        self._session_report_button.setEnabled(self._latest_session_path() is not None)
 
     def _save_gaze_sample(self) -> None:
         if self._latest_gaze is None:

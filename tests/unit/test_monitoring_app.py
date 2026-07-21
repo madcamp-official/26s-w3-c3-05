@@ -7,6 +7,7 @@ teardown is clean. Requires the ui extra (PySide6).
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -31,6 +32,7 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
         env={},
         start_camera=False,
         samples_path=tmp_path / "samples.json",
+        diagnostics_dir=tmp_path / "diagnostics",
     )
     try:
         tabs = window.centralWidget()
@@ -49,6 +51,9 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
         assert window._register_target_button.text() == "물체 등록"
         assert window._cancel_registration_button.isEnabled() is False
         assert window._registration_progress.value() == 0
+        assert window._session_report_view.isReadOnly()
+        assert window._session_report_button.text() == "최근 세션 분석"
+        assert window._session_report_button.isEnabled() is False
     finally:
         window.close()
         app.processEvents()
@@ -107,6 +112,57 @@ def test_hand_panel_renders_wrist_vectors_and_tracking_loss() -> None:
         assert "히스토리 없음" in panel._accel_view._magnitude.text()
     finally:
         panel.deleteLater()
+        app.processEvents()
+
+
+def test_latest_session_report_is_rendered_in_window(tmp_path: Path) -> None:
+    diagnostics = tmp_path / "diagnostics"
+    diagnostics.mkdir()
+    path = diagnostics / "session_20260722_120000.jsonl"
+    rows = [
+        {
+            "type": "header",
+            "version": 2,
+            "config": {"target_match_tolerance": 1.1},
+            "targets": [],
+        },
+        {
+            "type": "frame",
+            "t": 100,
+            "frame": 1,
+            "label": "none",
+            "obs": {
+                "head": [0.0, 0.0, 0.0],
+                "eyes_open": True,
+                "face_scale": 0.1,
+                "face_center": [0.5, 0.5],
+            },
+            "gaze": {"source": "head+iris", "source_reason": None, "feature": [0.0, 0.0]},
+            "cls": {"target": "UNKNOWN", "reject": "outside every target"},
+            "lock": {"locked": None, "dwell_ms": 0},
+            "targets": {},
+        },
+    ]
+    path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        samples_path=tmp_path / "samples.json",
+        diagnostics_dir=diagnostics,
+    )
+    try:
+        assert window._session_report_button.isEnabled()
+        window._analyze_latest_session()
+        rendered = window._session_report_view.toPlainText()
+        assert "label: none" in rendered
+        assert "accuracy(=UNKNOWN): 100%" in rendered
+    finally:
+        window.close()
         app.processEvents()
 
 
