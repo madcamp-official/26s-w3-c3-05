@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -280,3 +282,111 @@ def test_open_palm_does_not_move_cursor() -> None:
     machine = PoseStateMachine()
     events = _feed_cursor(machine, "open_palm", ((0.4, 0.4), (0.7, 0.7)), ms=400)
     assert [e for e in events if e.kind == "move"] == []
+
+
+def test_sustained_untrusted_stops_cursor_but_keeps_state() -> None:
+    """기울기 초과가 관용 프레임을 넘겨 지속되면 커서가 멈추되 상태는 유지된다.
+
+    각도를 다시 낮추면 dwell 재대기 없이 즉시 이동이 재개돼야 한다(상태 보존의 목적).
+    """
+    machine = PoseStateMachine()
+    _feed_cursor(machine, "index_point", (0.5, 0.5), ms=200)  # 진입
+    assert machine.state == "index_point"
+
+    # 손은 계속 이동하지만 기울기 초과(untrusted)가 지속 — 관용(3프레임) 이후엔 정지.
+    t, moves = 233, []
+    for k in range(8):
+        point = (0.5 + 0.01 * k, 0.5)
+        out = machine.update(_pose("index_point", trusted=False), t, reference_point=point, palm_scale=0.15)
+        moves.append(any(e.kind == "move" for e in out))
+        t += 33
+    assert any(moves[:3]), "관용 구간에는 이동이 유지돼야 한다"
+    assert not any(moves[machine.untrusted_grace_frames + 1:]), "관용을 넘기면 이동이 멈춰야 한다"
+    assert machine.state == "index_point", "정지해도 상태는 유지된다"
+
+    # 각도 회복(trusted) — dwell 재대기 없이 즉시 재개.
+    resumed = _feed_cursor(machine, "index_point", ((0.6, 0.5), (0.8, 0.5)), ms=150, start=t)
+    assert any(e.kind == "move" for e in resumed), "각도 회복 시 dwell 없이 즉시 재개"
+
+
+# --- 검지 회전 → 볼륨 ---
+
+def _hand_pointing(theta_deg: float) -> np.ndarray:
+    """검지 MCP(5)→TIP(8)가 theta_deg 방향을 가리키는 최소 랜드마크."""
+    p = np.zeros((21, 3))
+    p[5] = (0.5, 0.5, 0.0)
+    th = math.radians(theta_deg)
+    p[8] = (0.5 + 0.1 * math.cos(th), 0.5 + 0.1 * math.sin(th), 0.0)
+    return p
+
+
+def _enter_index(machine: PoseStateMachine, *, start: int = 0) -> int:
+    """낮은 tilt(trusted) index_point로 진입시키고 다음 timestamp를 돌려준다."""
+    t = start
+    while t <= start + 200:
+        machine.update(_pose("index_point"), t, _hand_pointing(0.0))
+        t += 33
+    return t
+
+
+def _rotate(machine: PoseStateMachine, *, sign: int, frames: int, start: int, trusted: bool = False):
+    """검지 방향을 sign*15°/frame으로 돌리며 이벤트 종류를 모은다. 다음 timestamp도 반환."""
+    events, t, theta = [], start, 0.0
+    for _ in range(frames):
+        theta += sign * 15.0
+        events += [e.kind for e in machine.update(_pose("index_point", trusted=trusted), t, _hand_pointing(theta))]
+        t += 33
+    return events, t
+
+
+def test_index_rotation_drives_volume() -> None:
+    """검지를 돌리면 볼륨 스텝이 나오고, 반대로 돌리면 반대 방향이 나온다(고tilt·untrusted 포함).
+
+    CW/CCW ↔ up/down 부호는 `ROT_SIGN`(실기기 확인값)에 달렸으므로, 여기서는 두 방향이
+    **서로 반대**라는 불변만 검증한다.
+    """
+    machine = PoseStateMachine()
+    t = _enter_index(machine)
+    assert machine.state == "index_point"
+
+    cw, t = _rotate(machine, sign=+1, frames=20, start=t)
+    cw_vol = {e for e in cw if e.startswith("volume")}
+    assert len(cw_vol) == 1, "한 방향 회전은 한 종류의 볼륨 스텝만"
+    assert machine.state == "index_point"  # 회전 내내 상태 유지
+
+    ccw, t = _rotate(machine, sign=-1, frames=20, start=t)
+    ccw_vol = {e for e in ccw if e.startswith("volume")}
+    assert len(ccw_vol) == 1
+    assert cw_vol != ccw_vol, "반대로 돌리면 볼륨 방향도 반대여야 한다"
+
+
+def test_index_rotation_starts_at_high_tilt_without_entering_state() -> None:
+    """상태 진입(낮은 tilt) 없이도, 고tilt(untrusted) 라벨만으로 회전 볼륨이 시작된다."""
+    machine = PoseStateMachine()
+    events, _ = _rotate(machine, sign=+1, frames=20, start=0, trusted=False)
+    assert any(e.startswith("volume") for e in events)
+    assert machine.state == ""  # 상태로 진입하지 않았어도 동작
+
+
+def test_volume_knob_mode_blocks_other_actions() -> None:
+    """회전(볼륨 노브 모드) 중에는 순간 오인식(pinch 등)이 섞여도 클릭·드래그가 나오지 않는다."""
+    machine = PoseStateMachine()
+    events, t, theta = [], 0, 0.0
+    for i in range(15):
+        theta += 15.0
+        label = "pinch_index" if i % 3 == 0 else "index_point"  # 회전 중 오인식 섞기
+        events += [e.kind for e in machine.update(_pose(label, trusted=False), t, _hand_pointing(theta))]
+        t += 33
+    assert not any(e in ("click", "drag_start", "right_click") for e in events)
+    assert any(e.startswith("volume") for e in events)
+
+
+def test_pointing_without_rotation_does_not_change_volume() -> None:
+    """검지가 한 방향을 가리킨 채(회전 없음) 있으면 볼륨 이벤트가 없다 — 포인팅과 회전의 분리."""
+    machine = PoseStateMachine()
+    t = _enter_index(machine)
+    events = []
+    for _ in range(30):
+        events += [e.kind for e in machine.update(_pose("index_point", trusted=False), t, _hand_pointing(0.0))]
+        t += 33
+    assert not any(e.startswith("volume") for e in events)
