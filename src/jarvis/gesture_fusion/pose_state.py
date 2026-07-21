@@ -38,17 +38,13 @@ FloatArray = npt.NDArray[np.float64]
 
 INDEX_MCP, INDEX_TIP, MIDDLE_MCP, MIDDLE_TIP = 5, 8, 9, 12
 
-# 자세별 진입 유지 시간(ms). 클릭류는 빠른 반응이 중요해 짧고, 연속 동작인 스크롤은
-# 오발동 비용이 커서 길다(우클릭 준비 중 손가락이 펴진 구간을 확실히 넘기려면 필요).
+# 자세별 진입 유지 시간(ms). 핀치 클릭류만 빠른 반응이 중요해 짧게(80) 명시하고,
+# 그 외 자세(index_point·two_fingers·open_palm·fist)는 모두 기본값(120)을 쓴다.
 DWELL_MS: dict[str, int] = {
-    "index_point": 120,
     "pinch_index": 80,
     "pinch_middle": 80,
-    "two_fingers": 300,
-    "open_palm": 120,
-    "fist": 120,
 }
-DEFAULT_DWELL_MS = 200
+DEFAULT_DWELL_MS = 120
 
 # 이 프레임 수만큼 연속으로 자세가 사라져야 상태를 해제한다. 분류기가 정상 자세를
 # none으로 흘리는 비율이 15.4%라, 1프레임만에 끊으면 조작이 계속 끊긴다.
