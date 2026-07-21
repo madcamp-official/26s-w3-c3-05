@@ -44,8 +44,8 @@ DWELL_MS: dict[str, int] = {
     "pinch_index": 60,
     "pinch_middle": 60,
     # 탭 닫기는 되돌리기 어려운 파괴적 동작이라, 전환 중 스치는 중지 포즈로 오발동하지
-    # 않도록 기본(120)보다 길게 잡아 의도를 확인한다.
-    "middle_point": 250,
+    # 않도록 기본(120)보다 훨씬 길게(500ms) 잡아 명확한 의도만 통과시킨다.
+    "middle_point": 500,
 }
 DEFAULT_DWELL_MS = 120
 
