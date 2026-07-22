@@ -66,6 +66,31 @@ class FusionConfig:
     min_gesture_confidence: float = 0.80
     """Commit 조건 5: 이 값 미만이면 gesture confidence 부족으로 거부한다."""
 
+    early_dispatch_frames: int = 0
+    """조기 발사: `ACTIVE`가 이 프레임 수만큼 같은 label로 지속되면 ENDING을 기다리지
+    않고 커밋한다. **0이면 비활성**(기존 동작 = ENDING에서만 커밋).
+
+    ENDING은 "제스처가 끝났다"가 아니라 "더 이상 감지되지 않는다"이므로, 사용자가 동작을
+    멈추고 분류기가 그것을 알아챌 때까지 아무 신호도 나가지 않는다. 그 대기를 없애는 것이
+    이 옵션이다. 대신 **되돌릴 수 없는 발사**이므로 `early_dispatch_gestures`로 안전한
+    제스처에만 허용한다."""
+
+    early_dispatch_min_confidence: float = 0.8
+    """조기 발사에만 요구하는 gesture 확신도 하한 — `min_gesture_confidence`보다 높게 둔다.
+
+    진행 중 판정은 완결된 이벤트보다 근거가 적고, 무엇보다 label이 ONSET 한 프레임에서
+    잠기기 때문에(spotting.py) 방향이 갈리는 제스처(회전 ↻/↺, 슬라이드 ↑/↓)에서 반대쪽을
+    쏠 위험이 있다. 더 높은 확신도와 지속 프레임 수로 그 위험을 상쇄한다."""
+
+    early_dispatch_gestures: frozenset[str] = frozenset()
+    """조기 발사를 허용할 gesture label 집합. **비어 있으면 어떤 제스처도 조기 발사하지 않는다.**
+
+    capability가 아니라 label로 거르는 이유: Fusion은 (기기, 제스처)→capability 매핑을
+    모르고, 그 매핑은 하류(`GestureCapabilityMap`)의 책임이기 때문이다. 안전 기준은
+    **연산이 자기 교정되는가**다 — brightness·color·scroll·volume 같은 상대 연산은 틀려도
+    반대로 하면 복구되지만, `power toggle`(stop_sign)은 멱등이 아니라 조기 발사가 틀리면
+    불이 꺼지고 ENDING까지 겹치면 깜빡인다. 그래서 toggle 계열은 넣지 않는다."""
+
     cooldown_ms: int = 500
     """커밋 직후 이 시간 동안 추가 커밋을 막는다(연속 오발 방지).
 
@@ -88,6 +113,12 @@ class FusionConfig:
                 raise ValueError(f"{name} must be finite and within [0, 1]")
         if self.cooldown_ms < 0:
             raise ValueError("cooldown_ms must be non-negative")
+        if self.early_dispatch_frames < 0:
+            raise ValueError("early_dispatch_frames must be non-negative")
+        if not math.isfinite(self.early_dispatch_min_confidence) or not (
+            0.0 <= self.early_dispatch_min_confidence <= 1.0
+        ):
+            raise ValueError("early_dispatch_min_confidence must be finite and within [0, 1]")
         if self.dedup_history_size < 1:
             raise ValueError("dedup_history_size must be at least 1")
 
@@ -174,6 +205,10 @@ class FusionEngine:
         self._aligner = TemporalAligner(alignment_config)
         self._dedup = IntentDeduplicator(config.dedup_history_size)
         self._last_gesture_phase = GesturePhase.IDLE
+        # 조기 발사 상태: 같은 label의 ACTIVE 연속 프레임 수와, 이 이벤트를 이미 발사했는지.
+        self._active_streak = 0
+        self._active_gesture = ""
+        self._early_dispatched = False
         self._cooldown_until_ms: int | None = None
 
     @property
@@ -212,9 +247,23 @@ class FusionEngine:
         self._expire_cooldown(estimate.timestamp_ms)
         self._last_gesture_phase = estimate.phase
 
+        # 이벤트 경계에서 조기 발사 상태를 초기화한다. ONSET은 새 시도의 시작이고,
+        # IDLE은 중단이므로 둘 다 직전 이벤트의 흔적을 남기면 안 된다.
+        if estimate.phase in (GesturePhase.IDLE, GesturePhase.ONSET):
+            self._reset_early_state()
+        elif estimate.phase == GesturePhase.ACTIVE:
+            self._track_active(estimate)
+            return self._try_early_dispatch(estimate)
+
         alignment = self._aligner.push_gesture(estimate)
         if alignment is None:
             return None
+
+        # 이 이벤트를 ACTIVE 중에 이미 발사했다면 ENDING으로 한 번 더 실행하지 않는다.
+        # 같은 제스처가 두 번 적용되는 것(밝기 두 단계·색 두 칸)을 막는 지점이다.
+        if self._early_dispatched:
+            self._reset_early_state()
+            return self._reject(estimate, "already dispatched early", alignment.target)
 
         if self._cooldown_until_ms is not None:
             return self._reject(estimate, "cooldown active", alignment.target)
@@ -261,6 +310,74 @@ class FusionEngine:
         return CommitDecision(
             committed=True,
             reason="committed",
+            target=alignment.target,
+            gesture=estimate.gesture,
+            score=score,
+            timestamp_ms=estimate.timestamp_ms,
+            frame_id=estimate.frame_id,
+            intent_id=intent_id,
+        )
+
+    def _reset_early_state(self) -> None:
+        self._active_streak = 0
+        self._active_gesture = ""
+        self._early_dispatched = False
+
+    def _track_active(self, estimate: GestureEstimate) -> None:
+        """같은 label이 ACTIVE로 연속된 프레임 수를 센다 — label이 바뀌면 처음부터.
+
+        label이 흔들리는 구간에서 조기 발사하지 않게 하는 장치다(방향이 갈리는 제스처의
+        반대쪽 오발 방지).
+        """
+        if estimate.gesture == self._active_gesture:
+            self._active_streak += 1
+        else:
+            self._active_gesture = estimate.gesture
+            self._active_streak = 1
+
+    def _try_early_dispatch(self, estimate: GestureEstimate) -> CommitDecision | None:
+        """ACTIVE 중 조기 발사 가능 여부를 판정한다. 불가하면 `None`(기존 동작 유지).
+
+        거부 사유를 `CommitDecision`으로 만들지 않고 `None`을 돌려주는 이유: ACTIVE는
+        매 프레임 들어오므로 사유를 만들면 trace가 "아직 아님"으로 뒤덮인다. 최종 판정과
+        그 사유는 ENDING 경로가 지금까지처럼 그대로 낸다.
+        """
+        config = self._config
+        if config.early_dispatch_frames <= 0 or self._early_dispatched:
+            return None
+        if estimate.gesture not in config.early_dispatch_gestures:
+            return None
+        if self._active_streak < config.early_dispatch_frames:
+            return None
+        if estimate.gesture_confidence < config.early_dispatch_min_confidence:
+            return None
+        if self._cooldown_until_ms is not None:
+            return None
+
+        alignment = self._aligner.evaluate_active(estimate)
+        if alignment is None or not alignment.aligned:
+            return None
+        if alignment.target_confidence < config.min_target_confidence:
+            return None
+
+        score = compute_fusion_score(
+            target_confidence=alignment.target_confidence,
+            gesture_confidence=estimate.gesture_confidence,
+            gaze_stability=alignment.gaze_stability,
+            uncertainty=estimate.uncertainty,
+        )
+        if score.value < config.commit_threshold:
+            return None
+
+        intent_id = self._dedup.register(estimate.frame_id)
+        if intent_id is None:
+            return None
+
+        self._early_dispatched = True
+        self._cooldown_until_ms = estimate.timestamp_ms + config.cooldown_ms
+        return CommitDecision(
+            committed=True,
+            reason="committed (early)",
             target=alignment.target,
             gesture=estimate.gesture,
             score=score,

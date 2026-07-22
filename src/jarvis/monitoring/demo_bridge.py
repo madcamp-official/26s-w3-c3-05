@@ -76,6 +76,22 @@ class DemoPreset:
     alignment: AlignmentConfig
 
 
+# 조기 발사를 허용할 제스처 — **상대 연산(increment/decrement)에 매핑된 것만**.
+# 기준은 "틀렸을 때 되돌릴 수 있는가"다. 밝기·색상·스크롤·볼륨은 반대로 한 번 더 하면
+# 복구되지만, `stop_sign`(power toggle)은 멱등이 아니라 조기 발사가 틀리면 불이 꺼지고
+# 뒤이은 ENDING까지 겹치면 깜빡인다. 그래서 toggle 계열은 제외한다.
+# 이 목록이 capability map과 어긋나면 test_early_dispatch_allowlist가 잡는다.
+EARLY_DISPATCH_GESTURES: frozenset[str] = frozenset(
+    {
+        "rotate_clockwise",
+        "rotate_counter_clockwise",
+        "slide_two_fingers_up",
+        "slide_two_fingers_down",
+        "slide_two_fingers_left",
+        "slide_two_fingers_right",
+    }
+)
+
 # 시연 기본은 "느슨" — 위양성을 늘리더라도 진양성을 잡는 방향(이 프로젝트의 기존
 # 튜닝 방침)이고, 차단 사유 로그가 있어 오발이 나도 왜 났는지 그 자리에서 보인다.
 PRESET_LOOSE = DemoPreset(
@@ -89,6 +105,23 @@ PRESET_LOOSE = DemoPreset(
         # 확실히 높게 유지하면서 통과 폭을 넓힌다 — 느슨 프리셋의 취지(위양성을 늘리더라도
         # 진양성을 잡는다)에 맞고, 막힌 경우 사유가 화면에 그대로 뜬다.
         min_gesture_confidence=0.35,
+        # 기본 500ms는 연속 제스처(회전=색상, 슬라이드=밝기)에서 커밋 상한을 초당 2회로
+        # 묶어 "한 단계 바꾸는 데 1초 이상"으로 체감됐다(2026-07-22 실측: 제스처 시간 +
+        # 쿨다운 500ms + 어댑터 94~297ms). 쿨다운은 연속 오발 방지 장치지만, 같은 이벤트의
+        # 재생은 dedup이 따로 막고(fusion.py: 재생에는 쿨다운을 새로 걸지 않는다) 재커밋에는
+        # ONSET→ENDING을 다시 거쳐야 하므로, 시연 프리셋에서는 150ms로 줄여도 연타 오발이
+        # 아니라 의도한 반복이 통과한다.
+        cooldown_ms=150,
+        # 조기 발사: ENDING("더 이상 감지되지 않음")을 기다리지 않고 ACTIVE가 3프레임
+        # (12fps 기준 약 250ms) 같은 label로 지속되면 실행한다. 동작을 멈추고 분류기가
+        # 그것을 알아챌 때까지의 대기가 사라진다.
+        early_dispatch_frames=3,
+        # 일반 게이트(0.35)보다 높게 둔다 — 진행 중 판정은 근거가 적고, label이 ONSET
+        # 한 프레임에서 잠겨 방향이 갈리는 제스처의 오발 위험이 있다. 다만 실사용
+        # 확신도가 낮아 0.35까지 내린 상황이라 0.8 같은 값은 아예 발사되지 않으므로,
+        # "일반보다는 확실히 높되 도달 가능한" 값으로 잡았다(실기 튜닝 대상).
+        early_dispatch_min_confidence=0.50,
+        early_dispatch_gestures=EARLY_DISPATCH_GESTURES,
     ),
     alignment=AlignmentConfig(
         target_dwell_ms=800,
@@ -136,6 +169,11 @@ BLOCK_REASONS: Mapping[str, str] = {
     "fusion score below commit threshold": "결합 점수 미달",
     "duplicate event (frame already committed)": "중복 이벤트 차단",
     "committed": "커밋됨",
+    # 조기 발사(fusion.py `_try_early_dispatch`) — ENDING을 기다리지 않고 ACTIVE 중에
+    # 실행한 경우와, 그래서 뒤따르는 ENDING을 억제한 경우. 무대에서 "왜 두 번 안 나갔나"를
+    # 설명할 수 있어야 하므로 억제 쪽도 사유로 드러낸다.
+    "committed (early)": "커밋됨 (조기 발사)",
+    "already dispatched early": "조기 발사로 이미 실행됨 (중복 억제)",
 }
 
 _STAGE_LABELS: Mapping[ExecutionStage, str] = {
