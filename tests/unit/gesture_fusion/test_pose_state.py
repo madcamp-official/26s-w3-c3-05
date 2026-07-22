@@ -306,6 +306,26 @@ def test_steady_horizontal_hold_does_not_fire() -> None:
     assert _desktop_kinds(events) == []
 
 
+def test_swipe_commit_expires_after_inactivity() -> None:
+    """왼쪽 커밋 후 two_fingers가 SWIPE_RESET_MS 이상 끊기면(주먹 쥐고 대기) 커밋이
+    초기화돼, 다시 오른쪽을 가리켜도 스와이프가 나지 않는다(첫 커밋 취급)."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(0.9, 0.0))  # 왼쪽 커밋(side+1)
+    _feed(machine, "fist", ms=700, start=300)  # 주먹으로 >500ms 대기 → 커밋 만료
+    events = _feed(machine, "two_fingers", ms=200, start=1100, landmarks=_hand(-0.9, 0.0))
+    assert _desktop_kinds(events) == []
+
+
+def test_swipe_commit_survives_brief_dropout() -> None:
+    """왼쪽 커밋 후 짧게(SWIPE_RESET_MS 미만) 포즈가 끊겨도 커밋이 유지돼, 오른쪽 도달 시
+    발화한다 — 빠른 스윙 중 모션 블러로 포즈가 깜빡 끊기는 경우를 지킨다."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(0.9, 0.0))  # 왼쪽 커밋
+    _feed(machine, NONE_POSE, ms=100, start=300)  # 100ms 끊김 (<500)
+    events = _feed(machine, "two_fingers", ms=200, start=430, landmarks=_hand(-0.9, 0.0))
+    assert _desktop_kinds(events) == ["desktop_next"]
+
+
 # --- 규칙: 신뢰 못 하는 판정은 무시 ---
 
 def test_untrusted_prediction_neither_enters_nor_breaks() -> None:

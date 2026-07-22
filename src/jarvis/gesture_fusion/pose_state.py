@@ -108,6 +108,11 @@ TWO_FINGER_STRAIGHTNESS_MIN = 0.85
 DESKTOP_SWIPE_SIGN = 1.0
 # side가 뒤집혀 도달한 쪽을 어느 데스크톱에 대응시킬지의 부호. side=+1(dx>0=실측상 물리적
 # 왼쪽)에 SIGN>0이면 이전(prev) 데스크톱. 실기기에서 뒤집히면 부호만 바꾼다(ROT_SIGN과 같은 취지).
+SWIPE_RESET_MS = 500
+# 좌우 커밋(_swipe_side)을 초기화하는 무활동 시간. two_fingers 조작이 이 시간 이상 끊기면
+# (주먹·손 내림·장시간 정지) 이전 방향을 버린다 — 빠른 스윙 중의 짧은 포즈 끊김(수백 ms
+# 미만, 모션 블러)은 살려 미발화를 막되, 확실히 손을 뗀 뒤엔 이전 커밋이 새 스와이프로
+# 새지 않게 한다. 이보다 짧으면 빠른 스윙이 씹히고, 길면 뗀 뒤에도 오발동이 남는다.
 
 # 검지 회전 → 볼륨. index_point 상태에서 검지(MCP→TIP) 방향이 도는 각도를 누적해,
 # ROT_STEP_DEG마다 볼륨 1스텝을 낸다(시계=증가/반시계=감소). 커서 포인팅은 손 **평행이동**
@@ -274,8 +279,10 @@ class PoseStateMachine:
     _rot_active_until: int = 0   # 이 시각까지는 볼륨 노브 모드(다른 동작 차단)
     # 좌우 스와이프(데스크톱 전환) 추적. 직전에 커밋된 수평 방향(+1=왼쪽/−1=오른쪽,
     # 0=아직 없음). 수직 구간(|dy|≥MIN_VERTICALITY, 좌우 판별 안 함)에서는 이 값을 유지하고,
-    # 좌우 판별 프레임에서 반대 부호로 커밋되는 순간 스와이프를 낸다.
+    # 좌우 판별 프레임에서 반대 부호로 커밋되는 순간 스와이프를 낸다. `_swipe_last_ms`는
+    # two_fingers 조작을 마지막으로 처리한 시각 — SWIPE_RESET_MS 이상 끊기면 커밋을 버린다.
     _swipe_side: int = 0
+    _swipe_last_ms: int = 0
 
     def reset(self) -> None:
         """추적 손실 등으로 이력을 신뢰할 수 없을 때 — 상태를 지어내지 않는다."""
@@ -291,6 +298,7 @@ class PoseStateMachine:
         self._rot_missing = 0
         self._rot_active_until = 0
         self._swipe_side = 0
+        self._swipe_last_ms = 0
         self._palm_smoother.reset()
 
     def update(
@@ -315,6 +323,11 @@ class PoseStateMachine:
         else:
             self._palm_smoother.reset()
         self._cursor_ctx = (reference_point, palm_scale)
+        # 좌우 스와이프 커밋 만료: two_fingers 조작이 SWIPE_RESET_MS 이상 끊기면(주먹·손 내림·
+        # 장시간 정지) 이전 방향을 버린다. 빠른 스윙 중의 짧은 포즈 끊김은 이 시간 미만이라
+        # 살아남고, 확실히 손을 뗀 뒤엔 이전 커밋이 새 스와이프로 새지 않는다.
+        if self._swipe_side != 0 and timestamp_ms - self._swipe_last_ms > SWIPE_RESET_MS:
+            self._swipe_side = 0
         # 검지 회전 → 볼륨: 분류기 라벨이 index_point면 trusted·상태와 무관하게 추적한다
         # (고tilt에서 손을 눕힌 채로도 회전을 시작할 수 있게). 규칙 2 게이트 **앞**에서 돈다.
         rotation = self._track_rotation(prediction, timestamp_ms, landmarks)
@@ -560,6 +573,7 @@ class PoseStateMachine:
                 and straightness >= TWO_FINGER_STRAIGHTNESS_MIN
             ):
                 dx, dy = direction
+                self._swipe_last_ms = timestamp_ms  # two_fingers 조작 활성 — 만료 타이머 갱신
                 # 위/아래(스크롤)와 좌/우(스와이프)를 가르는 기준은 하나다: MIN_VERTICALITY.
                 # 너무 수직이면(|dy|≥MIN_VERTICALITY) 좌우로 판별하지 않고 스크롤만 낸다.
                 # 그 바깥에서만 수평 부호로 좌우 스와이프를 본다.
