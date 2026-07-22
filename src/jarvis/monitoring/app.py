@@ -69,6 +69,7 @@ from jarvis.gaze.lock import GazeLockState
 from jarvis.gaze.registration_lint import lint_target_record
 from jarvis.gaze.session_report import build_report, format_report, load_session
 from jarvis.gaze.smoothing import SmoothedGaze
+from jarvis.gesture_fusion.fusion import CommitDecision
 from jarvis.gesture_fusion.landmarks import HandObservation
 from jarvis.gesture_fusion.model_protocol import (
     DEFAULT_BACKGROUND_LABELS,
@@ -107,6 +108,7 @@ from jarvis.monitoring.overlay import (
 from jarvis.monitoring.demo_bridge import (
     BULB_DEVICE_ID,
     DEVICE_TYPE_TO_RUNTIME_ID,
+    LAPTOP_DEVICE_ID,
     UNKNOWN_TARGET,
     DemoBridge,
     DemoPreset,
@@ -1958,6 +1960,33 @@ class MainWindow(QMainWindow):
         """시연 탭에서는 정적 pose 제어 대신 TCN→Fusion 명령 경로만 사용한다."""
         return self._tabs.tabText(self._tabs.currentIndex()) == "시연"
 
+    def _handle_commit_decision(self, decision: CommitDecision) -> None:
+        """Fusion 커밋 판정 하나를 화면에 남기고, 통과하면 실행 워커로 넘긴다.
+
+        `_on_hand`에서 분리해 둔다 — 실행 여부를 가르는 게이트가 두 개(아래)라
+        카메라 프레임 없이 단위 테스트로 고정할 수 있어야 하기 때문이다.
+        """
+        self._demo_panel.append_line(describe_decision(decision), ok=decision.committed)
+        if not decision.committed:
+            return
+        # 노트북(내 PC) 대상 명령은 "손동작으로 컴퓨터 제어" 토글도 지켜야 한다. 이
+        # 경로(TCN→Fusion→Intent)는 정적 pose 제어와 배선이 달라 예전에는 그 토글을
+        # 통과하지 않았고, 체크를 꺼도 두 손가락 slide가 데스크톱을 전환했다(2026-07-22
+        # 발견). 전구는 OS 입력이 아니라 네트워크 명령이라 이 토글의 대상이 아니다 —
+        # 시연 실행 토글만 본다.
+        if decision.target == LAPTOP_DEVICE_ID and not self._pose_control.enabled:
+            self._demo_panel.set_last_action(
+                f"{decision.gesture} → {decision.target} "
+                "(손동작으로 컴퓨터 제어 꺼짐 — 실행 안 함)",
+                ok=False,
+            )
+        elif self._demo_bridge.execution_enabled and self._execute_worker is not None:
+            self._execute_worker.submit(decision)
+        else:
+            self._demo_panel.set_last_action(
+                f"{decision.gesture} → {decision.target} (실행 안 함)", ok=False
+            )
+
     def _build_pipeline_tab(self) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -2598,16 +2627,7 @@ class MainWindow(QMainWindow):
                 # 제스처가 완결된 프레임에서만 나온다.
                 decision = self._demo_bridge.push_gesture(tick.estimate)
                 if decision is not None:
-                    self._demo_panel.append_line(
-                        describe_decision(decision), ok=decision.committed
-                    )
-                    if decision.committed:
-                        if self._demo_bridge.execution_enabled and self._execute_worker is not None:
-                            self._execute_worker.submit(decision)
-                        else:
-                            self._demo_panel.set_last_action(
-                                f"{decision.gesture} → {decision.target} (실행 안 함)", ok=False
-                            )
+                    self._handle_commit_decision(decision)
                 self._update_demo_state(tick.estimate.gesture)
         # 녹화 중이면 이 프레임의 관측값(스무딩 전 원본)을 클립 버퍼에 넣는다. observation은
         # 검출·손실 프레임 둘 다 존재하므로(hand_probe A단계) 미검출도 클립에 남아 미검출

@@ -860,6 +860,66 @@ def test_demo_execution_toggle_arms_and_disarms_command_dispatch(tmp_path: Path)
         app.processEvents()
 
 
+def _committed_decision(target: str, gesture: str = "slide_two_fingers_left"):  # type: ignore[no-untyped-def]
+    """실행 게이트만 보기 위한 최소 커밋 판정(점수는 게이트가 안 읽으므로 None)."""
+    from jarvis.gesture_fusion.fusion import CommitDecision
+
+    return CommitDecision(
+        committed=True,
+        reason="committed",
+        target=target,
+        gesture=gesture,
+        score=None,
+        timestamp_ms=1000,
+        frame_id=1,
+        intent_id="intent-1",
+    )
+
+
+def test_laptop_command_blocked_while_computer_control_is_off(tmp_path: Path) -> None:
+    """"손동작으로 컴퓨터 제어"가 꺼져 있으면 노트북 대상 명령은 실행되지 않는다.
+
+    2026-07-22 회귀: TCN→Fusion→Intent 경로가 정적 pose 제어와 배선이 달라 그 토글을
+    통과하지 않았고, 체크를 꺼도 두 손가락 slide가 실제로 데스크톱을 전환했다.
+    """
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    submitted: list[object] = []
+    try:
+        window._demo_bridge.execution_enabled = True
+        window._execute_worker = type("W", (), {"submit": lambda _s, d: submitted.append(d)})()
+
+        window._set_control_enabled(False)
+        window._handle_commit_decision(_committed_decision("laptop"))
+        assert submitted == []  # 컴퓨터 제어가 꺼져 있으므로 실행 금지
+
+        window._set_control_enabled(True)
+        window._handle_commit_decision(_committed_decision("laptop"))
+        assert len(submitted) == 1  # 켜면 평소대로 실행
+    finally:
+        window._execute_worker = None
+        window.close()
+        app.processEvents()
+
+
+def test_bulb_command_ignores_computer_control_toggle(tmp_path: Path) -> None:
+    """전구는 OS 입력이 아니라 네트워크 명령이라 컴퓨터 제어 토글의 대상이 아니다."""
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    submitted: list[object] = []
+    try:
+        window._demo_bridge.execution_enabled = True
+        window._execute_worker = type("W", (), {"submit": lambda _s, d: submitted.append(d)})()
+
+        window._set_control_enabled(False)
+        window._handle_commit_decision(_committed_decision("room.bulb", "rotate_clockwise"))
+        assert len(submitted) == 1
+    finally:
+        window._execute_worker = None
+        window.close()
+        app.processEvents()
+
+
 def test_demo_tab_never_double_executes_static_pose_control(tmp_path: Path) -> None:
     """시연은 TCN→Fusion만 실행하며 정적 pose 이벤트를 OS에 중복 전달하지 않는다."""
     app = QApplication.instance() or QApplication([])
