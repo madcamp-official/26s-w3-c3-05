@@ -144,6 +144,40 @@ class MacOSInputSink:
         )
         self._post(event)
 
+    def center_cursor_on_foreground(self) -> None:
+        """스크롤 휠 이벤트는 커서가 있는 창이 받는다(하드웨어 이벤트 특성) — 물리
+        마우스가 없거나 커서가 엉뚱한 곳에 있으면 조용히 아무 데도 안 먹힌다. 스크롤
+        직전에 커서를 현재 활성 앱의 맨 앞 창 중앙으로 옮겨 실제로 그 창이 받게 한다.
+
+        앱·창 정보를 못 얻으면 조용히 넘어간다(커서 보정 실패가 스크롤 자체를 막지
+        않는다). ``Win32InputSink.center_cursor_on_foreground``와 같은 규약.
+        """
+        import Quartz
+        from AppKit import NSWorkspace
+
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        if app is None:
+            return
+        pid = app.processIdentifier()
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
+        )
+        for info in windows or []:
+            if info.get("kCGWindowOwnerPID") != pid or info.get("kCGWindowLayer", 0) != 0:
+                continue
+            bounds = info.get("kCGWindowBounds")
+            if not bounds:
+                continue
+            target = (
+                bounds["X"] + bounds["Width"] / 2,
+                bounds["Y"] + bounds["Height"] / 2,
+            )
+            event = Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventMouseMoved, target, Quartz.kCGMouseButtonLeft
+            )
+            self._post(event)
+            return
+
     def tap_key(self, key: InputKey) -> None:
         """키 하나를 누름→뗌으로 전송한다.
 

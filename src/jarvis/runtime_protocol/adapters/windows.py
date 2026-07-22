@@ -76,6 +76,19 @@ class InputSink(Protocol):
         """Scroll the wheel by ``ticks`` (positive up, negative down)."""
         ...
 
+    def center_cursor_on_foreground(self) -> None:
+        """Move the cursor to the center of the current foreground window.
+
+        A synthesized wheel event is a hardware-level signal delivered to
+        whatever window is under the cursor — not to the focused window. The
+        Intent-driven scroll path (unlike pose control, which already tracks
+        the cursor to the hand) never positions the cursor at all, so without
+        a physical mouse the cursor can sit anywhere (e.g. over this app's own
+        window), and scroll commands silently land nowhere useful. Call this
+        immediately before :meth:`scroll` to make the command actually visible.
+        """
+        ...
+
     def tap_key(self, key: InputKey) -> None:
         """Press and release a single system key."""
         ...
@@ -139,6 +152,11 @@ class WindowsAdapter:
         count = _as_count(command.value)
         if count is None:
             return AdapterResult(AdapterStatus.FAILED, f"invalid scroll amount {command.value!r}")
+        # 이 경로(제스처→Intent)는 pose 제어와 달리 손 움직임을 커서에 반영하지 않으므로,
+        # 물리 마우스가 없으면 커서가 어디 있는지 알 수 없다 — 휠 이벤트를 실제로 보이게
+        # 하려면 보내기 직전에 포그라운드 창으로 커서를 옮겨야 한다.
+        if command.operation in ("increment", "decrement"):
+            self._sink.center_cursor_on_foreground()
         if command.operation == "increment":
             self._sink.scroll(count)
         elif command.operation == "decrement":
@@ -217,6 +235,11 @@ _VK_W = 0x57  # 탭 닫기(Ctrl+W)용
 _VK_LEFT = 0x25  # ← 화살표 — 이전 가상 데스크톱
 _VK_RIGHT = 0x27  # → 화살표 — 다음 가상 데스크톱
 
+# 탐색기가 가상 데스크톱 배치를 저장하는 레지스트리 키(HKCU 하위). 문서화되지 않은
+# 값이라 빌드에 따라 없을 수 있다 — `_desktop_layout`이 그 경우를 None으로 처리한다.
+_VIRTUAL_DESKTOP_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops"
+_DESKTOP_GUID_BYTES = 16  # 데스크톱 GUID 하나의 바이트 수(VirtualDesktopIDs가 이 단위로 이어짐)
+
 
 class Win32InputSink:
     """Real OS input via ``user32`` (Windows only, manually verified).
@@ -265,6 +288,23 @@ class Win32InputSink:
     def scroll(self, ticks: int) -> None:
         self._user32().mouse_event(_MOUSEEVENTF_WHEEL, 0, 0, ticks * _WHEEL_DELTA, 0)
 
+    def center_cursor_on_foreground(self) -> None:
+        # 포그라운드 창이 없거나(바탕화면 등) 좌표를 못 얻으면 조용히 넘어간다 — 커서
+        # 위치 보정 하나가 실패했다고 스크롤 명령 자체를 막지 않는다.
+        import ctypes
+        import ctypes.wintypes
+
+        user32 = self._user32()
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return
+        rect = ctypes.wintypes.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return
+        center_x = (rect.left + rect.right) // 2
+        center_y = (rect.top + rect.bottom) // 2
+        user32.SetCursorPos(center_x, center_y)
+
     def tap_key(self, key: InputKey) -> None:
         user32 = self._user32()
         if key is InputKey.TASK_VIEW:
@@ -306,17 +346,72 @@ class Win32InputSink:
     def switch_desktop(self, forward: bool, repeat: int) -> None:
         # 가상 데스크톱 전환: Ctrl+Win+← (forward) / Ctrl+Win+→ (backward).
         # 방향은 제스처와 반대로 매핑한다(사용자 지시): 오른쪽 슬라이드(forward)는
-        # 왼쪽 데스크톱으로 간다. Ctrl+Win을 시퀀스 전체 동안 누른 채로 화살표를
-        # repeat번 눌러, 여러 칸을 이동해도 조합이 유지되게 한다.
+        # 왼쪽 데스크톱으로 간다.
+        #
+        # **기존 데스크톱 사이를 순환한다 — 새로 만들지 않는다**(2026-07-22 사용자 지시).
+        # 레지스트리로 데스크톱 개수와 현재 위치를 읽어 목표 인덱스를 `% count`로 감아
+        # 계산하고, 그 차이만큼만 화살표를 누른다. 누르는 횟수가 항상 `count` 미만이라
+        # 끝을 넘어설 수 없다 — repeat이 커도 마지막 데스크톱 밖으로 나가지 않는다.
+        steps = self._desktop_steps(forward, repeat)
+        if steps == 0:
+            return  # 데스크톱이 하나뿐이거나 이동할 필요가 없음
+        # Ctrl+Win을 시퀀스 전체 동안 누른 채로 화살표를 눌러, 여러 칸을 이동해도
+        # 조합이 유지되게 한다.
         user32 = self._user32()
-        arrow = _VK_LEFT if forward else _VK_RIGHT
+        arrow = _VK_RIGHT if steps > 0 else _VK_LEFT
         user32.keybd_event(_VK_CONTROL, 0, 0, 0)
         user32.keybd_event(_VK_LWIN, 0, 0, 0)
-        for _ in range(repeat):
+        for _ in range(abs(steps)):
             user32.keybd_event(arrow, 0, 0, 0)
             user32.keybd_event(arrow, 0, _KEYEVENTF_KEYUP, 0)
         user32.keybd_event(_VK_LWIN, 0, _KEYEVENTF_KEYUP, 0)
         user32.keybd_event(_VK_CONTROL, 0, _KEYEVENTF_KEYUP, 0)
+
+    def _desktop_steps(self, forward: bool, repeat: int) -> int:
+        """이번 전환에서 실제로 눌러야 할 화살표 이동량(+=오른쪽, -=왼쪽).
+
+        데스크톱 배치를 읽을 수 있으면 순환(wrap)까지 계산하고, 못 읽으면 예전처럼
+        요청된 방향으로 `repeat`칸만 이동한다 — Ctrl+Win+화살표는 끝에서 아무 일도
+        하지 않을 뿐 데스크톱을 만들지 않으므로, 이 fallback도 새 데스크톱을 만들지는
+        않는다(순환만 안 될 뿐이다).
+        """
+        # 인덱스 기준 방향: forward는 왼쪽(인덱스 감소)으로 간다(위 주석의 반대 매핑).
+        delta = -repeat if forward else repeat
+        layout = self._desktop_layout()
+        if layout is None:
+            return delta
+        count, current = layout
+        if count <= 1:
+            return 0
+        return ((current + delta) % count) - current
+
+    def _desktop_layout(self) -> tuple[int, int] | None:
+        """`(데스크톱 개수, 현재 인덱스)` — 읽지 못하면 None.
+
+        Windows는 가상 데스크톱 개수·현재 위치를 공개 API로 주지 않아 탐색기가 쓰는
+        레지스트리 값을 읽는다. `VirtualDesktopIDs`는 데스크톱 GUID(16바이트)를 화면
+        왼쪽→오른쪽 순서로 이어 붙인 값이고, `CurrentVirtualDesktop`은 그중 현재
+        데스크톱의 GUID다. 문서화되지 않은 값이라 Windows 빌드에 따라 없을 수 있어,
+        읽기 실패·형식 불일치는 전부 None으로 돌려 호출부가 fallback하게 한다
+        (development-principles.md 1.1: 못 읽은 것을 아는 척하지 않는다).
+        """
+        import winreg  # Windows 전용 stdlib — `_user32`와 같은 이유로 지연 import한다.
+
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _VIRTUAL_DESKTOP_KEY) as key:
+                ids, _ = winreg.QueryValueEx(key, "VirtualDesktopIDs")
+                current, _ = winreg.QueryValueEx(key, "CurrentVirtualDesktop")
+        except OSError:
+            return None
+        if not isinstance(ids, bytes) or not isinstance(current, bytes):
+            return None
+        if len(current) != _DESKTOP_GUID_BYTES or not ids or len(ids) % _DESKTOP_GUID_BYTES:
+            return None
+        count = len(ids) // _DESKTOP_GUID_BYTES
+        for index in range(count):
+            if ids[index * _DESKTOP_GUID_BYTES : (index + 1) * _DESKTOP_GUID_BYTES] == current:
+                return count, index
+        return None  # 현재 GUID가 목록에 없음 — 신뢰할 수 없으니 fallback
 
 
 def default_input_sink() -> InputSink:

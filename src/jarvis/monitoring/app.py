@@ -41,7 +41,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDockWidget,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -69,6 +68,7 @@ from jarvis.gaze.lock import GazeLockState
 from jarvis.gaze.registration_lint import lint_target_record
 from jarvis.gaze.session_report import build_report, format_report, load_session
 from jarvis.gaze.smoothing import SmoothedGaze
+from jarvis.gesture_fusion.fusion import CommitDecision
 from jarvis.gesture_fusion.landmarks import HandObservation
 from jarvis.gesture_fusion.model_protocol import (
     DEFAULT_BACKGROUND_LABELS,
@@ -78,7 +78,6 @@ from jarvis.gesture_fusion.model_protocol import (
 from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
 from jarvis.gesture_fusion.pose_state import TWO_FINGER_STRAIGHTNESS_MIN
 from jarvis.monitoring.camera_worker import CameraWorker
-from jarvis.monitoring.console import ConsoleLog, StderrCapture
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
 from jarvis.monitoring.gesture_probe import (
@@ -107,6 +106,7 @@ from jarvis.monitoring.overlay import (
 from jarvis.monitoring.demo_bridge import (
     BULB_DEVICE_ID,
     DEVICE_TYPE_TO_RUNTIME_ID,
+    LAPTOP_DEVICE_ID,
     UNKNOWN_TARGET,
     DemoBridge,
     DemoPreset,
@@ -159,17 +159,33 @@ _TARGET_DEVICE_TYPES: tuple[str, ...] = ("computer", "electric bulb")
 # "그 자세에서 보던 테두리 위치"를 학습해 pose 보정의 부호가 뒤집힌다
 # (2026-07-22 실측, documents/gaze.md).
 _CENTER_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
-    (5_000, "물체 중앙 한 점을 응시한 채 고개를 왼쪽으로 천천히 끝까지", "FIX CENTER - TURN HEAD LEFT"),
+    (
+        5_000,
+        "물체 중앙 한 점을 응시한 채 고개를 왼쪽으로 천천히 끝까지",
+        "FIX CENTER - TURN HEAD LEFT",
+    ),
     (10_000, "중앙 응시 유지, 고개를 오른쪽으로 천천히 끝까지", "FIX CENTER - TURN HEAD RIGHT"),
-    (14_000, "중앙 응시 유지, 고개를 정면으로 되돌리고 위·아래로 천천히", "FIX CENTER - HEAD UP / DOWN"),
+    (
+        14_000,
+        "중앙 응시 유지, 고개를 정면으로 되돌리고 위·아래로 천천히",
+        "FIX CENTER - HEAD UP / DOWN",
+    ),
     (17_000, "중앙 응시 유지, 카메라에 조금 가까이·멀리 이동", "FIX CENTER - MOVE NEAR / FAR"),
     (20_000, "중앙 응시 유지, 편한 자세로 되돌아오기", "FIX CENTER - RETURN NEUTRAL"),
 )
 _BOUNDARY_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
     (2_000, "고개를 고정하고 시선을 물체의 왼쪽 위 모서리로 이동", "HEAD STILL - LOOK TOP-LEFT"),
     (5_500, "윗변을 따라 왼쪽 위에서 오른쪽 위까지 천천히 응시", "TRACE TOP EDGE  LEFT -> RIGHT"),
-    (9_000, "오른쪽 변을 따라 오른쪽 위에서 오른쪽 아래까지 응시", "TRACE RIGHT EDGE  TOP -> BOTTOM"),
-    (12_500, "아랫변을 따라 오른쪽 아래에서 왼쪽 아래까지 응시", "TRACE BOTTOM EDGE  RIGHT -> LEFT"),
+    (
+        9_000,
+        "오른쪽 변을 따라 오른쪽 위에서 오른쪽 아래까지 응시",
+        "TRACE RIGHT EDGE  TOP -> BOTTOM",
+    ),
+    (
+        12_500,
+        "아랫변을 따라 오른쪽 아래에서 왼쪽 아래까지 응시",
+        "TRACE BOTTOM EDGE  RIGHT -> LEFT",
+    ),
     (16_000, "왼쪽 변을 따라 왼쪽 아래에서 왼쪽 위까지 응시", "TRACE LEFT EDGE  BOTTOM -> TOP"),
 )
 _MONO = "font-family:Consolas,monospace; font-size:12px; color:#c9d1d9;"
@@ -319,10 +335,7 @@ class GazePanel(QScrollArea):
         else:
             source_status = ""
             status_color = "#3fb950"
-        self._status.setText(
-            f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame"
-            + source_status
-        )
+        self._status.setText(f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame" + source_status)
         self._status.setStyleSheet(f"color:{status_color};")
 
         self._lock_strip.set_state(s.lock_state)
@@ -352,8 +365,7 @@ class GazePanel(QScrollArea):
             self._confirmed_target.setStyleSheet(_MONO + " color:#d29922;")
         else:
             self._confirmed_target.setText(
-                f"3초 확정 응시 대상: {s.locked_target_label or '--'} "
-                f"[{s.locked_device or '--'}]"
+                f"3초 확정 응시 대상: {s.locked_target_label or '--'} [{s.locked_device or '--'}]"
             )
             color = "#3fb950" if s.locked_device is not None else "#8b949e"
             self._confirmed_target.setStyleSheet(_MONO + f" color:{color};")
@@ -606,6 +618,7 @@ class HandPanel(QScrollArea):
         probe_status: str,
         gesture_status: str,
         *,
+        gesture_available: bool = False,
         smoothing: bool = True,
         on_smoothing_toggled: Callable[[bool], None] | None = None,
         on_control_toggled: Callable[[bool], None] | None = None,
@@ -647,7 +660,9 @@ class HandPanel(QScrollArea):
         layout.addWidget(self._model_canvas)
 
         # Toggle: show the model input smoothed (real, default) or raw, to compare.
-        self._smooth_toggle = QCheckBox("스무딩 적용 (모델이 실제로 쓰는 입력 · 끄면 raw 정규화 정점)")
+        self._smooth_toggle = QCheckBox(
+            "스무딩 적용 (모델이 실제로 쓰는 입력 · 끄면 raw 정규화 정점)"
+        )
         self._smooth_toggle.setChecked(smoothing)
         if on_smoothing_toggled is not None:
             self._smooth_toggle.toggled.connect(on_smoothing_toggled)
@@ -664,14 +679,14 @@ class HandPanel(QScrollArea):
         self._control_status.setStyleSheet(_MONO)
         layout.addWidget(self._control_status)
 
-        # The one thing that must not be misread: recognition is OFF (untrained).
-        banner = QLabel("⚠ 제스처 인식 비활성\n" + gesture_status)
-        banner.setWordWrap(True)
-        banner.setStyleSheet(
-            "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
-            " border-radius:6px; padding:8px; font-weight:600;"
-        )
-        layout.addWidget(banner)
+        # The one thing that must not be misread: this must reflect the real
+        # gesture source (`MainWindow._gesture_source`), not a static guess — a
+        # trained checkpoint can be live even though hand *tracking* here never
+        # ran a gesture classifier of its own.
+        self._gesture_banner = QLabel()
+        self._gesture_banner.setWordWrap(True)
+        layout.addWidget(self._gesture_banner)
+        self.set_gesture_status(gesture_status, gesture_available)
 
         layout.addWidget(_header("손 랜드마크 추적 (MediaPipe Hands, 실제)"))
         self._detected = QLabel("hand detected : —")
@@ -709,12 +724,31 @@ class HandPanel(QScrollArea):
         outer.addStretch(1)
         self.setWidget(body)
 
+    def set_gesture_status(self, status: str, available: bool) -> None:
+        """Update the recognition banner from the real gesture source (weight switch, too)."""
+        prefix = "✓ 제스처 인식 활성" if available else "⚠ 제스처 인식 비활성"
+        self._gesture_banner.setText(f"{prefix}\n{status}")
+        if available:
+            self._gesture_banner.setStyleSheet(
+                "background:#12261a; color:#3fb950; border:1px solid #1e5a30;"
+                " border-radius:6px; padding:8px; font-weight:600;"
+            )
+        else:
+            self._gesture_banner.setStyleSheet(
+                "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
+                " border-radius:6px; padding:8px; font-weight:600;"
+            )
+
     def update_snapshot(self, s: HandSnapshot, control_action: str = "") -> None:
         self._status.setText(f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame")
         self._status.setStyleSheet("color:#3fb950;" if s.hand_detected else "color:#8b949e;")
         self._detected.setText(
             f"hand detected : {s.hand_detected}"
-            + (f"   handedness : {s.handedness} ({s.handedness_score:.0%})" if s.hand_detected else "")
+            + (
+                f"   handedness : {s.handedness} ({s.handedness_score:.0%})"
+                if s.hand_detected
+                else ""
+            )
         )
         self._det_conf.set_value(
             s.detection_confidence if s.hand_detected else 0.0, color="#58a6ff"
@@ -788,7 +822,9 @@ class ContractPanel(QFrame):
     def __init__(self, title: str, message_type: Any, note: str) -> None:
         super().__init__()
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet("QFrame{background:#161b22; border:1px solid #30363d; border-radius:8px;}")
+        self.setStyleSheet(
+            "QFrame{background:#161b22; border:1px solid #30363d; border-radius:8px;}"
+        )
         layout = QVBoxLayout(self)
         head = QLabel(title)
         head.setStyleSheet("font-weight:600; color:#e6e6e6; border:none;")
@@ -797,9 +833,7 @@ class ContractPanel(QFrame):
         note_label.setWordWrap(True)
         note_label.setStyleSheet("color:#8b949e; border:none;")
         layout.addWidget(note_label)
-        fields = "\n".join(
-            f"  {f.name}: {f.type}" for f in dataclasses.fields(message_type)
-        )
+        fields = "\n".join(f"  {f.name}: {f.type}" for f in dataclasses.fields(message_type))
         shape = QLabel(f"{message_type.__name__}\n{fields}")
         shape.setStyleSheet(_MONO + " border:none;")
         layout.addWidget(shape)
@@ -936,16 +970,19 @@ class VideoView(QLabel):
     """
 
     def __init__(
-        self, *, show_overlay: bool = True, show_hand_overlay: bool | None = None
+        self,
+        *,
+        show_overlay: bool = True,
+        show_hand_overlay: bool | None = None,
+        show_hand_details: bool = True,
     ) -> None:
         super().__init__()
         self.setMinimumSize(480, 360)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background:#0b0e13;")
         self._show_overlay = show_overlay
-        self._show_hand_overlay = (
-            show_overlay if show_hand_overlay is None else show_hand_overlay
-        )
+        self._show_hand_overlay = show_overlay if show_hand_overlay is None else show_hand_overlay
+        self._show_hand_details = show_hand_details
         self._fps_times: deque[float] = deque(maxlen=30)
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
@@ -969,9 +1006,8 @@ class VideoView(QLabel):
         """실시간 탭에도 제어 상태를 띄운다 — 3번 탭에만 있으면 자세를 보며 못 고친다."""
         self._control_action = action
         self._control_enabled = enabled
-    def set_registration_guidance(
-        self, title: str, instruction: str, progress: float
-    ) -> None:
+
+    def set_registration_guidance(self, title: str, instruction: str, progress: float) -> None:
         self._registration_guide = (title, instruction, progress)
 
     def clear_registration_guidance(self) -> None:
@@ -1012,6 +1048,7 @@ class VideoView(QLabel):
                 mirror=True,
                 control_action=self._control_action,
                 control_enabled=self._control_enabled,
+                show_details=self._show_hand_details,
             )
         self._render(display)
 
@@ -1053,7 +1090,9 @@ class GestureSidebar(QWidget):
         super().__init__()
         self._source = source
         layout = QVBoxLayout(self)
-        title = QLabel(f"인식 스트림 ({int(EXPECTED_INPUT_FPS)}fps · frame · gesture · conf · phase)")
+        title = QLabel(
+            f"인식 스트림 ({int(EXPECTED_INPUT_FPS)}fps · frame · gesture · conf · phase)"
+        )
         title.setStyleSheet("font-weight:600; color:#58a6ff; padding:4px 0;")
         self._status = QLabel(source.status_text)
         self._status.setWordWrap(True)
@@ -1072,7 +1111,9 @@ class GestureSidebar(QWidget):
     def set_hand_status(self, snapshot: HandSnapshot) -> None:
         if snapshot.hand_detected:
             label = snapshot.handedness or "?"
-            self._hand_line.setText(f"손 추적: {label} 검출 (det {snapshot.detection_confidence:.0%})")
+            self._hand_line.setText(
+                f"손 추적: {label} 검출 (det {snapshot.detection_confidence:.0%})"
+            )
             self._hand_line.setStyleSheet(_MONO + " color:#3fb950;")
         else:
             self._hand_line.setText("손 추적: 손 없음")
@@ -1125,36 +1166,15 @@ class MessagePanel(QListWidget):
         self.scrollToBottom()
 
 
-class ConsolePanel(QListWidget):
-    """앱 하단 콘솔 독 — 가로챈 프로세스 stderr(네이티브 로그)를 표시한다.
-
-    터미널로 새던 C++ stderr(MediaPipe clearcut 등)를 여기로 모은다. 시스템 메시지
-    패널(:class:`MessagePanel`)과 분리해, 노이즈가 실제 INFO/WARN을 덮지 않게 한다.
-    """
-
-    def __init__(self, console: ConsoleLog) -> None:
-        super().__init__()
-        self._console = console
-        self.setStyleSheet(
-            "QListWidget{background:#0a0d12; border:none;"
-            " font-family:Consolas,monospace; font-size:11px; color:#8b949e;}"
-        )
-
-    def refresh(self) -> None:
-        self.clear()
-        for line in self._console.recent(200):
-            suffix = f"  (x{line.count})" if line.count > 1 else ""
-            self.addItem(f"{line.text}{suffix}")
-        self.scrollToBottom()
-
-
 class StageCard(QFrame):
     """One pipeline stage's availability card."""
 
     def __init__(self, status: StageStatus) -> None:
         super().__init__()
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet("QFrame{background:#161b22; border:1px solid #30363d; border-radius:8px;}")
+        self.setStyleSheet(
+            "QFrame{background:#161b22; border:1px solid #30363d; border-radius:8px;}"
+        )
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
         name = QLabel(status.name)
@@ -1350,7 +1370,9 @@ class FinetuneRecordingPanel(QWidget):
 
     def set_status(self, text: str, *, ok: bool = True) -> None:
         self._status.setText(text)
-        self._status.setStyleSheet(("color:#3fb950;" if ok else "color:#d29922;") + " padding:4px 0;")
+        self._status.setStyleSheet(
+            ("color:#3fb950;" if ok else "color:#d29922;") + " padding:4px 0;"
+        )
 
 
 class MainWindow(QMainWindow):
@@ -1385,7 +1407,9 @@ class MainWindow(QMainWindow):
         self._gesture_source: GestureSource = self._make_gesture_source()
         self._env = env if env is not None else _load_env()
         self._model_path = model_path if model_path is not None else _default_model_path()
-        self._profiles_path = profiles_path if profiles_path is not None else _default_profiles_path()
+        self._profiles_path = (
+            profiles_path if profiles_path is not None else _default_profiles_path()
+        )
         self._hand_model_path = (
             hand_model_path if hand_model_path is not None else _default_hand_model_path()
         )
@@ -1460,22 +1484,6 @@ class MainWindow(QMainWindow):
         # keyPressEvent에서 "지금 파인튜닝 탭이 보이는가"를 판정하는 데 쓴다(스페이스바
         # 녹화 단축키가 다른 탭에서 실수로 발동하지 않도록).
         self._tabs = tabs
-
-        # 하단 콘솔 독: 터미널로 새던 네이티브 stderr(MediaPipe clearcut 등)를 앱 안에
-        # 모은다. 모든 탭 아래에 걸쳐 항상 보인다. 실제 캡처(fd 2 리다이렉트)는 run()이
-        # start_console_capture()로 시작한다 — __init__에서 하면 테스트의 stderr까지 삼킨다.
-        self._console_log = ConsoleLog()
-        self._console_panel = ConsolePanel(self._console_log)
-        self._stderr_capture: StderrCapture | None = None
-        console_dock = QDockWidget("콘솔 (stderr)", self)
-        console_dock.setObjectName("console_dock")
-        console_dock.setWidget(self._console_panel)
-        console_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
-        console_dock.setMaximumHeight(160)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, console_dock)
 
         self._log.info("모니터 시작")
         if self._gesture_source.available:
@@ -1570,11 +1578,13 @@ class MainWindow(QMainWindow):
             self._recognizer = None
             self._gesture_source = UntrainedGestureSource()
             self._sidebar.set_source(self._gesture_source)
+            self._hand_panel.set_gesture_status(self._gesture_source.status_text, False)
             self._log.warn(f"가중치 전환 실패: {checkpoint.name} — 인식 off")
             return
         self._recognizer = probe
         self._gesture_source = ProbeGestureSource(probe)
         self._sidebar.set_source(self._gesture_source)
+        self._hand_panel.set_gesture_status(self._gesture_source.status_text, True)
         self._log.info(f"제스처 인식 가중치 전환: {checkpoint.name}")
 
     def _build_live_tab(self) -> QWidget:
@@ -1582,7 +1592,9 @@ class MainWindow(QMainWindow):
         self._sidebar = GestureSidebar(self._gesture_source)
         # 손 추적 탭과 상태를 공유하는 제어 토글 — 자세를 취하며 보는 화면이 실시간
         # 탭이라 여기서도 켜고 끌 수 있어야 한다.
-        self._control_toggle_live = QCheckBox("🖱 손동작으로 컴퓨터 제어 (실제 클릭·스크롤이 실행됩니다)")
+        self._control_toggle_live = QCheckBox(
+            "🖱 손동작으로 컴퓨터 제어 (실제 클릭·스크롤이 실행됩니다)"
+        )
         self._control_toggle_live.setChecked(True)
         self._control_toggle_live.setStyleSheet("color:#f0b429; font-weight:600;")
         self._control_toggle_live.toggled.connect(self._on_control_toggled_live)
@@ -1658,9 +1670,7 @@ class MainWindow(QMainWindow):
             "세션을 녹화하면 target별 정확도, 자세·거리·얼굴 위치 구간과 "
             "대표 실패 프레임이 여기에 표시됩니다."
         )
-        self._session_report_view.setStyleSheet(
-            "font-family:Consolas,monospace; font-size:11px;"
-        )
+        self._session_report_view.setStyleSheet("font-family:Consolas,monospace; font-size:11px;")
         layout.addWidget(self._session_report_view)
         QShortcut(QKeySequence("F9"), self, self._toggle_session_recording)
         for digit in range(10):
@@ -1722,7 +1732,8 @@ class MainWindow(QMainWindow):
     def _build_hand_tab(self) -> QWidget:
         self._hand_panel = HandPanel(
             self._hand_probe.status_text,
-            self._hand_probe.gesture_recognition_status,
+            self._gesture_source.status_text,
+            gesture_available=self._gesture_source.available,
             smoothing=self._hand_probe.smoothing,
             on_smoothing_toggled=self._hand_probe.set_smoothing,
             on_control_toggled=self._set_control_enabled,
@@ -1769,7 +1780,11 @@ class MainWindow(QMainWindow):
         """
         # 관객용 화면에서는 gaze/HUD 디버그는 숨기되, 실제 MediaPipe 손 입력과
         # 제스처 판정을 사용자가 확인할 수 있도록 손 스켈레톤만 남긴다.
-        self._demo_video = VideoView(show_overlay=False, show_hand_overlay=True)
+        self._demo_video = VideoView(
+            show_overlay=False,
+            show_hand_overlay=True,
+            show_hand_details=False,
+        )
         self._demo_panel = DemoPanel(
             on_mapping_changed=self._on_demo_mapping_changed,
             on_fallback_changed=self._on_demo_fallback_changed,
@@ -1942,7 +1957,10 @@ class MainWindow(QMainWindow):
     def _set_control_enabled(self, enabled: bool) -> None:
         """실제 OS 제어를 켜고 끈다. 끌 때는 눌린 버튼을 반드시 놓는다."""
         # 손 추적 탭에서 토글되면 실시간 탭 토글도 맞춘다.
-        if hasattr(self, "_control_toggle_live") and self._control_toggle_live.isChecked() != enabled:
+        if (
+            hasattr(self, "_control_toggle_live")
+            and self._control_toggle_live.isChecked() != enabled
+        ):
             self._control_toggle_live.blockSignals(True)
             self._control_toggle_live.setChecked(enabled)
             self._control_toggle_live.blockSignals(False)
@@ -1957,6 +1975,33 @@ class MainWindow(QMainWindow):
     def _demo_tab_active(self) -> bool:
         """시연 탭에서는 정적 pose 제어 대신 TCN→Fusion 명령 경로만 사용한다."""
         return self._tabs.tabText(self._tabs.currentIndex()) == "시연"
+
+    def _handle_commit_decision(self, decision: CommitDecision) -> None:
+        """Fusion 커밋 판정 하나를 화면에 남기고, 통과하면 실행 워커로 넘긴다.
+
+        `_on_hand`에서 분리해 둔다 — 실행 여부를 가르는 게이트가 두 개(아래)라
+        카메라 프레임 없이 단위 테스트로 고정할 수 있어야 하기 때문이다.
+        """
+        self._demo_panel.append_line(describe_decision(decision), ok=decision.committed)
+        if not decision.committed:
+            return
+        # 노트북(내 PC) 대상 명령은 "손동작으로 컴퓨터 제어" 토글도 지켜야 한다. 이
+        # 경로(TCN→Fusion→Intent)는 정적 pose 제어와 배선이 달라 예전에는 그 토글을
+        # 통과하지 않았고, 체크를 꺼도 두 손가락 slide가 데스크톱을 전환했다(2026-07-22
+        # 발견). 전구는 OS 입력이 아니라 네트워크 명령이라 이 토글의 대상이 아니다 —
+        # 시연 실행 토글만 본다.
+        if decision.target == LAPTOP_DEVICE_ID and not self._pose_control.enabled:
+            self._demo_panel.set_last_action(
+                f"{decision.gesture} → {decision.target} "
+                "(손동작으로 컴퓨터 제어 꺼짐 — 실행 안 함)",
+                ok=False,
+            )
+        elif self._demo_bridge.execution_enabled and self._execute_worker is not None:
+            self._execute_worker.submit(decision)
+        else:
+            self._demo_panel.set_last_action(
+                f"{decision.gesture} → {decision.target} (실행 안 함)", ok=False
+            )
 
     def _build_pipeline_tab(self) -> QWidget:
         body = QWidget()
@@ -1974,7 +2019,9 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(
             ContractPanel(
-                "Fusion → Protocol", Intent, "시선 타겟 + 제스처를 합쳐 만든 의도 (모델 학습 후 활성)."
+                "Fusion → Protocol",
+                Intent,
+                "시선 타겟 + 제스처를 합쳐 만든 의도 (모델 학습 후 활성).",
             )
         )
         layout.addWidget(
@@ -2143,7 +2190,11 @@ class MainWindow(QMainWindow):
             self._log.warn("이미 기기 등록이 진행 중입니다")
             return
         self._registration = TargetRegistrationSession(
-            target_id, name, device_type, device_id, config=self._gaze_config,
+            target_id,
+            name,
+            device_type,
+            device_id,
+            config=self._gaze_config,
             coverage_min_frames=self._gaze_config.registration_coverage_min_frames,
             raw_sample_dir=Path("data/calibration/raw_samples"),
             requires_nod_gate=requires_nod_gate,
@@ -2465,8 +2516,7 @@ class MainWindow(QMainWindow):
             summary = self._session_recorder.stop()
             path = self._session_recorder.path
             self._log.info(
-                f"세션 녹화 종료: {path} — {summary['frames']} frames, "
-                f"labels {summary['labels']}"
+                f"세션 녹화 종료: {path} — {summary['frames']} frames, labels {summary['labels']}"
             )
             self._session_record_button.setText("세션 녹화 시작 (F9)")
             self._update_session_status()
@@ -2533,9 +2583,7 @@ class MainWindow(QMainWindow):
             return
         self._sample_list.addItem(format_gaze_sample(sample))
         self._sample_list.scrollToBottom()
-        self._log.info(
-            f"Gaze 샘플 {sample['sample_index']}/{self._sample_store.capacity} 저장"
-        )
+        self._log.info(f"Gaze 샘플 {sample['sample_index']}/{self._sample_store.capacity} 저장")
         self._refresh_sample_button()
 
     def _refresh_sample_button(self) -> None:
@@ -2589,6 +2637,10 @@ class MainWindow(QMainWindow):
             "TCN 판정 대기",
             self._demo_bridge.execution_enabled,
         )
+        self._demo_panel.set_hand_status(
+            snapshot,
+            execution_enabled=self._demo_bridge.execution_enabled,
+        )
         self._hand_panel.update_snapshot(snapshot, self._pose_control.last_action)
         self._sidebar.set_hand_status(snapshot)
         self._finetune_panel.video.set_hand(snapshot)
@@ -2607,16 +2659,7 @@ class MainWindow(QMainWindow):
                 # 제스처가 완결된 프레임에서만 나온다.
                 decision = self._demo_bridge.push_gesture(tick.estimate)
                 if decision is not None:
-                    self._demo_panel.append_line(
-                        describe_decision(decision), ok=decision.committed
-                    )
-                    if decision.committed:
-                        if self._demo_bridge.execution_enabled and self._execute_worker is not None:
-                            self._execute_worker.submit(decision)
-                        else:
-                            self._demo_panel.set_last_action(
-                                f"{decision.gesture} → {decision.target} (실행 안 함)", ok=False
-                            )
+                    self._handle_commit_decision(decision)
                 self._update_demo_state(tick.estimate.gesture)
         # 녹화 중이면 이 프레임의 관측값(스무딩 전 원본)을 클립 버퍼에 넣는다. observation은
         # 검출·손실 프레임 둘 다 존재하므로(hand_probe A단계) 미검출도 클립에 남아 미검출
@@ -2636,21 +2679,9 @@ class MainWindow(QMainWindow):
         self._video._show_placeholder("NO CAMERA")
         self._gaze_video._show_placeholder("NO CAMERA")
 
-    def start_console_capture(self) -> None:
-        """프로세스 stderr(fd 2)를 하단 콘솔 독으로 가로챈다. run()이 창을 띄운 뒤 호출한다.
-
-        __init__이 아니라 여기서 하는 이유: __init__은 테스트가 창을 만들 때도 돌아,
-        거기서 fd 2를 리다이렉트하면 pytest의 stderr까지 삼켜버린다.
-        """
-        if self._stderr_capture is not None:
-            return
-        self._stderr_capture = StderrCapture(self._console_log.add)
-        self._stderr_capture.start()
-
     def _on_tick(self) -> None:
         # 인식 스트림은 _on_hand에서 프레임마다(12fps로 솎아) 직접 찍는다 — 여기선 안 건드림.
         self._messages.refresh()
-        self._console_panel.refresh()
         self._latency_panel.refresh()
         self._update_session_status()
 
@@ -2685,9 +2716,6 @@ class MainWindow(QMainWindow):
         # 실행 워커를 확실히 접는다 — 진행 중인 명령 하나는 끝까지 보내고 종료한다.
         if self._execute_worker is not None:
             self._execute_worker.stop()
-        # stderr를 원래 콘솔로 복원한다 — 프로세스 종료 후에도 stderr가 깨지지 않게.
-        if self._stderr_capture is not None:
-            self._stderr_capture.stop()
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
@@ -2732,6 +2760,4 @@ def run(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(argv or [])
     window = MainWindow()
     window.show()
-    # 창을 띄운 뒤 stderr 캡처를 켠다 — 이후 네이티브 로그는 터미널이 아니라 하단 콘솔 독으로.
-    window.start_console_capture()
     return int(app.exec())

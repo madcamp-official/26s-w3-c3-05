@@ -25,12 +25,27 @@ _FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 # Standard MediaPipe hand skeleton: 21 landmarks connected finger by finger.
 _HAND_CONNECTIONS: tuple[tuple[int, int], ...] = (
-    (0, 1), (1, 2), (2, 3), (3, 4),        # thumb
-    (0, 5), (5, 6), (6, 7), (7, 8),        # index
-    (5, 9), (9, 10), (10, 11), (11, 12),   # middle
-    (9, 13), (13, 14), (14, 15), (15, 16),  # ring
-    (13, 17), (17, 18), (18, 19), (19, 20),  # pinky
-    (0, 17),                                # palm base
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 4),  # thumb
+    (0, 5),
+    (5, 6),
+    (6, 7),
+    (7, 8),  # index
+    (5, 9),
+    (9, 10),
+    (10, 11),
+    (11, 12),  # middle
+    (9, 13),
+    (13, 14),
+    (14, 15),
+    (15, 16),  # ring
+    (13, 17),
+    (17, 18),
+    (18, 19),
+    (19, 20),  # pinky
+    (0, 17),  # palm base
 )
 
 # BGR colors keyed by GazeLockState value (kept as strings to avoid importing
@@ -121,8 +136,7 @@ def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
             (
                 detail
                 for detail in snapshot.device_details
-                if not np.isnan(detail.angular_distance_deg)
-                and detail.device_id not in polygon_ids
+                if not np.isnan(detail.angular_distance_deg) and detail.device_id not in polygon_ids
             ),
             key=lambda d: d.device_id,
         )
@@ -139,8 +153,7 @@ def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
     ys = np.linspace(pitch_span * 0.5, -pitch_span * 0.5, grid_h, dtype=np.float64)
     yaw_grid, pitch_grid = np.meshgrid(xs, ys)
     device_ids = sorted(
-        {detail.device_id for detail in polygon_details}
-        | {detail.device_id for detail in details}
+        {detail.device_id for detail in polygon_details} | {detail.device_id for detail in details}
     )
     color_index = {device_id: index for index, device_id in enumerate(device_ids)}
 
@@ -148,9 +161,7 @@ def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
         heat = np.zeros((grid_h, grid_w, 3), dtype=np.float32)
         alpha = np.zeros((grid_h, grid_w), dtype=np.float32)
         for device_detail in details[: len(_TARGET_COLORS)]:
-            if np.isnan(device_detail.target_yaw_deg) or np.isnan(
-                device_detail.target_pitch_deg
-            ):
+            if np.isnan(device_detail.target_yaw_deg) or np.isnan(device_detail.target_pitch_deg):
                 continue
             center_yaw = device_detail.target_yaw_deg
             center_pitch = device_detail.target_pitch_deg
@@ -161,9 +172,7 @@ def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
             )
             influence = np.exp(-(distance**2) * 1.4)
             mask = influence > alpha
-            color_bgr = _TARGET_COLORS[
-                color_index[device_detail.device_id] % len(_TARGET_COLORS)
-            ]
+            color_bgr = _TARGET_COLORS[color_index[device_detail.device_id] % len(_TARGET_COLORS)]
             heat[mask] = np.asarray(color_bgr, dtype=np.float32)
             alpha[mask] = influence[mask]
 
@@ -237,8 +246,14 @@ def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = Fa
     if snapshot.tracking_lost:
         cv2.rectangle(frame, (0, h - 30), (w, h), (0, 0, 0), thickness=-1)
         cv2.putText(
-            frame, "TRACKING LOST / 얼굴 추적 손실", (10, h - 9),
-            _FONT, 0.6, (90, 90, 240), 2, cv2.LINE_AA,
+            frame,
+            "TRACKING LOST / 얼굴 추적 손실",
+            (10, h - 9),
+            _FONT,
+            0.6,
+            (90, 90, 240),
+            2,
+            cv2.LINE_AA,
         )
         return frame
     if snapshot.tracking_recovering:
@@ -449,6 +464,7 @@ def draw_hand_overlay(
     mirror: bool = False,
     control_action: str = "",
     control_enabled: bool = False,
+    show_details: bool = True,
 ) -> Frame:
     """Overlay the real hand skeleton (21 landmarks) and tracking info.
 
@@ -460,6 +476,8 @@ def draw_hand_overlay(
     x-coordinates to match a horizontally-flipped (selfie/거울상) display frame; it is
     a display concern only and leaves the underlying landmark data untouched. Text is
     drawn at un-mirrored positions so it stays readable on the flipped frame.
+    ``show_details=False`` keeps only boxes and landmarks; the demo panel uses it
+    because those live numbers are rendered in its status column instead.
     Mutates and returns ``frame``.
     """
     if not snapshot.hand_detected or snapshot.image_points is None:
@@ -479,8 +497,9 @@ def draw_hand_overlay(
         box_color = (80, 220, 120) if primary else (220, 40, 220)
         cv2.rectangle(frame, p0, p1, box_color, 2, cv2.LINE_AA)
         if primary:
-            cv2.putText(frame, "CTRL", (p0[0], max(p0[1] - 6, 12)),
-                        _FONT, 0.5, box_color, 1, cv2.LINE_AA)
+            cv2.putText(
+                frame, "CTRL", (p0[0], max(p0[1] - 6, 12)), _FONT, 0.5, box_color, 1, cv2.LINE_AA
+            )
     # blue for Right, orange for Left (BGR); grey if handedness unknown
     color = {"Right": (230, 180, 60), "Left": (60, 150, 230)}.get(
         snapshot.handedness, (170, 170, 170)
@@ -494,54 +513,75 @@ def draw_hand_overlay(
     for px, py in pts:
         cv2.circle(frame, (px, py), 3, (235, 235, 235), thickness=-1)
 
-    label = snapshot.handedness or "?"
-    src_tag = "스무딩" if use_smoothed else "raw"
-    lines = [
-        # image-space detection (smoothed for display) — where the hand is
-        (f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [{src_tag} 검출]", color),
-        (f"palm scale  {snapshot.palm_scale:.3f}", (170, 170, 170)),
-    ]
-    # 게이트 상태를 항상 드러낸다. 거부를 조용히 무시하면 사용자는 왜 반응이 없는지
-    # 알 수 없어 자세를 고칠 기회조차 얻지 못한다(development-principles.md).
-    #
-    # **자세별 한계가 전역 한계보다 우선한다.** 기울기 내성은 자세마다 크게 달라
-    # (two_fingers 40° vs index_point 20°), 분류 결과를 아는 지금은 그쪽이 실제 결정권을
-    # 가진다. 전역 `palm_tilted`는 분류기가 없을 때만 쓰는 대비책이다 — 둘을 함께
-    # 보여주면 40°가 허용된 자세에 "손을 세우세요"가 뜨는 모순이 생긴다.
     pose = snapshot.pose
-    tilt_text = "?" if snapshot.palm_tilt_degrees is None else f"{snapshot.palm_tilt_degrees:.0f}°"
-    if pose is not None and pose.label:
-        if pose.trusted:
-            lines.append((f"tilt {tilt_text}   {pose.label}  {pose.confidence:.0%}", (120, 200, 120)))
+    if show_details:
+        label = snapshot.handedness or "?"
+        src_tag = "스무딩" if use_smoothed else "raw"
+        lines = [
+            # image-space detection (smoothed for display) — where the hand is
+            (
+                f"HAND  {label}  det {snapshot.detection_confidence:.0%}  [{src_tag} 검출]",
+                color,
+            ),
+            (f"palm scale  {snapshot.palm_scale:.3f}", (170, 170, 170)),
+        ]
+        # 게이트 상태를 항상 드러낸다. 거부를 조용히 무시하면 사용자는 왜 반응이 없는지
+        # 알 수 없어 자세를 고칠 기회조차 얻지 못한다(development-principles.md).
+        #
+        # **자세별 한계가 전역 한계보다 우선한다.** 기울기 내성은 자세마다 크게 달라
+        # (two_fingers 40° vs index_point 20°), 분류 결과를 아는 지금은 그쪽이 실제 결정권을
+        # 가진다. 전역 `palm_tilted`는 분류기가 없을 때만 쓰는 대비책이다 — 둘을 함께
+        # 보여주면 40°가 허용된 자세에 "손을 세우세요"가 뜨는 모순이 생긴다.
+        tilt_text = (
+            "?" if snapshot.palm_tilt_degrees is None else f"{snapshot.palm_tilt_degrees:.0f}°"
+        )
+        if pose is not None and pose.label:
+            if pose.trusted:
+                lines.append(
+                    (
+                        f"tilt {tilt_text}   {pose.label}  {pose.confidence:.0%}",
+                        (120, 200, 120),
+                    )
+                )
+            else:
+                lines.append((f"tilt {tilt_text}   거부 — {pose.reason}", (60, 90, 240)))
+        elif snapshot.palm_tilt_degrees is None:
+            lines.append(("tilt  ?  (기울기 미상 — 게이트 없음)", (170, 170, 170)))
+        elif snapshot.palm_tilted:
+            lines.append((f"tilt {tilt_text}  손을 세우세요 (판정 거부)", (60, 90, 240)))
         else:
-            lines.append((f"tilt {tilt_text}   거부 — {pose.reason}", (60, 90, 240)))
-    elif snapshot.palm_tilt_degrees is None:
-        lines.append(("tilt  ?  (기울기 미상 — 게이트 없음)", (170, 170, 170)))
-    elif snapshot.palm_tilted:
-        lines.append((f"tilt {tilt_text}  손을 세우세요 (판정 거부)", (60, 90, 240)))
-    else:
-        lines.append((f"tilt {tilt_text}", (120, 200, 120)))
-    # 확정 상태(유지 조건을 통과한 자세)와 방금 실행한 동작 — 3번 탭에만 있던 정보를
-    # 여기에도 둔다. 자세를 취하면서 보는 화면은 실시간 탭이라, 판정 결과가 여기 없으면
-    # 손을 보며 고칠 수가 없다.
-    if snapshot.pose_state:
-        lines.append((f"상태  {snapshot.pose_state}", (120, 220, 160)))
-    if snapshot.pose_events:
-        lines.append((f"동작  {', '.join(e.kind for e in snapshot.pose_events)}", (80, 220, 240)))
-    if control_action:
-        lines.append((
-            f"제어  {control_action}",
-            (80, 220, 120) if control_enabled else (170, 170, 170),
-        ))
-    # 실시간 탭은 멀리서 보며 자세를 취하는 화면이라 기본보다 크게 그린다.
-    _text_block(frame, lines, (8, 58), scale=0.72)
+            lines.append((f"tilt {tilt_text}", (120, 200, 120)))
+        # 확정 상태(유지 조건을 통과한 자세)와 방금 실행한 동작 — 3번 탭에만 있던 정보를
+        # 여기에도 둔다. 자세를 취하면서 보는 화면은 실시간 탭이라, 판정 결과가 여기 없으면
+        # 손을 보며 고칠 수가 없다.
+        if snapshot.pose_state:
+            lines.append((f"상태  {snapshot.pose_state}", (120, 220, 160)))
+        if snapshot.pose_events:
+            lines.append(
+                (f"동작  {', '.join(e.kind for e in snapshot.pose_events)}", (80, 220, 240))
+            )
+        if control_action:
+            lines.append(
+                (
+                    f"제어  {control_action}",
+                    (80, 220, 120) if control_enabled else (170, 170, 170),
+                )
+            )
+        # 실시간 탭은 멀리서 보며 자세를 취하는 화면이라 기본보다 크게 그린다.
+        _text_block(frame, lines, (8, 58), scale=0.72)
     rejected = pose.trusted is False if (pose is not None and pose.label) else snapshot.palm_tilted
     if rejected:
         # 골격 자체를 붉게 감싸 주변시로도 거부 상태를 알아채게 한다.
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
-        cv2.rectangle(frame, (min(xs) - 12, min(ys) - 12), (max(xs) + 12, max(ys) + 12),
-                      (60, 90, 240), 2, cv2.LINE_AA)
+        cv2.rectangle(
+            frame,
+            (min(xs) - 12, min(ys) - 12),
+            (max(xs) + 12, max(ys) + 12),
+            (60, 90, 240),
+            2,
+            cv2.LINE_AA,
+        )
     return frame
 
 
@@ -567,8 +607,16 @@ def render_normalized_hand(
     cv2.putText(canvas, tag, (8, 18), _FONT, 0.45, (150, 150, 150), 1, cv2.LINE_AA)
 
     if points is None or len(points) != 21:
-        cv2.putText(canvas, "no hand", (size // 2 - 34, size // 2), _FONT, 0.6,
-                    (90, 90, 100), 1, cv2.LINE_AA)
+        cv2.putText(
+            canvas,
+            "no hand",
+            (size // 2 - 34, size // 2),
+            _FONT,
+            0.6,
+            (90, 90, 100),
+            1,
+            cv2.LINE_AA,
+        )
         return canvas
 
     # Normalized coords keep MediaPipe's image convention (x right, y DOWN), and
@@ -617,8 +665,16 @@ def render_vector(
     cv2.circle(canvas, center, 3, (110, 110, 120), thickness=-1)
 
     if vector is None:
-        cv2.putText(canvas, "no signal", (size // 2 - 42, size // 2 + 4), _FONT, 0.5,
-                    (90, 90, 100), 1, cv2.LINE_AA)
+        cv2.putText(
+            canvas,
+            "no signal",
+            (size // 2 - 42, size // 2 + 4),
+            _FONT,
+            0.5,
+            (90, 90, 100),
+            1,
+            cv2.LINE_AA,
+        )
         return canvas
 
     x, y = vector
@@ -631,8 +687,9 @@ def render_vector(
         tip = center
     color = (80, 200, 80)
     cv2.arrowedLine(canvas, center, tip, color, 2, cv2.LINE_AA, tipLength=0.25)
-    cv2.putText(canvas, f"{magnitude:.3f}", (8, size - 10), _FONT, 0.45,
-                (200, 200, 200), 1, cv2.LINE_AA)
+    cv2.putText(
+        canvas, f"{magnitude:.3f}", (8, size - 10), _FONT, 0.45, (200, 200, 200), 1, cv2.LINE_AA
+    )
     return canvas
 
 
