@@ -60,8 +60,32 @@ def test_tracker_reports_missing_conditions() -> None:
         tracker.add(_feature())
     missing = tracker.missing_labels()
     assert "정면" not in missing
-    assert {"고개 왼쪽", "고개 오른쪽", "고개 위", "고개 아래", "가까이", "멀리"} <= set(missing)
+    # 좌/우, 상/하는 짝으로 묶여 "한쪽도 안 채웠다"는 하나의 힌트로 나온다
+    # (둘 다 개별로 요구하면 물체가 한쪽에 있을 때 반대쪽이 구조적으로
+    # 어려운 문제가 재발한다, 2026-07-22 2차 실측).
+    assert "고개 왼쪽/고개 오른쪽" in missing
+    assert "고개 위/고개 아래" in missing
+    assert "가까이" in missing
+    assert "멀리" in missing
     assert 0.0 < tracker.progress() < 1.0
+
+
+def test_tracker_completes_with_only_one_side_of_each_pair() -> None:
+    """물체가 카메라 한쪽에 있어 반대쪽 고개 회전이 어려운 경우 — 같은 쪽만
+    채워도 완료된다(둘 다 요구하지 않는다, 2026-07-22 2차 실측)."""
+    tracker = PoseCoverageTracker(GazeConfig(), minimum_frames=3)
+    for _ in range(10):
+        tracker.add(_feature(face_scale=0.10))
+    for _ in range(3):
+        tracker.add(_feature(head_yaw=25.0))  # 오른쪽만, 왼쪽은 한 번도 없음
+        tracker.add(_feature(head_pitch=-15.0))  # 아래만, 위는 한 번도 없음
+        tracker.add(_feature(face_scale=0.12))
+        tracker.add(_feature(face_scale=0.085))
+    assert tracker.complete()
+    assert tracker.missing_labels() == []
+    counts = {c.key: c.count for c in tracker.report()}
+    assert counts["left"] == 0
+    assert counts["up"] == 0
 
 
 def _gaze(frame: int) -> SmoothedGaze:

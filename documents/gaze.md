@@ -327,6 +327,16 @@ bin별로 "직후부터 OUT(등록 수집 문제)"과 "직후엔 IN이었다가 
 부족 구간을 실시간 안내한다. 완료 시 1단계 원시 샘플이
 `data/calibration/raw_samples/<target>_phase1_<ts>.json`으로 저장된다.
 
+**좌/우, 상/하는 짝 중 한쪽만 채우면 된다 (2026-07-22 2차 실측).** 물체가
+카메라 기준 한쪽(예: 오른쪽)에 있으면, 반대쪽("고개 왼쪽")을 채우려면 눈이
+물체 반대편에서 다시 그만큼 꺾여야 해 보상각이 40도 안팎까지 벌어진다 —
+실측 사례에서 오른쪽(234/30)은 쉽게 채웠지만 왼쪽(0/30)은 "너무 어렵다"는
+피드백을 받았다. `PoseCoverageTracker.complete()`/`missing_labels()`가
+(좌,우)·(상,하)를 그룹으로 묶어 그룹 안 어느 한쪽이든 충족하면 그 그룹을
+통과시킨다(정면·근·원은 그대로 개별 필수). `missing_labels()`는 미충족
+그룹을 `"고개 왼쪽/고개 오른쪽"`처럼 묶어서 반환한다. 문턱값도
+`coverage_yaw_side_threshold_deg` 20°→15°로 낮췄다.
+
 **Ridge residual 보정은 오프라인 A/B 전용이며 런타임에 연결되지 않았다.**
 `jarvis-gaze ab-residual <raw_samples.json>`이 leave-one-yaw-bin-out으로
 raw / 현재 bin 보정표 / Ridge(자세·문맥 6D → delta) held-out 오차를 비교한다.

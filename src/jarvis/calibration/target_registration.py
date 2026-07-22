@@ -46,13 +46,33 @@ class CoverageCondition:
         return self.count >= self.required
 
 
+_YAW_SIDE_GROUP: tuple[str, ...] = ("left", "right")
+_PITCH_SIDE_GROUP: tuple[str, ...] = ("up", "down")
+_COVERAGE_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("front",),
+    _YAW_SIDE_GROUP,
+    _PITCH_SIDE_GROUP,
+    ("near",),
+    ("far",),
+)
+"""완료 판정 단위. 좌/우, 상/하는 짝 중 **한쪽만** 채우면 된다(아래 클래스
+docstring 참고) — 그 외(정면/근/원)는 개별로 필요하다."""
+
+
 class PoseCoverageTracker:
     """1단계(중앙 응시 + 자세 스윕)의 조건 충족식 coverage 추적.
 
     시간제(20초) 등록은 스윕이 한쪽에 치우쳐도 완료돼, 실제로 정면·왼쪽
     보정점 없이 오른쪽 2개 bin만 저장된 등록이 발생했다(2026-07-22 실측).
-    이 추적기는 정면/좌/우/상/하/근/원 각 구간의 유효 프레임 수를 세고,
-    전부 최소 프레임을 채워야 완료로 판정한다.
+    이 추적기는 정면/좌/우/상/하/근/원 각 구간의 유효 프레임 수를 센다.
+
+    좌/우, 상/하는 **한쪽만** 채우면 완료로 본다(2026-07-22 2차 실측: 물체가
+    카메라 기준 오른쪽에 있으면, "고개 왼쪽"을 채우려면 눈이 물체 반대편에서
+    다시 그만큼 꺾여야 해 보상각이 40도 안팎까지 벌어진다 — 반대쪽으로
+    한없이 요구하면 물체 위치에 따라 구조적으로 못 끝나는 등록이 생긴다).
+    반대로 물체가 중앙 근처면 스윕하다 보면 양쪽 다 자연스럽게 채워지므로
+    막을 이유가 없다. near/far는 이 문제가 없어(거리 이동은 방향과 무관)
+    그대로 개별 필수로 둔다.
 
     near/far는 절대 face scale이 아니라 '정면 구간에서 관측한 기준 scale'
     대비 배율로 판정한다 — 기준이 쌓이기 전(정면 10프레임 미만)에는 세지
@@ -119,18 +139,28 @@ class PoseCoverageTracker:
         )
 
     def complete(self) -> bool:
-        return all(condition.met for condition in self.report())
+        conditions = {condition.key: condition for condition in self.report()}
+        return all(
+            any(conditions[key].met for key in group) for group in _COVERAGE_GROUPS
+        )
 
     def missing_labels(self) -> list[str]:
-        return [condition.label for condition in self.report() if not condition.met]
+        conditions = {condition.key: condition for condition in self.report()}
+        missing = []
+        for group in _COVERAGE_GROUPS:
+            if any(conditions[key].met for key in group):
+                continue
+            missing.append("/".join(conditions[key].label for key in group))
+        return missing
 
     def progress(self) -> float:
-        """조건별 충족률 평균(0..1) — UI 진행 막대에 그대로 쓸 수 있다."""
-        report = self.report()
-        return float(
-            sum(min(1.0, condition.count / condition.required) for condition in report)
-            / len(report)
-        )
+        """그룹별 충족률(짝은 더 앞선 쪽 기준) 평균(0..1) — UI 진행 막대에 그대로 쓴다."""
+        conditions = {condition.key: condition for condition in self.report()}
+        group_progress = [
+            max(min(1.0, conditions[key].count / conditions[key].required) for key in group)
+            for group in _COVERAGE_GROUPS
+        ]
+        return float(sum(group_progress) / len(group_progress))
 
 
 class TargetRegistrationSession:
