@@ -444,6 +444,16 @@ def test_small_rotation_does_not_change_volume() -> None:
     assert not any(e.startswith("volume") for e in events)
 
 
+def test_volume_knob_locks_during_warmup() -> None:
+    """워밍업(활성화 전) 중에도 회전이 감지되면 볼륨 노브 락이 걸린다 — 게이지 채우는
+    동안 순간 오인식이 클릭·커서로 새지 않게(볼륨 자체는 활성화 후에만 나간다)."""
+    machine = PoseStateMachine()
+    events, _ = _rotate(machine, sign=+1, frames=10, start=0, trusted=False)  # 150° < ROT_ACTIVATION_DEG
+    assert not any(e.startswith("volume") for e in events)  # 활성화 전 → 볼륨 없음
+    assert not machine._rot_activated  # 아직 워밍업 중
+    assert machine._rot_active_until > 0  # 그래도 락은 걸렸다(다른 동작 차단)
+
+
 def test_volume_knob_mode_blocks_other_actions() -> None:
     """회전(볼륨 노브 모드) 중에는 순간 오인식(pinch 등)이 섞여도 클릭·드래그가 나오지 않는다."""
     machine = PoseStateMachine()

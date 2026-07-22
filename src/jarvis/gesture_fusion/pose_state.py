@@ -388,17 +388,19 @@ class PoseStateMachine:
         self._rot_prev_angle, self._rot_prev_ms = angle, timestamp_ms
         if abs(delta) / dt_s < ROT_MIN_SPEED:  # 회전으로 볼 만큼 빠르지 않으면 무시
             return []
+        # 회전이 감지되면(속도 게이트 통과) 워밍업 중이든 활성화 후든 볼륨 노브 모드를
+        # 건다 — 볼륨 조절 제스처 내내(게이지 채우는 동안 포함) 다른 동작을 막아, 회전 중
+        # 순간 오인식(pinch·fist)이 클릭·드래그로 새지 않게 한다.
+        self._rot_active_until = timestamp_ms + ROT_HOLD_MS
         # 워밍업 게이트: 활성화 전에는 순(net) 회전만 쌓고 볼륨은 내지 않는다. 순 회전이
-        # ROT_ACTIVATION_DEG(한 바퀴)를 넘어야 활성화되고, 그때부터 볼륨을 낸다. 활성화
-        # 전엔 볼륨 노브 모드도 걸지 않아 이 구간의 회전이 다른 동작을 막지 않는다 —
-        # 일상 동작의 작은 회전이 볼륨을 건드리지도, 클릭·커서를 막지도 않게 한다.
+        # ROT_ACTIVATION_DEG(약 한 바퀴)를 넘어야 활성화되고, 그때부터 볼륨을 낸다 —
+        # 일상 동작의 작은 회전이 갑자기 볼륨을 바꾸는 것을 막는다.
         if not self._rot_activated:
             self._rot_warmup += delta
             if abs(self._rot_warmup) < ROT_ACTIVATION_DEG:
                 return []
             self._rot_activated = True
             self._rot_accum = 0.0  # 활성화 이후 회전만 볼륨에 반영(워밍업 회전은 소비 안 함)
-        self._rot_active_until = timestamp_ms + ROT_HOLD_MS  # 볼륨 노브 모드 연장
         self._rot_accum += delta
         steps = int(self._rot_accum / ROT_STEP_DEG)  # 0을 향해 버림
         if steps == 0:
