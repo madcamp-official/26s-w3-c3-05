@@ -104,6 +104,11 @@ EARLY_DISPATCH_GESTURES: frozenset[str] = frozenset(
     }
 )
 
+# 다른 기기(전구)에서 노트북으로 시선이 "돌아올" 때만 OK사인 복귀 확인을 요구한다
+# (사용자 지시 2026-07-22) — 처음 확정이거나 노트북을 계속 보는 중에는 걸리지 않는다
+# (`TargetLockTracker._gate_satisfied` 참고). 세 프리셋 모두 같은 게이트를 쓴다.
+_CONFIRMATION_GATED_TARGETS: frozenset[str] = frozenset({LAPTOP_DEVICE_ID})
+
 # 시연 기본은 "느슨" — 위양성을 늘리더라도 진양성을 잡는 방향(이 프로젝트의 기존
 # 튜닝 방침)이고, 차단 사유 로그가 있어 오발이 나도 왜 났는지 그 자리에서 보인다.
 PRESET_LOOSE = DemoPreset(
@@ -140,6 +145,7 @@ PRESET_LOOSE = DemoPreset(
         target_lock_ttl_ms=4000,
         min_target_probability=0.55,
         min_target_margin=0.10,
+        confirmation_gated_targets=_CONFIRMATION_GATED_TARGETS,
     ),
 )
 PRESET_NORMAL = DemoPreset(
@@ -154,12 +160,15 @@ PRESET_NORMAL = DemoPreset(
         target_lock_ttl_ms=2500,
         min_target_probability=0.70,
         min_target_margin=0.15,
+        confirmation_gated_targets=_CONFIRMATION_GATED_TARGETS,
     ),
 )
 PRESET_STRICT = DemoPreset(
     label="빡빡",
     fusion=DEFAULT_FUSION_CONFIG,
-    alignment=DEFAULT_ALIGNMENT_CONFIG,
+    alignment=dataclasses.replace(
+        DEFAULT_ALIGNMENT_CONFIG, confirmation_gated_targets=_CONFIRMATION_GATED_TARGETS
+    ),
 )
 
 DEMO_PRESETS: tuple[DemoPreset, ...] = (PRESET_LOOSE, PRESET_NORMAL, PRESET_STRICT)
@@ -387,6 +396,10 @@ class DemoBridge:
     def push_target(self, estimate: TargetEstimate) -> None:
         """Gaze→Fusion 스트림 한 프레임. 폴백이 켜져 있으면 합성 estimate로 대체한다."""
         self._fusion.push_target(self._effective_target(estimate))
+
+    def note_confirmation_signal(self, timestamp_ms: int) -> None:
+        """OK사인 등 복귀 확인 제스처 신호. 게이트된 target(노트북)으로의 재확정에 쓰인다."""
+        self._fusion.note_confirmation_signal(timestamp_ms)
 
     def push_gesture(self, estimate: GestureEstimate) -> CommitDecision | None:
         """Gesture→Fusion 스트림 한 프레임. 제스처가 완결된 프레임에서만 판정을 낸다.

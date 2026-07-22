@@ -275,3 +275,124 @@ def test_aligner_target_switch_mid_gesture_is_rejected() -> None:
     result = aligner.push_gesture(_gesture(300, GesturePhase.ENDING))
     assert result is not None
     assert not result.aligned
+
+
+# --- TargetLockTracker: confirmation gate (OK사인 등 복귀 확인) ---
+
+
+def test_first_ever_lock_on_gated_target_needs_no_confirmation() -> None:
+    """아무것도 확정된 적이 없으면(첫 lock) 게이트된 target이어도 곧바로 잠긴다."""
+    tracker = TargetLockTracker(
+        _config(target_dwell_ms=200, confirmation_gated_targets=frozenset({"laptop"}))
+    )
+    tracker.push(_target(0, target="laptop"))
+    state = tracker.push(_target(200, target="laptop"))
+    assert state.locked
+    assert state.target == "laptop"
+
+
+def test_staying_on_gated_target_needs_no_confirmation() -> None:
+    """게이트된 target에 이미 확정돼 있고 계속 그 target을 보는 중이면 걸리지 않는다."""
+    tracker = TargetLockTracker(
+        _config(
+            target_dwell_ms=200,
+            target_lock_ttl_ms=5000,
+            confirmation_gated_targets=frozenset({"laptop"}),
+        )
+    )
+    tracker.push(_target(0, target="laptop"))
+    tracker.push(_target(200, target="laptop"))  # 첫 확정
+    state = tracker.push(_target(2000, target="laptop"))
+    assert state.locked
+    assert state.target == "laptop"
+
+
+def test_returning_to_gated_target_without_confirmation_stays_pending() -> None:
+    """전구→노트북으로 돌아올 때 확인 신호가 없으면 dwell을 채워도 노트북으로 안 바뀐다.
+
+    기존 lock(전구)은 sticky해서 새 후보의 dwell만으로는 안 풀린다 — 게이트가 그
+    교체(atomic swap) 자체를 막아, 새 target이 확정되지 않은 채 계속 후보로 남는다.
+    """
+    tracker = TargetLockTracker(
+        _config(
+            target_dwell_ms=200,
+            target_lock_ttl_ms=5000,
+            confirmation_gated_targets=frozenset({"laptop"}),
+        )
+    )
+    tracker.push(_target(0, target="room.bulb"))
+    tracker.push(_target(200, target="room.bulb"))  # 전구로 첫 확정
+    tracker.push(_target(300, target="laptop"))
+    state = tracker.push(_target(1000, target="laptop"))  # dwell(700ms) 충분히 넘음
+    assert state.locked
+    assert state.target == "room.bulb"  # 아직 전구 lock 그대로
+    assert state.candidate == "laptop"  # 후보로는 계속 쌓이되 확정은 안 됨
+
+
+def test_confirmation_signal_unlocks_the_pending_gate() -> None:
+    """확인 신호(OK사인) 이후에는 같은 후보가 곧바로 잠긴다."""
+    tracker = TargetLockTracker(
+        _config(
+            target_dwell_ms=200,
+            target_lock_ttl_ms=5000,
+            confirmation_gated_targets=frozenset({"laptop"}),
+        )
+    )
+    tracker.push(_target(0, target="room.bulb"))
+    tracker.push(_target(200, target="room.bulb"))
+    tracker.push(_target(300, target="laptop"))
+    pending = tracker.push(_target(1000, target="laptop"))
+    assert pending.target == "room.bulb"  # 신호 없이는 계속 대기
+    tracker.note_confirmation_signal(1050)
+    state = tracker.push(_target(1100, target="laptop"))
+    assert state.locked
+    assert state.target == "laptop"
+
+
+def test_confirmation_signal_within_pre_roll_counts_even_before_candidate_started() -> None:
+    """후보 시작보다 살짝 먼저 온 확인 신호도 pre-roll 안이면 유효하다."""
+    tracker = TargetLockTracker(
+        _config(
+            target_dwell_ms=200,
+            confirmation_gated_targets=frozenset({"laptop"}),
+            confirmation_pre_roll_ms=300,
+        )
+    )
+    tracker.push(_target(0, target="room.bulb"))
+    tracker.push(_target(200, target="room.bulb"))
+    tracker.note_confirmation_signal(250)  # 후보(300ms) 시작보다 50ms 먼저 — pre-roll(300ms) 안
+    tracker.push(_target(300, target="laptop"))
+    state = tracker.push(_target(500, target="laptop"))  # dwell=200ms
+    assert state.locked
+    assert state.target == "laptop"
+
+
+def test_confirmation_signal_older_than_pre_roll_does_not_count() -> None:
+    """pre-roll보다 오래된 확인 신호는 무효 — 무관한 과거 동작으로 본다."""
+    tracker = TargetLockTracker(
+        _config(
+            target_dwell_ms=200,
+            target_lock_ttl_ms=5000,
+            confirmation_gated_targets=frozenset({"laptop"}),
+            confirmation_pre_roll_ms=50,
+        )
+    )
+    tracker.push(_target(0, target="room.bulb"))
+    tracker.push(_target(200, target="room.bulb"))
+    tracker.note_confirmation_signal(100)  # 후보 시작(300ms)보다 200ms 먼저 — pre-roll(50ms) 밖
+    tracker.push(_target(300, target="laptop"))
+    state = tracker.push(_target(500, target="laptop"))
+    assert state.target == "room.bulb"  # 여전히 대기 — laptop으로 안 바뀜
+
+
+def test_ungated_target_is_unaffected_by_gate() -> None:
+    """게이트 대상이 아닌 target(전구)은 확인 신호 없이도 평소대로 잠긴다."""
+    tracker = TargetLockTracker(
+        _config(target_dwell_ms=200, confirmation_gated_targets=frozenset({"laptop"}))
+    )
+    tracker.push(_target(0, target="laptop"))
+    tracker.push(_target(200, target="laptop"))  # 노트북 첫 확정
+    tracker.push(_target(300, target="room.bulb"))
+    state = tracker.push(_target(500, target="room.bulb"))  # 전구는 게이트 대상이 아님
+    assert state.locked
+    assert state.target == "room.bulb"

@@ -100,6 +100,31 @@ def test_mapped_target_locks_after_dwell(tmp_path: Path) -> None:
     assert bridge.locked_device == BULB_DEVICE_ID
 
 
+def test_returning_to_laptop_needs_confirmation_signal(tmp_path: Path) -> None:
+    """전구→노트북 복귀는 OK사인(확인 신호) 없이는 확정되지 않는다(사용자 지시 2026-07-22).
+
+    노트북은 게이트된 target이라, dwell을 채워도 `note_confirmation_signal`이 최근에
+    호출된 적 없으면 전구 lock이 그대로 유지된다.
+    """
+    bridge = DemoBridge(
+        mapping_store=_store(
+            tmp_path, {"target_001": BULB_DEVICE_ID, "target_002": LAPTOP_DEVICE_ID}
+        )
+    )
+    for ms in range(0, 1000, 100):
+        bridge.push_target(_target("target_001", ms))
+    assert bridge.locked_device == BULB_DEVICE_ID
+
+    for ms in range(1000, 2500, 100):  # dwell(800ms)을 한참 넘김
+        bridge.push_target(_target("target_002", ms))
+    assert bridge.locked_device == BULB_DEVICE_ID  # 확인 신호 없이는 그대로
+    assert bridge.candidate_device == LAPTOP_DEVICE_ID
+
+    bridge.note_confirmation_signal(2500)
+    bridge.push_target(_target("target_002", 2600))
+    assert bridge.locked_device == LAPTOP_DEVICE_ID
+
+
 # --- 매핑 영속화 ---
 
 

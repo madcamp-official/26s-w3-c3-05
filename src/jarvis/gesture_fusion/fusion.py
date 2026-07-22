@@ -237,6 +237,10 @@ class FusionEngine:
         self._expire_cooldown(estimate.timestamp_ms)
         self._aligner.push_target(estimate)
 
+    def note_confirmation_signal(self, timestamp_ms: int) -> None:
+        """게이트된 target 복귀 확인 신호(예: OK사인)를 기록한다."""
+        self._aligner.note_confirmation_signal(timestamp_ms)
+
     def push_gesture(self, estimate: GestureEstimate) -> CommitDecision | None:
         """Gesture→Fusion 스트림(§2) 프레임 하나를 반영한다.
 

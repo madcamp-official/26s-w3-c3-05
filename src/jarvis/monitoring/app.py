@@ -2838,6 +2838,14 @@ class MainWindow(QMainWindow):
         ):
             self.close()
             return
+        # OK사인(엄지-검지 원)은 재생/일시정지 OS 명령과 별개로, 다른 기기에서 노트북으로
+        # 시선이 돌아올 때의 복귀 확인 신호로도 쓴다(사용자 지시 2026-07-22). pose 제어가
+        # 억제된 동안(전구 lock 중)에도 이 신호는 항상 관찰해야 한다 — 복귀 확인이 필요한
+        # 바로 그 순간이 억제 구간과 겹치기 때문이다. Fusion의 gate가 실제로 게이트된
+        # target에만 반응하므로 여기서 조건을 미리 좁히지 않는다.
+        for event in snapshot.pose_events:
+            if event.kind == "play_pause":
+                self._demo_bridge.note_confirmation_signal(event.timestamp_ms)
         # 시선 lock에 의한 경로 중재: 노트북이 아닌 기기(전구)를 보는 동안에는 pose
         # 제어를 멈춘다 — 전구를 보며 손을 움직일 때 커서까지 따라가면 안 된다. 사용자의
         # 제어 토글(`_pose_control.enabled`)은 건드리지 않고 억제만 얹으므로, 전구에서

@@ -51,6 +51,23 @@ class AlignmentConfig:
     unknown_target: str = "UNKNOWN"
     """어떤 기기도 보고 있지 않다는 뜻의 target 값(interface-contract.md 공통 규칙)."""
 
+    confirmation_gated_targets: frozenset[str] = frozenset()
+    """dwell을 채워도 곧바로 lock되지 않고 외부 확인 신호를 기다려야 하는 target id 집합.
+
+    비어 있으면(기본) 어떤 target도 게이트되지 않아 기존 동작과 완전히 같다. 다른
+    target이 이미 확정돼 있다가 이 집합의 target으로 "돌아올" 때만 걸리고, 처음
+    확정이거나 같은 target을 유지하는 중에는 걸리지 않는다(`TargetLockTracker`
+    참고) — Gaze 모듈의 nod gate와 같은 목적을 Fusion 자신의 lock 위에 구현한
+    것이다(둘은 여전히 독립이다: Gaze의 lock 상태를 참조하지 않고, 외부에서 받은
+    임의의 확인 신호 타임스탬프만 쓴다).
+    """
+
+    confirmation_pre_roll_ms: int = 300
+    """확인 신호가 후보 시작 시각보다 이만큼 먼저 와도 유효하다고 인정하는 여유 시간.
+
+    고개를 돌리며 미리 확인 동작을 하는 자연스러운 타이밍을 허용한다(Gaze 모듈
+    `nod_confirmation_pre_roll_ms`와 같은 취지)."""
+
     def __post_init__(self) -> None:
         if self.target_dwell_ms < 0:
             raise ValueError("target_dwell_ms must be non-negative")
@@ -64,6 +81,8 @@ class AlignmentConfig:
                 raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
         if not self.unknown_target:
             raise ValueError("unknown_target must not be empty")
+        if self.confirmation_pre_roll_ms < 0:
+            raise ValueError("confirmation_pre_roll_ms must be non-negative")
 
 
 DEFAULT_ALIGNMENT_CONFIG = AlignmentConfig()
@@ -108,6 +127,10 @@ class TargetLockTracker:
         self._last_stability = 0.0
         self._locked_confidence = 0.0
         self._locked_stability = 0.0
+        # 게이트 판정용: 마지막으로 실제 lock됐던 target(첫 확정·같은 target 유지에는
+        # 게이트를 걸지 않기 위한 기준)과, 외부에서 관찰된 마지막 확인 신호 시각.
+        self._last_confirmed_target: str | None = None
+        self._last_confirmation_signal_at_ms: int | None = None
 
     @property
     def state(self) -> TargetLockState:
@@ -132,7 +155,34 @@ class TargetLockTracker:
     def reset(self) -> None:
         self._candidate_target = None
         self._candidate_since_ms = None
+        self._last_confirmed_target = None
+        self._last_confirmation_signal_at_ms = None
         self._release_lock()
+
+    def note_confirmation_signal(self, timestamp_ms: int) -> None:
+        """외부 확인 신호(예: OK사인 포즈) 한 번을 기록한다.
+
+        게이트된 target 외에는 아무 효과가 없다 — 판정 시점에만 참조된다.
+        """
+        self._last_confirmation_signal_at_ms = timestamp_ms
+
+    def _gate_satisfied(self, candidate_target: str, candidate_since_ms: int) -> bool:
+        """`candidate_target`으로 지금 lock을 확정해도 되는가.
+
+        게이트 대상이 아니거나, 아직 아무것도 확정된 적이 없거나, 이미 그 target에
+        확정돼 있던 경우(같은 target 유지)는 항상 허용한다 — "다른 곳에서 돌아올
+        때"만 걸리게 하기 위함이다(Gaze 모듈 `_nod_gate_satisfied`와 같은 규약).
+        """
+        if candidate_target not in self._config.confirmation_gated_targets:
+            return True
+        if self._last_confirmed_target is None or self._last_confirmed_target == candidate_target:
+            return True
+        if self._last_confirmation_signal_at_ms is None:
+            return False
+        return (
+            self._last_confirmation_signal_at_ms
+            >= candidate_since_ms - self._config.confirmation_pre_roll_ms
+        )
 
     def push(self, estimate: TargetEstimate) -> TargetLockState:
         """Gaze→Fusion 스트림 프레임 하나를 반영하고 갱신된 lock 상태를 반환한다."""
@@ -169,11 +219,15 @@ class TargetLockTracker:
             if self._candidate_target != estimate.target:
                 self._start_candidate(estimate)
             assert self._candidate_since_ms is not None
-            if estimate.timestamp_ms - self._candidate_since_ms >= self._config.target_dwell_ms:
+            if (
+                estimate.timestamp_ms - self._candidate_since_ms >= self._config.target_dwell_ms
+                and self._gate_satisfied(estimate.target, self._candidate_since_ms)
+            ):
                 self._locked_target = estimate.target
                 self._locked_at_ms = estimate.timestamp_ms
                 self._locked_confidence = estimate.probability
                 self._locked_stability = estimate.stability
+                self._last_confirmed_target = estimate.target
                 self._clear_candidate()
             self._expires_at_ms = estimate.timestamp_ms + self._config.target_lock_ttl_ms
             return
@@ -196,12 +250,15 @@ class TargetLockTracker:
         else:
             assert self._candidate_since_ms is not None  # candidate_target이 설정됐으므로 항상 같이 설정됨
             dwell = estimate.timestamp_ms - self._candidate_since_ms
-            if dwell >= self._config.target_dwell_ms:
+            if dwell >= self._config.target_dwell_ms and self._gate_satisfied(
+                estimate.target, self._candidate_since_ms
+            ):
                 self._locked_target = estimate.target
                 self._locked_at_ms = estimate.timestamp_ms
                 self._expires_at_ms = estimate.timestamp_ms + self._config.target_lock_ttl_ms
                 self._locked_confidence = estimate.probability
                 self._locked_stability = estimate.stability
+                self._last_confirmed_target = estimate.target
                 self._clear_candidate()
 
         self._last_confidence = estimate.probability
@@ -279,6 +336,10 @@ class TemporalAligner:
     def push_target(self, estimate: TargetEstimate) -> TargetLockState:
         """Gaze→Fusion 스트림(§1) 프레임 하나를 반영한다."""
         return self._lock_tracker.push(estimate)
+
+    def note_confirmation_signal(self, timestamp_ms: int) -> None:
+        """게이트된 target 복귀 확인 신호(예: OK사인)를 기록한다."""
+        self._lock_tracker.note_confirmation_signal(timestamp_ms)
 
     def push_gesture(self, estimate: GestureEstimate) -> AlignmentResult | None:
         """Gesture→Fusion 스트림(§2, spotting.py 출력) 프레임 하나를 반영한다.
