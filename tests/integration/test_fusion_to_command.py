@@ -96,7 +96,12 @@ def test_bulb_slide_down_reaches_adapter_as_brightness_decrement() -> None:
     assert command.device_id == "room.bulb"
     assert command.capability == "brightness"
     assert command.operation == "decrement"
-    assert command.value == 10  # configs/gesture_capability_map.json 의 room.bulb slide_two_fingers_down
+    # 값 자체는 config가 정한다(시연 가시성에 따라 바뀐다) — 이 테스트가 지키는 것은
+    # "config의 값이 손실·변형 없이 adapter까지 도달하는가"라는 배선이므로, 숫자를
+    # 베껴 두지 않고 같은 매핑에서 읽어 비교한다.
+    expected = build_default_capability_map().lookup("room.bulb", "slide_two_fingers_down")
+    assert expected is not None
+    assert command.value == expected.value
 
 
 def test_laptop_slide_down_reaches_adapter_as_scroll_decrement() -> None:
