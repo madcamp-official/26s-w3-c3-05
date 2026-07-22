@@ -83,7 +83,12 @@ PRESET_LOOSE = DemoPreset(
     fusion=FusionConfig(
         commit_threshold=0.20,
         min_target_confidence=0.55,
-        min_gesture_confidence=0.55,
+        # 0.55는 실사용에서 진양성을 자주 떨어뜨렸다(2026-07-22 시연 피드백). 10클래스
+        # (배경 합산 8클래스) 분류라 우연 수준이 0.10~0.125인데, 0.55는 그 4~5배를
+        # 요구해 맞게 인식한 제스처까지 "확신도 부족"으로 막았다. 0.35는 우연보다는
+        # 확실히 높게 유지하면서 통과 폭을 넓힌다 — 느슨 프리셋의 취지(위양성을 늘리더라도
+        # 진양성을 잡는다)에 맞고, 막힌 경우 사유가 화면에 그대로 뜬다.
+        min_gesture_confidence=0.35,
     ),
     alignment=AlignmentConfig(
         target_dwell_ms=800,
