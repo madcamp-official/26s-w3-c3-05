@@ -12,7 +12,11 @@ from __future__ import annotations
 from jarvis.contracts.messages import Command, GestureEstimate, GesturePhase, TargetEstimate
 from jarvis.gesture_fusion.alignment import AlignmentConfig
 from jarvis.gesture_fusion.fusion import FusionConfig, FusionEngine
-from jarvis.runtime.devices import build_default_capability_map, build_default_registry
+from jarvis.runtime.devices import (
+    BULB_ADAPTER,
+    build_default_capability_map,
+    build_default_registry,
+)
 from jarvis.runtime.executor import ExecutionStage, IntentExecutor
 from jarvis.runtime_protocol.adapters.base import AdapterResult, AdapterStatus
 from jarvis.runtime_protocol.capture.clock import RuntimeClock
@@ -80,8 +84,9 @@ def test_bulb_slide_down_reaches_adapter_as_brightness_decrement() -> None:
     decision = fusion.push_gesture(_gesture(300, GesturePhase.ENDING, "slide_two_fingers_down"))
     assert decision is not None and decision.committed
 
-    bulb_adapter = FakeAdapter("smartthings")
-    executor = _executor({"smartthings": bulb_adapter})
+    # adapter 키는 전구 프로필이 정한다 — 경로(WiZ/SmartThings)가 바뀌어도 안 깨지게 상수를 쓴다.
+    bulb_adapter = FakeAdapter(BULB_ADAPTER)
+    executor = _executor({BULB_ADAPTER: bulb_adapter})
     outcome = executor.execute(decision)
 
     assert outcome.stage == ExecutionStage.DISPATCHED

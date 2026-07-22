@@ -7,7 +7,7 @@
 거부된다(protocol/engine.py). 이 모듈이 두 정의를 한곳에서 맞춘 기본 기기 집합을
 만들어, `tests/unit/runtime/test_devices.py`의 정합성 테스트가 그 일치를 강제한다.
 
-MVP 대상은 `laptop`(Windows/macOS 로컬 입력)과 `room.bulb`(SmartThings)다. 스크롤·
+MVP 대상은 `laptop`(Windows/macOS 로컬 입력)과 `room.bulb`(Philips WiZ, 로컬 UDP)다. 스크롤·
 볼륨·창 전환은 절대 상태가 없는 상대 연산이라 min/max는 검증용 상한일 뿐이고
 increment/decrement delta만 의미가 있다(capability.validate_request 참고).
 """
@@ -21,6 +21,12 @@ from jarvis.runtime_protocol.adapters.base import DeviceAdapter
 from jarvis.runtime_protocol.adapters.http import HttpTransport, UrllibTransport
 from jarvis.runtime_protocol.adapters.smartthings import SmartThingsAdapter, SmartThingsConfig
 from jarvis.runtime_protocol.adapters.windows import InputSink, WindowsAdapter, default_input_sink
+from jarvis.runtime_protocol.adapters.wiz import (
+    UdpWizTransport,
+    WizAdapter,
+    WizConfig,
+    WizTransport,
+)
 from jarvis.runtime_protocol.capture.clock import RuntimeClock
 from jarvis.runtime_protocol.protocol.capability import (
     BooleanCapability,
@@ -39,7 +45,10 @@ _RELATIVE_OPS = frozenset({Operation.INCREMENT, Operation.DECREMENT})
 
 # adapter 라우팅 키. DeviceProfile.adapter가 이 이름으로 adapter를 찾는다.
 LAPTOP_ADAPTER = "windows"
-BULB_ADAPTER = "smartthings"
+# 실제 데모 전구는 Philips WiZ(로컬 UDP)라 기본 전구 경로는 이쪽이다. SmartThings
+# 경로도 배선은 유지한다 — 클라우드 전구를 쓰려면 프로필의 adapter만 바꾸면 된다.
+BULB_ADAPTER = "wiz"
+SMARTTHINGS_ADAPTER = "smartthings"
 
 
 def _laptop_profile() -> DeviceProfile:
@@ -59,14 +68,18 @@ def _laptop_profile() -> DeviceProfile:
 
 
 def _bulb_profile() -> DeviceProfile:
-    """전구 capability. brightness·color_temperature는 SmartThings의 setLevel/
-    setColorTemperature 격자와 맞춘다(smartthings.py `_NUMBER_CAPS`)."""
+    """전구 capability. 실측 WiZ 모델(ESP25_SHRGB_01)의 범위와 맞춘다.
+
+    brightness 하한이 0이 아니라 **10**인 것은 기기의 `minDimLevel`이 10이기 때문이다 —
+    0은 전구가 거부한다(끄기는 power capability의 몫이다). color_temperature 2700~6500은
+    기기가 보고한 `cctRange`의 표준 구간과 정확히 일치한다.
+    """
     return DeviceProfile(
         device_id="room.bulb",
         adapter=BULB_ADAPTER,
         capabilities={
             "power": BooleanCapability(),
-            "brightness": NumberCapability(minimum=0, maximum=100, step=10),
+            "brightness": NumberCapability(minimum=10, maximum=100, step=10),
             "color_temperature": NumberCapability(minimum=2700, maximum=6500, step=100),
         },
     )
@@ -85,22 +98,26 @@ def build_default_registry() -> DeviceRegistry:
 def build_default_adapters(
     *,
     input_sink: InputSink | None = None,
+    wiz_config: WizConfig | None = None,
+    wiz_transport: WizTransport | None = None,
     smartthings_config: SmartThingsConfig | None = None,
     http_transport: HttpTransport | None = None,
 ) -> dict[str, DeviceAdapter]:
     """adapter 이름 → adapter 인스턴스.
 
     `input_sink`가 없으면 현재 OS에 맞는 실제 sink를 고른다(Windows/macOS). 지원하지
-    않는 OS에서는 `default_input_sink()`가 정직하게 raise한다. `smartthings_config`가
-    없으면 전구 adapter는 UNCONFIGURED를 반환한다(토큰 없이도 배선은 완성되고, 실행만
-    안전하게 실패한다 — development-principles 6.3). 테스트는 fake sink·transport를
-    주입해 실제 입력·네트워크 없이 배선을 검증한다.
+    않는 OS에서는 `default_input_sink()`가 정직하게 raise한다. `wiz_config`(또는
+    `smartthings_config`)가 없으면 해당 전구 adapter는 UNCONFIGURED를 반환한다 — 설정
+    없이도 배선은 완성되고 실행만 안전하게 실패한다(development-principles 6.3).
+    테스트는 fake sink·transport를 주입해 실제 입력·네트워크 없이 배선을 검증한다.
     """
     sink = input_sink if input_sink is not None else default_input_sink()
     transport = http_transport if http_transport is not None else UrllibTransport()
+    udp = wiz_transport if wiz_transport is not None else UdpWizTransport()
     return {
         LAPTOP_ADAPTER: WindowsAdapter(sink),
-        BULB_ADAPTER: SmartThingsAdapter(smartthings_config, transport),
+        BULB_ADAPTER: WizAdapter(wiz_config, udp),
+        SMARTTHINGS_ADAPTER: SmartThingsAdapter(smartthings_config, transport),
     }
 
 
@@ -116,11 +133,11 @@ def build_laptop_only_executor(
     capability_map: GestureCapabilityMap | None = None,
     intent_config: IntentConfig = DEFAULT_INTENT_CONFIG,
 ) -> IntentExecutor:
-    """전구(SmartThings) 없이 노트북 경로만으로 완결되는 실행기.
+    """전구 없이 노트북 경로만으로 완결되는 실행기.
 
-    이 Mac에서 토큰·네트워크 없이 Fusion→명령까지 실제로 도는 최소 구성이다. 전구
-    프로파일은 레지스트리에 남지만 SmartThings config가 없어 실행 시 UNCONFIGURED가
-    된다 — 라우팅·검증 배선은 그대로 살아 있다.
+    네트워크·전구 설정 없이 Fusion→명령까지 실제로 도는 최소 구성이다. 전구 프로파일은
+    레지스트리에 남지만 WiZ config가 없어 실행 시 UNCONFIGURED가 된다 — 라우팅·검증
+    배선은 그대로 살아 있다.
     """
     registry = build_default_registry()
     engine = ProtocolEngine(registry, clock if clock is not None else RuntimeClock())

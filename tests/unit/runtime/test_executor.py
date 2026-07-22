@@ -14,7 +14,7 @@ from jarvis.runtime_protocol.adapters.base import AdapterResult, AdapterStatus
 from jarvis.runtime_protocol.capture.clock import RuntimeClock
 from jarvis.runtime_protocol.protocol.capability import DeviceProfile
 from jarvis.runtime_protocol.protocol.engine import ProtocolEngine
-from jarvis.runtime.devices import build_default_registry
+from jarvis.runtime.devices import BULB_ADAPTER, build_default_registry
 
 
 class FakeAdapter:
@@ -124,7 +124,7 @@ def test_protocol_rejection_stops_before_adapter() -> None:
     bad_map = GestureCapabilityMap(
         {"room.bulb": {"swipe_down": CapabilityAction("brightness", "decrement", 7)}}
     )
-    executor = _executor(bad_map, {"windows": adapter, "smartthings": adapter})
+    executor = _executor(bad_map, {"windows": adapter, BULB_ADAPTER: adapter})
 
     outcome = executor.execute(_committed("room.bulb", "swipe_down"))
 
@@ -146,12 +146,13 @@ def test_adapter_failure_is_reported_not_executed() -> None:
 
 
 def test_unconfigured_bulb_dispatches_but_not_executed() -> None:
-    # 전구 매핑은 정상이지만 SmartThings가 미설정이면 UNCONFIGURED → 실행 아님.
-    adapter = FakeAdapter("smartthings", AdapterResult(AdapterStatus.UNCONFIGURED, "no token"))
+    # 전구 매핑은 정상이지만 전구 adapter가 미설정이면 UNCONFIGURED → 실행 아님.
+    # adapter 키는 프로필이 정하므로 BULB_ADAPTER를 따라간다(경로가 바뀌어도 안 깨지게).
+    adapter = FakeAdapter(BULB_ADAPTER, AdapterResult(AdapterStatus.UNCONFIGURED, "not configured"))
     bulb_map = GestureCapabilityMap(
         {"room.bulb": {"swipe_down": CapabilityAction("brightness", "decrement", 10)}}
     )
-    executor = _executor(bulb_map, {"smartthings": adapter})
+    executor = _executor(bulb_map, {BULB_ADAPTER: adapter})
 
     outcome = executor.execute(_committed("room.bulb", "swipe_down"))
 
