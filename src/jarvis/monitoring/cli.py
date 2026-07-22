@@ -37,6 +37,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="gaze(FaceLandmarker) 추론을 끄고 hand 추론만 실행 (손 추적 지연 진단용)",
     )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="'시연' 탭을 선택한 상태로 시작 (탭 구성은 동일)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -56,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         hand_model_path=Path(args.hand_model),
         samples_path=Path(args.samples),
         gaze_enabled=not args.no_gaze,
+        start_tab="시연" if args.demo else None,
     )
     window.show()
     return int(app.exec())

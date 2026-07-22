@@ -40,8 +40,9 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
     try:
         tabs = window.centralWidget()
         assert tabs is not None
-        # seven tabs: 실시간 / 시선 인식 / Gaze 파이프라인 / 손 추적 / 파이프라인 / 지연·어댑터 / 파인튜닝
-        assert tabs.count() == 7
+        # eight tabs: 실시간 / 시선 인식 / Gaze 파이프라인 / 손 추적 / 파이프라인 /
+        # 지연·어댑터 / 파인튜닝 / 시연
+        assert tabs.count() == 8
         assert tabs.tabText(0) == "실시간"
         assert tabs.tabText(1) == "시선 인식"
         assert tabs.tabText(2) == "Gaze 파이프라인"
@@ -49,6 +50,7 @@ def test_main_window_builds_offscreen(tmp_path: Path) -> None:
         assert tabs.tabText(4) == "파이프라인"
         assert tabs.tabText(5) == "지연·어댑터"
         assert tabs.tabText(6) == "파인튜닝"
+        assert tabs.tabText(7) == "시연"
         assert window._sample_button.text() == "시선 샘플 저장 (0/10)"
         assert window._sample_list.count() == 0
         assert window._gaze_config.enable_3d_target_matching is False
@@ -357,6 +359,224 @@ def test_startup_activates_recognition_with_trained_checkpoint(tmp_path: Path) -
         assert window._gesture_source.available is True
         texts = [m.text for m in window._log.recent()]
         assert any("인식 활성" in t for t in texts)
+    finally:
+        window.close()
+        app.processEvents()
+
+
+# --- 시연 탭: Gaze·Gesture → Fusion → 기기 명령 배선 ---------------------------
+
+
+def _demo_window(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """시연 탭 검증용 창. 카메라·앰비언트 체크포인트에 좌우되지 않게 격리한다."""
+    return MainWindow(
+        env={},
+        start_camera=False,
+        samples_path=tmp_path / "samples.json",
+        gesture_models_dir=tmp_path,
+        diagnostics_dir=tmp_path / "diagnostics",
+        profiles_path=tmp_path / "profiles.json",
+    )
+
+
+def _lost_hand_snapshot(frame_id: int):  # type: ignore[no-untyped-def]
+    """pose_events가 있는 최소 HandSnapshot — 중재가 apply를 막는지만 본다."""
+    from jarvis.gesture_fusion.pose_state import PoseEvent
+    from jarvis.monitoring.hand_probe import HandSnapshot
+
+    return HandSnapshot(
+        timestamp_ms=frame_id * 33,
+        frame_id=frame_id,
+        hand_detected=True,
+        handedness="Right",
+        handedness_score=0.9,
+        detection_confidence=0.9,
+        palm_scale=0.2,
+        image_points=None,
+        model_points=None,
+        model_points_raw=None,
+        landmark_count=21,
+        inference_ms=5.0,
+        smoothed=True,
+        wrist_velocity=None,
+        wrist_acceleration=None,
+        pose_events=(PoseEvent(kind="click", timestamp_ms=frame_id * 33),),
+    )
+
+
+def test_demo_tab_starts_with_execution_off(tmp_path: Path) -> None:
+    """안전 기본값은 비실행 — 탭을 열었다는 이유로 기기가 움직이지 않는다."""
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    try:
+        assert window._demo_panel.execution_enabled is False
+        assert window._demo_bridge.execution_enabled is False
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_demo_start_tab_selects_demo(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        samples_path=tmp_path / "samples.json",
+        gesture_models_dir=tmp_path,
+        profiles_path=tmp_path / "profiles.json",
+        start_tab="시연",
+    )
+    try:
+        tabs = window.centralWidget()
+        assert tabs is not None
+        assert tabs.tabText(tabs.currentIndex()) == "시연"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_pose_control_runs_when_not_locked_to_another_device(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    applied: list[int] = []
+    window._pose_control.apply = lambda events: applied.append(len(events))  # type: ignore[method-assign]
+    try:
+        window._on_hand(_lost_hand_snapshot(1))
+        assert applied == [1]
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_pose_control_suppressed_while_locked_to_bulb(tmp_path: Path) -> None:
+    """전구를 보는 동안 손을 움직여도 커서가 따라가면 안 된다(시선 lock 중재)."""
+    from jarvis.contracts.messages import GestureEstimate, GesturePhase
+    from jarvis.monitoring.demo_bridge import BULB_DEVICE_ID
+
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    applied: list[int] = []
+    released: list[int] = []
+    window._pose_control.apply = lambda events: applied.append(len(events))  # type: ignore[method-assign]
+    window._pose_control.release = lambda: released.append(1)  # type: ignore[method-assign]
+    try:
+        window._demo_bridge.set_fallback(BULB_DEVICE_ID)
+        for ms in range(0, 2000, 100):
+            window._demo_bridge.push_gesture(
+                GestureEstimate(
+                    timestamp_ms=ms,
+                    frame_id=ms // 10,
+                    gesture="none",
+                    gesture_confidence=0.1,
+                    phase=GesturePhase.IDLE,
+                    phase_confidence=0.5,
+                    uncertainty=0.5,
+                )
+            )
+        assert window._demo_bridge.locked_device == BULB_DEVICE_ID
+
+        window._on_hand(_lost_hand_snapshot(1))
+        assert applied == []  # 실행되지 않았다
+        assert released  # 드래그가 눌린 채 남지 않게 놓았다
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_demo_mapping_change_persists_and_resets_lock(tmp_path: Path) -> None:
+    from jarvis.monitoring.demo_bridge import BULB_DEVICE_ID, DeviceMappingStore
+
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    try:
+        window._on_demo_mapping_changed("target_001", BULB_DEVICE_ID)
+        stored = DeviceMappingStore(tmp_path / "demo_device_map.json")
+        assert stored.get("target_001") == BULB_DEVICE_ID
+        assert window._demo_bridge.resolve_target("target_001") == BULB_DEVICE_ID
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_demo_bulb_badge_reports_unconfigured(tmp_path: Path) -> None:
+    """env가 비어 있으면 실물 전구는 '미설정'으로 정직하게 표시된다."""
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    try:
+        badge, ok = window._last_bulb_badge
+        assert ok is False
+        assert "미설정" in badge
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_demo_outcome_updates_virtual_bulb_but_flags_real_failure(tmp_path: Path) -> None:
+    """실물 dispatch가 실패해도 가상 전구는 '보낸 명령'을 반영하고, 배지는 실패를 말한다."""
+    from jarvis.contracts.messages import Intent
+    from jarvis.runtime.executor import ExecutionOutcome, ExecutionStage
+
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    try:
+        before = window._virtual_bulb.brightness
+        window._on_execution_outcome(
+            ExecutionOutcome(
+                stage=ExecutionStage.DISPATCHED,
+                detail="bulb did not answer",
+                executed=False,
+                intent=Intent(
+                    intent_id="i-1",
+                    target="room.bulb",
+                    gesture="slide_two_fingers_down",
+                    capability="brightness",
+                    operation="decrement",
+                    value=10,
+                    target_confidence=0.9,
+                    gesture_confidence=0.9,
+                    expires_in_ms=1000,
+                ),
+                command_id="c-1",
+                dispatch=None,
+                rejection=None,
+            )
+        )
+        assert window._virtual_bulb.brightness == before - 10
+        badge, ok = window._last_bulb_badge
+        assert ok is False
+        assert "실패" in badge
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_pose_release_called_once_on_suppression_entry(tmp_path: Path) -> None:
+    """억제 중 매 프레임 release()를 부르면 macOS sink의 restore_dock이 초당 30번 돈다."""
+    from jarvis.contracts.messages import GestureEstimate, GesturePhase
+    from jarvis.monitoring.demo_bridge import BULB_DEVICE_ID
+
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    released: list[int] = []
+    window._pose_control.apply = lambda events: None  # type: ignore[method-assign]
+    window._pose_control.release = lambda: released.append(1)  # type: ignore[method-assign]
+    try:
+        window._demo_bridge.set_fallback(BULB_DEVICE_ID)
+        for ms in range(0, 2000, 100):
+            window._demo_bridge.push_gesture(
+                GestureEstimate(
+                    timestamp_ms=ms,
+                    frame_id=ms // 10,
+                    gesture="none",
+                    gesture_confidence=0.1,
+                    phase=GesturePhase.IDLE,
+                    phase_confidence=0.5,
+                    uncertainty=0.5,
+                )
+            )
+        for frame_id in range(1, 6):
+            window._on_hand(_lost_hand_snapshot(frame_id))
+        assert released == [1]  # 5프레임 억제 동안 딱 한 번
     finally:
         window.close()
         app.processEvents()
