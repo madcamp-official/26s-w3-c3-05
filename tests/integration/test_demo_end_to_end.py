@@ -176,16 +176,22 @@ def test_slide_left_right_reach_the_bulb_as_brightness(tmp_path: Path) -> None:
         assert adapter.calls[0].operation == operation
 
 
-def test_same_slide_left_means_desktop_switch_on_the_laptop(tmp_path: Path) -> None:
-    """같은 좌측 슬라이드가 노트북에서는 가상 데스크톱 전환이다 — 기기별 재해석."""
-    bridge = _bridge(tmp_path, {"target_002": LAPTOP_DEVICE_ID})
-    decision = _run_event(bridge, "target_002", "slide_two_fingers_left")
-    assert decision is not None
+def test_laptop_slide_left_right_no_longer_maps_dynamically(tmp_path: Path) -> None:
+    """노트북 데스크톱 전환은 정적 two_fingers 스와이프로 갈아끼웠다(2026-07-22).
 
-    adapter = FakeAdapter()
-    outcome = _executor({LAPTOP_ADAPTER: adapter}).execute(decision)
-    assert outcome.executed is True
-    assert adapter.calls[0].capability == "desktop_switch"
+    그래서 동적 slide_left/right는 더 이상 노트북 capability에 매핑되지 않는다 —
+    커밋은 되지만 노트북에 capability 매핑이 없어 NO_MAPPING으로 떨어지고 어떤
+    adapter에도 도달하지 않는다. 실제 데스크톱 전환은 pose_state._track_swipe →
+    pose_control.switch_desktop 경로가 담당한다(capability map을 타지 않음)."""
+    for gesture in ("slide_two_fingers_left", "slide_two_fingers_right"):
+        bridge = _bridge(tmp_path, {"target_002": LAPTOP_DEVICE_ID})
+        decision = _run_event(bridge, "target_002", gesture)
+        assert decision is not None and decision.committed
+
+        adapter = FakeAdapter()
+        outcome = _executor({LAPTOP_ADAPTER: adapter}).execute(decision)
+        assert outcome.stage is ExecutionStage.NO_MAPPING
+        assert adapter.calls == []
 
 
 def test_rotate_reaches_the_bulb_as_color(tmp_path: Path) -> None:
