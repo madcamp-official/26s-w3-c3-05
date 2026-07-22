@@ -117,10 +117,10 @@ ROT_LABEL = "index_point"
 # 커서 이동: index_point(이동) 또는 pinch_index(드래그) 상태에서 손 이동을 커서로 옮긴다.
 # 좌표를 1:1로 대응시키지 않고, 마우스처럼 손 이동 **델타**에 이득을 곱한다.
 CURSOR_POSES = ("index_point", "pinch_index")
-CURSOR_BASE_GAIN = 480.0      # 손 이동(팜 단위) → 픽셀 기본 배율. 낮을수록 미세조정 여지↑
+CURSOR_BASE_GAIN = 480.0      # 손 이동(palm_scale 단위) → 픽셀 기본 배율. 낮을수록 미세조정 여지↑
 CURSOR_ACCEL_GAIN = 1.4       # 속도가 빠를수록 이득이 커진다(정밀↔빠른 이동 양립). 클수록 공격적
 CURSOR_MAX_ACCEL = 4.0        # 이득 상한(급격한 튐 방지). 클수록 고속 큰 이동이 시원
-CURSOR_DEADZONE = 0.007       # 이보다 작은 손 떨림은 무시(팜 단위)
+CURSOR_DEADZONE = 0.007       # 이보다 작은 손 떨림은 무시(palm_scale 단위)
 CURSOR_MAX_STEP_PX = 220      # 한 프레임 최대 이동(검출 튐이 커서를 순간이동시키지 않게)
 CURSOR_INVERT_X = True        # 거울 뷰가 아닌 실제 손 기준 — 왼손 이동 = 커서 왼쪽
 CURSOR_Y_GAIN_SCALE = 0.5     # y축 이동 감도 배율. x 대비 세로가 과민해 절반으로 낮춘다
@@ -343,7 +343,7 @@ class PoseStateMachine:
         if self._cursor_ref is None:
             self._cursor_ref, self._cursor_ref_ms = reference_point, timestamp_ms
             return None
-        # 팜 단위 이동(카메라 거리 독립)
+        # palm_scale 단위 이동(카메라 거리 독립)
         dx = (reference_point[0] - self._cursor_ref[0]) / palm_scale
         dy = (reference_point[1] - self._cursor_ref[1]) / palm_scale
         self._cursor_ref, prev_ms = reference_point, self._cursor_ref_ms
