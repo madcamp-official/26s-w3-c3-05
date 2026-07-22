@@ -10,7 +10,7 @@
 - **시간 기준**: 모든 프레임 기반 메시지의 `timestamp_ms`는 런타임 프로세스의 단일 monotonic clock 기준이다. 프레임 캡처 시점에 런타임이 찍은 timestamp와 `frame_id`를 각 파이프라인이 그대로 물려받으며, 각 모듈이 자체 시계로 timestamp를 다시 만들지 않는다. 나중에 제스처 추론을 원격 서버로 옮기더라도 서버는 자체 timestamp를 찍지 않고 클라이언트가 보낸 `timestamp_ms`·`frame_id`를 그대로 되돌려준다.
 - **만료 시각**: 절대 시각 필드는 `_at_ms` 접미사(단위 ms, 동일 monotonic clock), 상대 시간 필드는 `_in_ms` 접미사를 쓴다.
 - **confidence 계열 값**(`probability`, `stability`, `*_confidence`, `uncertainty`)은 모두 0.0~1.0 범위다.
-- **`gesture`·`capability`·`operation`·`target`은 닫힌 enum이 아니라 열린 문자열 키다.** 소비자는 알 수 없는 값을 만나면 실행이 아니라 reject로 처리한다. 커스텀 제스처·신규 기기를 코드 수정 없이 추가하기 위한 규칙이다. 표기는 lowercase snake_case(`swipe_down`)로 통일한다.
+- **`gesture`·`capability`·`operation`·`target`은 닫힌 enum이 아니라 열린 문자열 키다.** 소비자는 알 수 없는 값을 만나면 실행이 아니라 reject로 처리한다. 커스텀 제스처·신규 기기를 코드 수정 없이 추가하기 위한 규칙이다. 표기는 lowercase snake_case(`slide_two_fingers_down`)로 통일한다.
 - **제스처→capability 매핑은 코드가 아니라 `configs/` 데이터로 관리한다.** 매핑 추가·변경은 설정 변경이며 계약 변경이 아니다.
 - `phase`만 예외적으로 닫힌 enum(`IDLE`/`ONSET`/`ACTIVE`/`ENDING`, 대문자)이다. Fusion의 commit 트리거가 이 상태 전이에 의존하므로 값 추가·삭제는 계약 변경 절차를 따른다.
 
@@ -35,7 +35,7 @@
 {
   "timestamp_ms": 1732010400156,
   "frame_id": 4822,
-  "gesture": "swipe_down",
+  "gesture": "slide_two_fingers_down",
   "gesture_confidence": 0.92,
   "phase": "ENDING",
   "phase_confidence": 0.88,
@@ -49,7 +49,7 @@
 {
   "intent_id": "intent-1042",
   "target": "room.bulb",
-  "gesture": "swipe_down",
+  "gesture": "slide_two_fingers_down",
   "capability": "brightness",
   "operation": "decrement",
   "value": 1,
