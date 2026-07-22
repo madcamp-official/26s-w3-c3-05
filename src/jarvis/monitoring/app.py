@@ -104,9 +104,29 @@ from jarvis.monitoring.overlay import (
     render_normalized_hand,
     render_vector,
 )
+from jarvis.monitoring.demo_bridge import (
+    BULB_DEVICE_ID,
+    DemoBridge,
+    DemoPreset,
+    DeviceMappingStore,
+    describe_decision,
+    describe_outcome,
+)
+from jarvis.monitoring.demo_panel import DemoPanel, TargetChoice
+from jarvis.monitoring.execute_worker import ExecuteWorker
 from jarvis.monitoring.pipeline_status import StageState, StageStatus, detect_pipeline_status
 from jarvis.monitoring.pose_control import PoseControlBridge, default_input_sink
+from jarvis.monitoring.virtual_bulb import VirtualBulbState
+from jarvis.runtime.devices import (
+    build_default_adapters,
+    build_default_capability_map,
+    build_default_registry,
+)
+from jarvis.runtime.executor import ExecutionOutcome, ExecutionStage, IntentExecutor
+from jarvis.runtime_protocol.adapters.wiz import WizConfig
+from jarvis.runtime_protocol.capture.clock import RuntimeClock
 from jarvis.runtime_protocol.config import read_env_file
+from jarvis.runtime_protocol.protocol.engine import ProtocolEngine
 from jarvis.runtime_protocol.telemetry.latency import LatencyAggregator, LatencyStage
 
 _STATE_COLOR = {
@@ -1185,6 +1205,30 @@ def _build_clip_recorder() -> _ClipRecorder | None:
     return cast("_ClipRecorder", recorder)
 
 
+def _build_demo_executor(env: dict[str, str]) -> IntentExecutor | None:
+    """시연용 `IntentExecutor` — Fusion 커밋을 실제 기기 명령까지 잇는 실행기.
+
+    `build_laptop_only_executor()`는 전구 설정을 받지 않으므로 공개 빌더로 직접
+    조립한다(`jarvis.runtime.devices`는 다른 작업 중이라 건드리지 않는다). 전구
+    설정(`WIZ_DEVICE_TARGETS`)이 없으면 WiZ adapter가 UNCONFIGURED를 돌려준다 —
+    배선은 완성되고 실행만 안전하게 실패한다.
+
+    이 OS에 입력 어댑터가 없으면(`default_input_sink()`가 raise) None을 돌려
+    시연 실행 자체를 끈다 — 제어를 흉내내지 않는다.
+    """
+    try:
+        adapters = build_default_adapters(wiz_config=WizConfig.from_env(env))
+    except Exception:  # noqa: BLE001 - 미지원 OS·어댑터 부재는 정직하게 off
+        return None
+    registry = build_default_registry()
+    return IntentExecutor(
+        engine=ProtocolEngine(registry, RuntimeClock()),
+        registry=registry,
+        adapters=adapters,
+        capability_map=build_default_capability_map(),
+    )
+
+
 class FinetuneRecordingPanel(QWidget):
     """파인튜닝 클립 녹화 탭 — 웹캠+스켈레톤 뷰 + 동작 선택 + person_id + REC 버튼.
 
@@ -1308,6 +1352,7 @@ class MainWindow(QMainWindow):
         diagnostics_dir: Path | None = None,
         start_camera: bool = True,
         gaze_enabled: bool = True,
+        start_tab: str | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("JARVIS Pipeline Monitor")
@@ -1359,6 +1404,26 @@ class MainWindow(QMainWindow):
         # 판정과 실행의 분리: 상태기계는 순수 로직이고, 실제 OS 입력은 이 브리지만 한다.
         self._pose_control = PoseControlBridge(sink=default_input_sink(), enabled=True)
 
+        # 시연 배선: Gaze·Gesture 실시간 스트림 → Fusion 판정 → (워커 스레드) 기기 명령.
+        # 물체 등록이 발급하는 target_001…을 런타임 기기 id로 잇는 매핑은 등록 프로파일
+        # 옆에 따로 둔다 — 등록 흐름 자체는 건드리지 않는다.
+        self._device_mapping = DeviceMappingStore(
+            self._profiles_path.with_name("demo_device_map.json")
+        )
+        self._demo_bridge = DemoBridge(mapping_store=self._device_mapping)
+        # 억제 전이를 기억한다 — release()를 매 프레임이 아니라 진입할 때 한 번만 부르려고.
+        self._pose_suppressed = False
+        self._virtual_bulb = VirtualBulbState()
+        self._last_bulb_badge = ("미설정", False)
+        executor = _build_demo_executor(self._env)
+        self._execute_worker: ExecuteWorker | None = None
+        if executor is not None:
+            self._execute_worker = ExecuteWorker(executor)
+            self._execute_worker.outcome_ready.connect(self._on_execution_outcome)
+            self._execute_worker.failed.connect(self._on_execution_failed)
+            self._execute_worker.dropped.connect(self._on_execution_failed)
+            self._execute_worker.start()
+
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
         tabs.addTab(self._build_gaze_recognition_tab(), "시선 인식")
@@ -1367,7 +1432,14 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_pipeline_tab(), "파이프라인")
         tabs.addTab(self._build_latency_tab(), "지연·어댑터")
         tabs.addTab(self._build_finetune_tab(), "파인튜닝")
+        tabs.addTab(self._build_demo_tab(), "시연")
         self.setCentralWidget(tabs)
+        self._tabs = tabs
+        if start_tab is not None:
+            for index in range(tabs.count()):
+                if tabs.tabText(index) == start_tab:
+                    tabs.setCurrentIndex(index)
+                    break
         # keyPressEvent에서 "지금 파인튜닝 탭이 보이는가"를 판정하는 데 쓴다(스페이스바
         # 녹화 단축키가 다른 탭에서 실수로 발동하지 않도록).
         self._tabs = tabs
@@ -1672,6 +1744,120 @@ class MainWindow(QMainWindow):
         self._finetune_panel.set_status(f"녹화 중… [{gesture}] 0프레임")
         self._log.info(f"파인튜닝 녹화 시작: person={person} 동작={gesture}")
 
+    # --- 시연 탭 -----------------------------------------------------------
+
+    def _build_demo_tab(self) -> QWidget:
+        """웹캠 뷰 + 시연 패널. `VideoView`는 app.py에 있어 패널이 직접 못 만든다
+        (순환 import) — `_build_live_tab`이 인식 패널을 붙이는 방식과 같이 여기서 잇는다.
+        """
+        self._demo_video = VideoView()
+        self._demo_panel = DemoPanel(
+            on_mapping_changed=self._on_demo_mapping_changed,
+            on_fallback_changed=self._on_demo_fallback_changed,
+            on_preset_changed=self._on_demo_preset_changed,
+            on_execution_toggled=self._on_demo_execution_toggled,
+        )
+        self._refresh_demo_targets()
+        self._refresh_bulb_badge()
+        if self._execute_worker is None:
+            self._demo_panel.append_line(
+                "실행기 없음 — 이 플랫폼에 입력 어댑터가 없어 기기 명령을 실행할 수 없습니다",
+                ok=False,
+            )
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.addWidget(self._demo_video)
+        split.addWidget(self._demo_panel)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 0)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.addWidget(split)
+        return container
+
+    def _refresh_demo_targets(self) -> None:
+        """등록 물체 목록을 매핑 표에 반영한다(등록·삭제·이름 변경 후)."""
+        if not hasattr(self, "_demo_panel"):
+            return  # 시연 탭이 아직 만들어지기 전(등록 탭이 먼저 빌드된다)
+        choices = [
+            TargetChoice(target_id=record.target_id, name=record.name)
+            for record in self._target_registry.records
+        ]
+        self._demo_panel.set_targets(choices, self._device_mapping.mapping)
+
+    def _refresh_bulb_badge(self) -> None:
+        configured = WizConfig.from_env(self._env) is not None
+        badge = "설정됨 · 명령 대기" if configured else "미설정 (WIZ_DEVICE_TARGETS 없음)"
+        self._last_bulb_badge = (badge, configured)
+        self._demo_panel.set_bulb(self._virtual_bulb, badge=badge, ok=configured)
+
+    def _on_demo_mapping_changed(self, target_id: str, device_id: str | None) -> None:
+        self._device_mapping.set(target_id, device_id)
+        # 매핑이 바뀌면 이전 대상으로 쌓인 lock을 이어받으면 안 된다.
+        self._demo_bridge.reset()
+        label = device_id or "연결 안 함"
+        self._log.info(f"시연 기기 매핑: {target_id} → {label}")
+        self._demo_panel.append_line(f"매핑 변경 {target_id} → {label}", ok=device_id is not None)
+
+    def _on_demo_fallback_changed(self, device_id: str | None) -> None:
+        self._demo_bridge.set_fallback(device_id)
+        if device_id is None:
+            self._log.info("시연 타깃 고정 해제 — 실제 시선 추정을 사용합니다")
+            self._demo_panel.append_line("타깃 고정 해제", ok=False)
+        else:
+            self._log.warn(f"시연 타깃 고정: {device_id} (시선 판정을 우회합니다)")
+            self._demo_panel.append_line(f"타깃 고정 → {device_id}", ok=True)
+
+    def _on_demo_preset_changed(self, preset: DemoPreset) -> None:
+        self._demo_bridge.reconfigure(preset)
+        self._log.info(f"시연 임계값 프리셋: {preset.label} (target lock 초기화됨)")
+        self._demo_panel.append_line(
+            f"임계값 {preset.label} — dwell {preset.alignment.target_dwell_ms}ms, "
+            f"commit {preset.fusion.commit_threshold:.2f} (lock 초기화)",
+            ok=True,
+        )
+
+    def _on_demo_execution_toggled(self, enabled: bool) -> None:
+        self._demo_bridge.execution_enabled = enabled
+        if enabled and self._execute_worker is None:
+            self._log.warn("실행기가 없어 기기 명령을 실행할 수 없습니다")
+            self._demo_panel.append_line("실행기 없음 — 켜도 실행되지 않습니다", ok=False)
+            return
+        self._log.info(f"시연 기기 명령 실행 {'켜짐' if enabled else '꺼짐'}")
+
+    def _on_execution_outcome(self, outcome: object) -> None:
+        """워커 스레드가 돌려준 실행 결과(GUI 스레드에서 수신)."""
+        assert isinstance(outcome, ExecutionOutcome)
+        line = describe_outcome(outcome)
+        self._demo_panel.append_line(line, ok=outcome.executed)
+        self._demo_panel.set_last_action(line, ok=outcome.executed)
+        intent = outcome.intent
+        if intent is None or intent.target != BULB_DEVICE_ID:
+            return
+        # 가상 전구는 **보낸 명령**을 누적한다. 실물의 성공 여부는 배지로 따로 말한다 —
+        # dispatch가 실패했는데 그림만 밝아지면 성공을 지어내는 것이다.
+        self._virtual_bulb.apply(intent)
+        if outcome.executed:
+            badge = "OK · " + outcome.detail
+        elif outcome.stage is ExecutionStage.DISPATCHED:
+            badge = "실패: " + outcome.detail
+        else:
+            badge = "미전달: " + outcome.detail
+        self._last_bulb_badge = (badge, outcome.executed)
+        self._demo_panel.set_bulb(self._virtual_bulb, badge=badge, ok=outcome.executed)
+
+    def _on_execution_failed(self, message: str) -> None:
+        self._log.error(message)
+        self._demo_panel.append_line(message, ok=False)
+
+    def _update_demo_state(self, gesture: str) -> None:
+        self._demo_panel.set_state(
+            locked=self._demo_bridge.locked_device,
+            candidate=self._demo_bridge.candidate_device,
+            phase=str(self._demo_bridge.intent_phase),
+            gesture=gesture,
+            suppressed=self._demo_bridge.should_suppress_pose,
+        )
+
     def _on_control_toggled_live(self, enabled: bool) -> None:
         """실시간 탭 토글 → 손 추적 탭 토글과 상태를 맞춘다(무한 재귀 없이)."""
         panel = self._hand_panel._control_toggle
@@ -1748,10 +1934,15 @@ class MainWindow(QMainWindow):
         # 각 VideoView가 자기 복사본에 그리므로 서로 간섭하지 않는다).
         self._gaze_video.show_frame(frame)
         self._finetune_panel.video.show_frame(frame)
+        self._demo_video.show_frame(frame)
 
     def _on_gaze(self, snapshot: object) -> None:
         assert isinstance(snapshot, GazeSnapshot)
         self._latest_gaze = snapshot
+        # Gaze→Fusion 스트림(계약 §1). 브리지가 등록 물체 id를 런타임 기기 id로
+        # 치환하고(매핑 없으면 UNKNOWN), 타깃 고정이 켜져 있으면 합성 추정치로 대체한다.
+        self._demo_bridge.push_target(snapshot.target_estimate)
+        self._demo_video.set_gaze(snapshot)
         self._gaze_history.append(snapshot)
         cutoff_ms = snapshot.timestamp_ms - 500
         while self._gaze_history and self._gaze_history[0].timestamp_ms < cutoff_ms:
@@ -2116,6 +2307,8 @@ class MainWindow(QMainWindow):
                 f"{scale_label}{feature_label}{area_label}"
             )
         self._refresh_session_labels()
+        # 시연 탭의 "물체 → 기기" 매핑 표도 같은 목록에서 다시 그린다.
+        self._refresh_demo_targets()
 
     def _refresh_session_labels(self) -> None:
         """세션 라벨 콤보를 등록 target 목록과 동기화한다(선택 유지)."""
@@ -2247,10 +2440,25 @@ class MainWindow(QMainWindow):
     def _on_hand(self, snapshot: object) -> None:
         assert isinstance(snapshot, HandSnapshot)
         self._video.set_hand(snapshot)
+        self._demo_video.set_hand(snapshot)
         # 손을 놓치면 드래그가 눌린 채 남지 않게 먼저 정리한다.
         if not snapshot.hand_detected:
             self._pose_control.release()
-        self._pose_control.apply(list(snapshot.pose_events))
+        # 시선 lock에 의한 경로 중재: 노트북이 아닌 기기(전구)를 보는 동안에는 pose
+        # 제어를 멈춘다 — 전구를 보며 손을 움직일 때 커서까지 따라가면 안 된다. 사용자의
+        # 제어 토글(`_pose_control.enabled`)은 건드리지 않고 억제만 얹으므로, 전구에서
+        # 시선을 떼면 커서가 곧바로 되살아난다. pose_control.py는 수정하지 않는다.
+        #
+        # release()는 **억제로 들어가는 전이에서 한 번만** 부른다. 매 프레임 부르면
+        # macOS sink의 restore_dock()이 초당 30번 호출된다(Windows sink엔 없어 무해하지만
+        # 플랫폼에 기대지 않는다).
+        suppressed = self._demo_bridge.should_suppress_pose
+        if suppressed:
+            if not self._pose_suppressed:
+                self._pose_control.release()
+        else:
+            self._pose_control.apply(list(snapshot.pose_events))
+        self._pose_suppressed = suppressed
         self._video.set_control(self._pose_control.last_action, self._pose_control.enabled)
         self._hand_panel.update_snapshot(snapshot, self._pose_control.last_action)
         self._sidebar.set_hand_status(snapshot)
@@ -2264,6 +2472,23 @@ class MainWindow(QMainWindow):
             # 터미널을 손실 프레임(솎이지 않아 30fps)으로 도배하지 않는다.
             if tick is not None and tick.hand_detected:
                 self._sidebar.append_tick(tick)
+            if tick is not None:
+                # Gesture→Fusion 스트림(계약 §2). 솎인 프레임(None)에는 아무것도 밀지
+                # 않는다 — 12fps로 학습된 모델의 cadence를 그대로 유지한다. 판정은
+                # 제스처가 완결된 프레임에서만 나온다.
+                decision = self._demo_bridge.push_gesture(tick.estimate)
+                if decision is not None:
+                    self._demo_panel.append_line(
+                        describe_decision(decision), ok=decision.committed
+                    )
+                    if decision.committed:
+                        if self._demo_bridge.execution_enabled and self._execute_worker is not None:
+                            self._execute_worker.submit(decision)
+                        else:
+                            self._demo_panel.set_last_action(
+                                f"{decision.gesture} → {decision.target} (실행 안 함)", ok=False
+                            )
+                self._update_demo_state(tick.estimate.gesture)
         # 녹화 중이면 이 프레임의 관측값(스무딩 전 원본)을 클립 버퍼에 넣는다. observation은
         # 검출·손실 프레임 둘 다 존재하므로(hand_probe A단계) 미검출도 클립에 남아 미검출
         # 게이트가 CLI와 동일하게 동작한다.
@@ -2328,6 +2553,9 @@ class MainWindow(QMainWindow):
             self._session_recorder.stop()
         if self._camera is not None:
             self._camera.stop()
+        # 실행 워커를 확실히 접는다 — 진행 중인 명령 하나는 끝까지 보내고 종료한다.
+        if self._execute_worker is not None:
+            self._execute_worker.stop()
         # stderr를 원래 콘솔로 복원한다 — 프로세스 종료 후에도 stderr가 깨지지 않게.
         if self._stderr_capture is not None:
             self._stderr_capture.stop()
