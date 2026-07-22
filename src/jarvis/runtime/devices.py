@@ -73,6 +73,11 @@ def _bulb_profile() -> DeviceProfile:
     brightness 하한이 0이 아니라 **10**인 것은 기기의 `minDimLevel`이 10이기 때문이다 —
     0은 전구가 거부한다(끄기는 power capability의 몫이다). color_temperature 2700~6500은
     기기가 보고한 `cctRange`의 표준 구간과 정확히 일치한다.
+
+    `color`(색상각, 도)는 다른 수치와 성격이 다르다 — **순환량**이라 min/max가 벽이
+    아니라 한 바퀴의 경계다. 그래서 WizAdapter는 이 capability만 클램프하지 않고 360도에서
+    0도로 감아 돈다(`_apply_color`). 여기 min/max는 `set` 검증용 경계로만 쓰이며,
+    상대 연산(increment/decrement)에서는 delta가 step의 배수인지만 검사된다.
     """
     return DeviceProfile(
         device_id="room.bulb",
@@ -81,6 +86,9 @@ def _bulb_profile() -> DeviceProfile:
             "power": BooleanCapability(),
             "brightness": NumberCapability(minimum=10, maximum=100, step=10),
             "color_temperature": NumberCapability(minimum=2700, maximum=6500, step=100),
+            "color": NumberCapability(
+                minimum=0, maximum=360, step=30, operations=_RELATIVE_OPS
+            ),
         },
     )
 

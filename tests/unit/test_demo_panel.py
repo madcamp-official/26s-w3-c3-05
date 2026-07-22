@@ -155,3 +155,31 @@ def test_preset_callback_fires_with_selected_preset() -> None:
     finally:
         panel.deleteLater()
         app.processEvents()
+
+
+def test_bulb_view_follows_the_active_color_mode() -> None:
+    """색상 모드의 그림 색은 adapter가 기기로 보내는 RGB와 같아야 한다.
+
+    화면과 실물이 서로 다른 색을 내면 시연에서 바로 들통난다 — 두 곳이 같은 변환
+    (`wiz.hue_to_rgb`)을 쓰는지 고정한다.
+    """
+    from jarvis.runtime_protocol.adapters.wiz import hue_to_rgb
+
+    app = QApplication.instance() or QApplication([])
+    panel = _panel()
+    try:
+        panel.set_bulb(
+            VirtualBulbState(power=True, brightness=100, color_mode=True, hue=120),
+            badge="OK", ok=True,
+        )
+        assert panel.bulb_view._tint() == hue_to_rgb(120)
+
+        # 색온도 모드로 돌아가면 색조 계산도 그쪽을 따른다.
+        panel.set_bulb(
+            VirtualBulbState(power=True, brightness=100, color_mode=False),
+            badge="OK", ok=True,
+        )
+        assert panel.bulb_view._tint() != hue_to_rgb(120)
+    finally:
+        panel.deleteLater()
+        app.processEvents()
