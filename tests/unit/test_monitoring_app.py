@@ -694,6 +694,41 @@ def test_demo_outcome_updates_virtual_bulb_but_flags_real_failure(tmp_path: Path
         app.processEvents()
 
 
+def test_demo_probe_state_replaces_the_screen_value(tmp_path: Path) -> None:
+    """실물에서 읽은 상태가 화면의 단일 소스가 된다 — 예전에는 이 값을 버려서 화면이
+    임의의 초기값(60%·4000K)에 머물렀고 실물과 하나도 맞지 않았다."""
+    from jarvis.monitoring.bulb_probe import BulbProbeResult
+    from jarvis.monitoring.virtual_bulb import state_from_pilot
+
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    try:
+        assert window._bulb_verified is False
+        state = state_from_pilot({"state": True, "dimming": 30, "r": 255, "g": 0, "b": 0})
+        window._on_bulb_probed(BulbProbeResult(True, "전구 연결됨", state))
+        assert window._bulb_verified is True
+        assert window._virtual_bulb.brightness == 30
+        assert window._virtual_bulb.color_mode is True
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_demo_unreadable_probe_does_not_claim_the_screen_is_real(tmp_path: Path) -> None:
+    """상태를 못 읽었으면 '실물에서 읽은 값'이라고 주장하지 않는다."""
+    from jarvis.monitoring.bulb_probe import BulbProbeResult
+
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    try:
+        window._bulb_verified = True
+        window._on_bulb_probed(BulbProbeResult(False, "전구 연결 실패", None))
+        assert window._bulb_verified is False
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_pose_release_called_once_on_suppression_entry(tmp_path: Path) -> None:
     """억제 중 매 프레임 release()를 부르면 macOS sink의 restore_dock이 초당 30번 돈다."""
     from jarvis.contracts.messages import GestureEstimate, GesturePhase

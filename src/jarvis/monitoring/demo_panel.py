@@ -175,13 +175,15 @@ class DemoPanel(QWidget):
         self.bulb_view = BulbView()
         bulb_row.addWidget(self.bulb_view)
         bulb_text = QVBoxLayout()
-        self._bulb_state_label = QLabel("밝기 60% · 색온도 4000K")
+        # 실물을 읽기 전에는 숫자를 지어내지 않는다 — 예전에는 임의의 초기값(60%·4000K)을
+        # 그대로 보여줘 화면이 실물과 어긋난 채 시작했다(2026-07-22 시연 피드백).
+        self._bulb_state_label = QLabel("전구 상태: 확인 전")
         self._bulb_state_label.setStyleSheet(f"font-weight:700; color:{_STATUS_TEXT};")
         bulb_text.addWidget(self._bulb_state_label)
-        bulb_note = QLabel("위 값은 보낸 명령 기준이며 실물 응답이 아닙니다.")
-        bulb_note.setWordWrap(True)
-        bulb_note.setStyleSheet("color:#6e7681; font-size:11px;")
-        bulb_text.addWidget(bulb_note)
+        self._bulb_note = QLabel("시작 시 실물 상태를 한 번 읽어 맞춥니다.")
+        self._bulb_note.setWordWrap(True)
+        self._bulb_note.setStyleSheet("color:#6e7681; font-size:11px;")
+        bulb_text.addWidget(self._bulb_note)
         self._bulb_badge = QLabel("실물: 미설정")
         self._bulb_badge.setWordWrap(True)
         self._bulb_badge.setStyleSheet("color:#8b949e; font-weight:700;")
@@ -415,9 +417,21 @@ class DemoPanel(QWidget):
         self._gesture_label.setText(f"제스처: {gesture}")
         self._phase_label.setText(f"Intent: {phase}")
 
-    def set_bulb(self, state: VirtualBulbState, *, badge: str, ok: bool) -> None:
+    def set_bulb(
+        self, state: VirtualBulbState, *, badge: str, ok: bool, verified: bool = False
+    ) -> None:
+        """전구 표시 갱신. `verified`는 이 값이 **실물에서 읽은 것**인지를 뜻한다.
+
+        읽은 값과 보낸 명령 기준 값을 같은 글씨로 보여주면 화면이 실물과 어긋났을 때
+        그 사실이 숨는다. 그래서 문구를 나눈다 — 이 구분이 곧 정직성 경계다.
+        """
         self.bulb_view.set_state(state)
         self._bulb_state_label.setText(state.describe())
+        self._bulb_note.setText(
+            "실물 전구에서 읽은 값입니다."
+            if verified
+            else "보낸 명령 기준 값입니다 — 실물 확인 전."
+        )
         self._bulb_badge.setText(f"실물: {badge}")
         self._bulb_badge.setStyleSheet(
             ("color:#3fb950;" if ok else "color:#d29922;") + " font-weight:700;"
