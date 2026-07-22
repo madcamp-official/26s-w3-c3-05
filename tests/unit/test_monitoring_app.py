@@ -492,13 +492,22 @@ def _lost_hand_snapshot(frame_id: int):  # type: ignore[no-untyped-def]
     )
 
 
-def test_demo_tab_starts_with_execution_off(tmp_path: Path) -> None:
-    """안전 기본값은 비실행 — 탭을 열었다는 이유로 기기가 움직이지 않는다."""
+def test_demo_tab_starts_ready_for_laptop_control(tmp_path: Path) -> None:
+    """시연 기본값(2026-07-22 사용자 지시): 실행 켜짐 + 타깃 고정 laptop.
+
+    동적 제스처로 노트북을 바로 제어할 수 있도록, 탭을 열면 실행 스위치가 켜져
+    있고 타깃이 laptop에 고정돼 있다. 패널 체크박스와 브릿지 상태가 일치해야
+    한다(패널 초기 상태를 단일 소스로 브릿지에 동기화한 결과).
+    """
+    from jarvis.monitoring.demo_bridge import LAPTOP_DEVICE_ID
+
     app = QApplication.instance() or QApplication([])
     window = _demo_window(tmp_path)
     try:
-        assert window._demo_panel.execution_enabled is False
-        assert window._demo_bridge.execution_enabled is False
+        assert window._demo_panel.execution_enabled is True
+        assert window._demo_bridge.execution_enabled is True
+        assert window._demo_panel.fallback_device == LAPTOP_DEVICE_ID
+        assert window._demo_bridge.fallback_device == LAPTOP_DEVICE_ID
     finally:
         window.close()
         app.processEvents()

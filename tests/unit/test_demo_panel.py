@@ -181,12 +181,17 @@ def test_execution_toggle_reports_armed_and_judgment_only_modes() -> None:
         on_execution_toggled=toggled.append,
     )
     try:
-        panel._execution_toggle.setChecked(True)
-        assert toggled[-1] is True
+        # 기본 켜짐(사용자 지시, 2026-07-22) — 생성 중에는 connect 전이라 신호가
+        # 안 뜨지만 상태 라벨은 이미 "실행 활성"으로 맞춰져 있어야 한다.
+        assert panel._execution_toggle.isChecked() is True
         assert "실행 활성" in panel._execution_status.text()
+
         panel._execution_toggle.setChecked(False)
         assert toggled[-1] is False
         assert "판정 전용" in panel._execution_status.text()
+        panel._execution_toggle.setChecked(True)
+        assert toggled[-1] is True
+        assert "실행 활성" in panel._execution_status.text()
     finally:
         panel.deleteLater()
         app.processEvents()
@@ -216,6 +221,8 @@ def test_bulb_view_survives_every_state() -> None:
     app = QApplication.instance() or QApplication([])
     panel = _panel()
     try:
+        assert panel.bulb_view.width() == 56
+        assert panel.bulb_view.height() == 56
         for state in (
             VirtualBulbState(power=False),
             VirtualBulbState(power=True, brightness=10, color_temperature=2700),
