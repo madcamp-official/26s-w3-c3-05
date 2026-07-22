@@ -47,9 +47,15 @@ from jarvis.monitoring.virtual_bulb import (
 
 _NO_DEVICE = "(연결 안 함)"
 
+# 이 앱에는 전역 다크 테마가 없다 — 어두운 외관은 위젯마다 stylesheet로 직접 만든다
+# (`app.py`의 `_MONO`가 색을 항상 함께 지정하는 것과 같은 규약). 그래서 `background`만
+# 주고 `color`를 빼면 글자가 시스템 기본색으로 떨어져 **검은 배경에 검은 글씨**가 된다.
+# 배경을 지정하는 스타일은 반드시 색도 함께 지정한다. 상태별 색은 이 기본값 뒤에 덧붙여
+# 덮어쓴다(뒤에 온 선언이 이긴다).
+_STATUS_TEXT = "#c9d1d9"
 _STATUS_STYLE = (
     "background:#161b22; border:1px solid #30363d; border-radius:6px;"
-    " padding:6px 10px; font-weight:700;"
+    f" padding:6px 10px; font-weight:700; color:{_STATUS_TEXT};"
 )
 
 
@@ -141,7 +147,7 @@ class DemoPanel(QWidget):
         bulb_row.addWidget(self.bulb_view)
         bulb_text = QVBoxLayout()
         self._bulb_state_label = QLabel("밝기 60% · 색온도 4000K")
-        self._bulb_state_label.setStyleSheet("font-weight:700;")
+        self._bulb_state_label.setStyleSheet(f"font-weight:700; color:{_STATUS_TEXT};")
         bulb_text.addWidget(self._bulb_state_label)
         bulb_note = QLabel("위 값은 보낸 명령 기준이며 실물 응답이 아닙니다.")
         bulb_note.setWordWrap(True)
@@ -208,7 +214,10 @@ class DemoPanel(QWidget):
         # --- 판정 로그 ------------------------------------------------------
         layout.addWidget(_section("판정·실행 로그"))
         self._log_list = QListWidget()
-        self._log_list.setStyleSheet("font-family:Consolas,monospace; font-size:12px;")
+        self._log_list.setStyleSheet(
+            "QListWidget{background:#0a0d12; border:1px solid #30363d;"
+            " font-family:Consolas,monospace; font-size:12px; color:#c9d1d9;}"
+        )
         layout.addWidget(self._log_list, 1)
 
     # --- 조작 → 콜백 -------------------------------------------------------
@@ -227,6 +236,8 @@ class DemoPanel(QWidget):
         """매핑 표를 다시 그린다(물체 등록·삭제·이름 변경 후 호출)."""
         while self._mapping_layout.count():
             item = self._mapping_layout.takeAt(0)
+            if item is None:
+                break
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
