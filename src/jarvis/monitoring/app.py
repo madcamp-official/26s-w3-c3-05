@@ -77,6 +77,7 @@ from jarvis.gesture_fusion.model_protocol import (
 )
 from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
 from jarvis.gesture_fusion.pose_state import TWO_FINGER_STRAIGHTNESS_MIN
+from jarvis.monitoring.bulb_probe import BulbProbeResult, BulbProbeWorker
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
@@ -125,7 +126,11 @@ from jarvis.runtime.devices import (
     build_default_registry,
 )
 from jarvis.runtime.executor import ExecutionOutcome, ExecutionStage, IntentExecutor
-from jarvis.runtime_protocol.adapters.wiz import WizConfig
+from jarvis.runtime_protocol.adapters.wiz import (
+    UdpWizTransport,
+    WizConfig,
+    WizTransport,
+)
 from jarvis.runtime_protocol.capture.clock import RuntimeClock
 from jarvis.runtime_protocol.config import read_env_file
 from jarvis.runtime_protocol.protocol.engine import ProtocolEngine
@@ -1240,7 +1245,9 @@ def _build_clip_recorder() -> _ClipRecorder | None:
     return cast("_ClipRecorder", recorder)
 
 
-def _build_demo_executor(env: dict[str, str]) -> IntentExecutor | None:
+def _build_demo_executor(
+    env: dict[str, str], wiz_transport: WizTransport | None = None
+) -> IntentExecutor | None:
     """시연용 `IntentExecutor` — Fusion 커밋을 실제 기기 명령까지 잇는 실행기.
 
     `build_laptop_only_executor()`는 전구 설정을 받지 않으므로 공개 빌더로 직접
@@ -1250,9 +1257,15 @@ def _build_demo_executor(env: dict[str, str]) -> IntentExecutor | None:
 
     이 OS에 입력 어댑터가 없으면(`default_input_sink()`가 raise) None을 돌려
     시연 실행 자체를 끈다 — 제어를 흉내내지 않는다.
+
+    `wiz_transport`를 넘기면 그 인스턴스를 쓴다 — 시작 프로브(`BulbProbeWorker`)와
+    **같은 transport**를 공유해야 프로브가 채운 MAC→IP 캐시를 첫 명령이 그대로
+    활용한다(안 그러면 첫 제스처가 재탐색 비용을 다시 낸다).
     """
     try:
-        adapters = build_default_adapters(wiz_config=WizConfig.from_env(env))
+        adapters = build_default_adapters(
+            wiz_config=WizConfig.from_env(env), wiz_transport=wiz_transport
+        )
     except Exception:  # noqa: BLE001 - 미지원 OS·어댑터 부재는 정직하게 off
         return None
     registry = build_default_registry()
@@ -1456,7 +1469,10 @@ class MainWindow(QMainWindow):
         self._pose_suppressed = False
         self._virtual_bulb = VirtualBulbState()
         self._last_bulb_badge = ("미설정", False)
-        executor = _build_demo_executor(self._env)
+        # 전구 프로브와 실행 어댑터가 같은 transport를 공유한다 — 프로브가 MAC→IP 캐시를
+        # 미리 채워, 첫 제스처가 재탐색 비용을 떠안지 않게 한다(bulb_probe.py 참조).
+        self._wiz_transport = UdpWizTransport()
+        executor = _build_demo_executor(self._env, self._wiz_transport)
         self._execute_worker: ExecuteWorker | None = None
         if executor is not None:
             self._execute_worker = ExecuteWorker(executor)
@@ -1464,6 +1480,7 @@ class MainWindow(QMainWindow):
             self._execute_worker.failed.connect(self._on_execution_failed)
             self._execute_worker.dropped.connect(self._on_execution_failed)
             self._execute_worker.start()
+        self._bulb_probe: BulbProbeWorker | None = None
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
@@ -1851,9 +1868,46 @@ class MainWindow(QMainWindow):
                 self._register_target_button.setFocus()
                 return
 
+    def start_bulb_probe(self) -> None:
+        """시작 시 전구에 실제로 닿는지 한 번 확인한다(GUI 스레드 밖).
+
+        WiZ는 연결 없는 UDP라 "연결"이라는 단계가 없다 — 그래서 이 프로브를 넣기
+        전에는 부팅 시 전구를 한 번도 건드리지 않았고, 도달 불가를 첫 제스처에서야
+        알 수 있었다. 시도·성공·실패를 시연 로그에 그대로 찍는다.
+        """
+        if self._bulb_probe is not None and self._bulb_probe.isRunning():
+            return
+        config = WizConfig.from_env(self._env)
+        target = config.device_targets.get(BULB_DEVICE_ID) if config else None
+        self._demo_panel.append_line(
+            f"전구 연결 시도… ({target})" if target else "전구 연결 시도… (대상 미설정)",
+            ok=True,
+        )
+        self._log.info("전구 연결 확인 중…")
+        self._bulb_probe = BulbProbeWorker(config, BULB_DEVICE_ID, self._wiz_transport)
+        self._bulb_probe.result_ready.connect(self._on_bulb_probed)
+        self._bulb_probe.start()
+
+    def _on_bulb_probed(self, result: object) -> None:
+        assert isinstance(result, BulbProbeResult)
+        self._demo_panel.append_line(result.detail, ok=result.ok)
+        if result.ok:
+            self._log.info(result.detail)
+        else:
+            self._log.warn(result.detail)
+        # 배지를 "설정 여부"가 아니라 **실제 도달 여부**로 갱신한다.
+        self._last_bulb_badge = (result.detail, result.ok)
+        self._demo_panel.set_bulb(self._virtual_bulb, badge=result.detail, ok=result.ok)
+
     def _refresh_bulb_badge(self) -> None:
+        # 프로브가 실제 도달 여부를 확인했으면 그 결과를 유지한다 — 여기서 "설정됨"으로
+        # 덮으면 닿지도 않는 전구가 다시 정상처럼 보인다.
+        if self._bulb_probe is not None:
+            badge, ok = self._last_bulb_badge
+            self._demo_panel.set_bulb(self._virtual_bulb, badge=badge, ok=ok)
+            return
         configured = WizConfig.from_env(self._env) is not None
-        badge = "설정됨 · 명령 대기" if configured else "미설정 (WIZ_DEVICE_TARGETS 없음)"
+        badge = "설정됨 · 연결 확인 전" if configured else "미설정 (WIZ_DEVICE_TARGETS 없음)"
         self._last_bulb_badge = (badge, configured)
         self._demo_panel.set_bulb(self._virtual_bulb, badge=badge, ok=configured)
 
@@ -2716,6 +2770,9 @@ class MainWindow(QMainWindow):
         # 실행 워커를 확실히 접는다 — 진행 중인 명령 하나는 끝까지 보내고 종료한다.
         if self._execute_worker is not None:
             self._execute_worker.stop()
+        # 프로브는 타임아웃이 짧아 금방 끝나지만, 남은 스레드가 있으면 기다린다.
+        if self._bulb_probe is not None and self._bulb_probe.isRunning():
+            self._bulb_probe.wait(3000)
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
@@ -2760,4 +2817,7 @@ def run(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(argv or [])
     window = MainWindow()
     window.show()
+    # 창이 보인 뒤에 전구 도달 확인을 시작한다 — 시도·결과 메시지가 시연 로그에 찍혀야
+    # 하고, __init__에서 하면 창이 뜨기 전에 메시지가 흘러 사용자가 못 본다.
+    window.start_bulb_probe()
     return int(app.exec())
