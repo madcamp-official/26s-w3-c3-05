@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -66,8 +67,12 @@ def test_status_labels_keep_a_readable_color_after_updates() -> None:
     panel = _panel()
     try:
         panel.set_state(
-            locked="room.bulb", candidate=None, phase="TARGET_LOCKED",
-            gesture="none", suppressed=True, raw_target="room.bulb",
+            locked="room.bulb",
+            candidate=None,
+            phase="TARGET_LOCKED",
+            gesture="none",
+            suppressed=True,
+            raw_target="room.bulb",
         )
         for label in (
             panel._raw_target_label,
@@ -85,20 +90,24 @@ def test_state_text_reflects_lock_candidate_and_suppression() -> None:
     app = QApplication.instance() or QApplication([])
     panel = _panel()
     try:
-        panel.set_state(
-            locked=None, candidate=None, phase="IDLE", gesture="-", suppressed=False
-        )
+        panel.set_state(locked=None, candidate=None, phase="IDLE", gesture="-", suppressed=False)
         assert "없음" in panel._target_label.text()
 
         panel.set_state(
-            locked=None, candidate="laptop", phase="TARGET_CANDIDATE",
-            gesture="-", suppressed=False,
+            locked=None,
+            candidate="laptop",
+            phase="TARGET_CANDIDATE",
+            gesture="-",
+            suppressed=False,
         )
         assert "후보" in panel._target_label.text()
 
         panel.set_state(
-            locked="room.bulb", candidate=None, phase="TARGET_LOCKED",
-            gesture="stop_sign", suppressed=True,
+            locked="room.bulb",
+            candidate=None,
+            phase="TARGET_LOCKED",
+            gesture="stop_sign",
+            suppressed=True,
         )
         assert "LOCKED" in panel._target_label.text()
         assert "커서 제어 정지" in panel._target_label.text()
@@ -117,22 +126,34 @@ def test_raw_target_is_shown_separately_from_locked_device() -> None:
     panel = _panel()
     try:
         panel.set_state(
-            locked=None, candidate=None, phase="IDLE", gesture="-",
-            suppressed=False, raw_target=None,
+            locked=None,
+            candidate=None,
+            phase="IDLE",
+            gesture="-",
+            suppressed=False,
+            raw_target=None,
         )
         assert "없음" in panel._raw_target_label.text()
         assert "없음" in panel._target_label.text()
 
         panel.set_state(
-            locked=None, candidate=None, phase="IDLE", gesture="-",
-            suppressed=False, raw_target="laptop",
+            locked=None,
+            candidate=None,
+            phase="IDLE",
+            gesture="-",
+            suppressed=False,
+            raw_target="laptop",
         )
         assert "laptop" in panel._raw_target_label.text()
         assert "없음" in panel._target_label.text()  # 아직 dwell 확정 전
 
         panel.set_state(
-            locked="room.bulb", candidate=None, phase="TARGET_LOCKED",
-            gesture="-", suppressed=False, raw_target="laptop",
+            locked="room.bulb",
+            candidate=None,
+            phase="TARGET_LOCKED",
+            gesture="-",
+            suppressed=False,
+            raw_target="laptop",
         )
         # 확정된 기기(bulb)와 지금 실제로 보는 기기(laptop)가 달라도 둘 다
         # 각자의 값을 그대로 보여준다 — 서로를 덮어쓰지 않는다.
@@ -140,9 +161,7 @@ def test_raw_target_is_shown_separately_from_locked_device() -> None:
         assert "room.bulb" in panel._target_label.text()
 
         # raw_target을 생략하면(기존 호출부 호환) 조용히 '없음'으로 떨어진다.
-        panel.set_state(
-            locked=None, candidate=None, phase="IDLE", gesture="-", suppressed=False
-        )
+        panel.set_state(locked=None, candidate=None, phase="IDLE", gesture="-", suppressed=False)
         assert "없음" in panel._raw_target_label.text()
     finally:
         panel.deleteLater()
@@ -166,6 +185,46 @@ def test_mapping_table_rebuilds_without_leaking_rows() -> None:
 
         panel.set_targets([TargetChoice("target_003", "새 물체")], {})
         assert set(panel._mapping_combos) == {"target_003"}
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
+def test_registration_area_is_compact_and_hand_status_updates_live() -> None:
+    """긴 등록 설명은 없애고 웹캠에서 옮긴 손 상태를 같은 자리에 보여준다."""
+    app = QApplication.instance() or QApplication([])
+    opened: list[bool] = []
+    panel = DemoPanel(
+        on_mapping_changed=lambda target_id, device_id: None,
+        on_fallback_changed=lambda device_id: None,
+        on_preset_changed=lambda preset: None,
+        on_execution_toggled=lambda enabled: None,
+        on_open_registration=lambda: opened.append(True),
+    )
+    try:
+        assert panel._registration_button.text() == "등록 관리"
+        panel._registration_button.click()
+        assert opened == [True]
+
+        pose = SimpleNamespace(label="none", confidence=0.97, trusted=True, reason="")
+        snapshot = SimpleNamespace(
+            hand_detected=True,
+            handedness="Right",
+            detection_confidence=0.99,
+            palm_scale=0.265,
+            smoothed=True,
+            palm_tilt_degrees=4.2,
+            pose=pose,
+            pose_events=(),
+            pose_state="",
+        )
+        panel.set_hand_status(snapshot, execution_enabled=True)
+        status = panel._hand_status.text()
+        assert "HAND  Right" in status
+        assert "palm scale  0.265" in status
+        assert "tilt 4°" in status
+        assert "none 97%" in status
+        assert "TCN 판정 대기 · 실행 ON" in status
     finally:
         panel.deleteLater()
         app.processEvents()
@@ -265,14 +324,16 @@ def test_bulb_view_follows_the_active_color_mode() -> None:
     try:
         panel.set_bulb(
             VirtualBulbState(power=True, brightness=100, color_mode=True, hue=120),
-            badge="OK", ok=True,
+            badge="OK",
+            ok=True,
         )
         assert panel.bulb_view._tint() == hue_to_rgb(120)
 
         # 색온도 모드로 돌아가면 색조 계산도 그쪽을 따른다.
         panel.set_bulb(
             VirtualBulbState(power=True, brightness=100, color_mode=False),
-            badge="OK", ok=True,
+            badge="OK",
+            ok=True,
         )
         assert panel.bulb_view._tint() != hue_to_rgb(120)
     finally:

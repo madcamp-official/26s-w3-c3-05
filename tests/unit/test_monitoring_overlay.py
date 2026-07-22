@@ -195,6 +195,22 @@ def test_draw_hand_overlay_noop_when_no_hand() -> None:
     assert np.array_equal(before, frame)  # nothing drawn for a lost hand
 
 
+def test_draw_hand_overlay_can_keep_skeleton_without_detail_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """시연 영상은 스켈레톤을 남기되 상세 숫자는 오른쪽 패널에만 그린다."""
+    import jarvis.monitoring.overlay as overlay_module
+
+    text_calls: list[object] = []
+    monkeypatch.setattr(
+        overlay_module, "_text_block", lambda *args, **kwargs: text_calls.append(args)
+    )
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    draw_hand_overlay(frame, _hand_snapshot(detected=True), show_details=False)
+    assert frame.any()  # bounding boxes + landmark skeleton remain
+    assert text_calls == []
+
+
 def test_render_normalized_hand_draws_skeleton() -> None:
     from jarvis.monitoring.overlay import render_normalized_hand
 
@@ -313,9 +329,7 @@ def test_tilt_gate_state_is_visible_on_overlay() -> None:
 
 def test_unknown_tilt_renders_without_crashing() -> None:
     """z를 못 내는 소스(각도 None)에서도 오버레이가 그려진다 — 게이트만 없을 뿐."""
-    frame = draw_hand_overlay(
-        placeholder_frame(), _hand_snapshot(detected=True, tilt=None)
-    )
+    frame = draw_hand_overlay(placeholder_frame(), _hand_snapshot(detected=True, tilt=None))
     assert frame is not None
 
 
@@ -337,12 +351,17 @@ def test_per_class_tilt_limit_overrides_global_gate() -> None:
     allowed = draw_hand_overlay(placeholder_frame(), snapshot)
 
     rejected_pose = PosePrediction(
-        label="index_point", confidence=0.71, trusted=False,
-        reason="기울기 35° > index_point 허용 20°", palm_tilt_degrees=35.0,
+        label="index_point",
+        confidence=0.71,
+        trusted=False,
+        reason="기울기 35° > index_point 허용 20°",
+        palm_tilt_degrees=35.0,
     )
     rejected = draw_hand_overlay(
         placeholder_frame(),
-        dataclasses.replace(_hand_snapshot(detected=True, tilt=35.0, tilted=True), pose=rejected_pose),
+        dataclasses.replace(
+            _hand_snapshot(detected=True, tilt=35.0, tilted=True), pose=rejected_pose
+        ),
     )
     # 같은 기울기·같은 전역 게이트 상태인데 자세에 따라 화면이 달라져야 한다.
     assert not np.array_equal(allowed, rejected)

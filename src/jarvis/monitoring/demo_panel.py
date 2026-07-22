@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
@@ -48,6 +49,9 @@ from jarvis.monitoring.virtual_bulb import (
     VirtualBulbState,
 )
 from jarvis.runtime_protocol.adapters.wiz import hue_to_rgb
+
+if TYPE_CHECKING:
+    from jarvis.monitoring.hand_probe import HandSnapshot
 
 _NO_DEVICE = "(연결 안 함)"
 
@@ -243,20 +247,24 @@ class DemoPanel(QWidget):
         preset_row.addWidget(self._preset_combo, 1)
         layout.addLayout(preset_row)
 
-        # --- 물체 → 기기 매핑 ----------------------------------------------
-        layout.addWidget(_section("등록 물체 → 런타임 기기"))
-        mapping_note = QLabel(
-            "물체 등록은 '시선 인식' 탭에서 진행합니다. 등록할 때 고른 computer / "
-            "electric bulb 기종은 아래 laptop / room.bulb 실행 대상으로 자동 연결되며, "
-            "필요할 때 여기서 바꿀 수 있습니다."
-        )
-        mapping_note.setWordWrap(True)
-        mapping_note.setStyleSheet("color:#6e7681; font-size:11px;")
-        layout.addWidget(mapping_note)
-        self._registration_button = QPushButton("기기 등록·관리 → 시선 인식 탭")
+        # --- 등록 관리 + 실시간 손 판정 ------------------------------------
+        # 설명 문단 대신 시선 인식 탭으로 가는 짧은 버튼 하나만 둔다. 확보한 자리는
+        # 웹캠에서 뺀 손 진단 숫자를 매 프레임 보여주는 데 사용한다.
+        self._registration_button = QPushButton("등록 관리")
         if on_open_registration is not None:
             self._registration_button.clicked.connect(on_open_registration)
         layout.addWidget(self._registration_button)
+        self._hand_status = QLabel(
+            "HAND  미검출  det 0%\npalm scale  —\ntilt —   pose —\n제어  TCN 판정 대기 · 실행 ON"
+        )
+        self._hand_status.setWordWrap(True)
+        self._hand_status.setStyleSheet(
+            _STATUS_STYLE + " font-family:Consolas,monospace; font-weight:600;"
+        )
+        layout.addWidget(self._hand_status)
+
+        # 등록된 시선 target을 실제 명령 대상에 연결하는 콤보. 자동 연결 결과를
+        # 보여주며, 사용자가 수동으로 바꾸거나 연결을 끊을 수도 있다.
         self._mapping_container = QWidget()
         self._mapping_layout = QGridLayout(self._mapping_container)
         self._mapping_layout.setContentsMargins(0, 0, 0, 0)
@@ -293,6 +301,49 @@ class DemoPanel(QWidget):
             self._on_preset_changed(DEMO_PRESETS[index])
 
     # --- MainWindow가 밀어 넣는 상태 ---------------------------------------
+
+    def set_hand_status(self, snapshot: HandSnapshot, *, execution_enabled: bool) -> None:
+        """웹캠에서 옮긴 손 검출·자세·TCN 상태를 한 카드에 실시간 표시한다."""
+        execution = "ON" if execution_enabled else "OFF"
+        if not snapshot.hand_detected:
+            self._hand_status.setText(
+                "HAND  미검출  det 0%\n"
+                "palm scale  —\n"
+                "tilt —   pose —\n"
+                f"제어  TCN 판정 대기 · 실행 {execution}"
+            )
+            self._hand_status.setStyleSheet(
+                _STATUS_STYLE + " color:#8b949e; font-family:Consolas,monospace; font-weight:600;"
+            )
+            return
+
+        source = "스무딩 검출" if snapshot.smoothed else "raw 검출"
+        handedness = snapshot.handedness or "?"
+        tilt = "?" if snapshot.palm_tilt_degrees is None else f"{snapshot.palm_tilt_degrees:.0f}°"
+        pose = snapshot.pose
+        if pose is None or not pose.label:
+            pose_text = "pose —"
+        elif pose.trusted:
+            pose_text = f"{pose.label} {pose.confidence:.0%}"
+        else:
+            pose_text = f"거부 {pose.label} {pose.confidence:.0%} · {pose.reason}"
+
+        if snapshot.pose_events:
+            control = "동작 " + ", ".join(event.kind for event in snapshot.pose_events)
+        elif snapshot.pose_state:
+            control = f"상태 {snapshot.pose_state}"
+        else:
+            control = "TCN 판정 대기"
+        self._hand_status.setText(
+            f"HAND  {handedness}  det {snapshot.detection_confidence:.0%}  [{source}]\n"
+            f"palm scale  {snapshot.palm_scale:.3f}\n"
+            f"tilt {tilt}   {pose_text}\n"
+            f"제어  {control} · 실행 {execution}"
+        )
+        color = "#f85149" if pose is not None and not pose.trusted else "#58a6ff"
+        self._hand_status.setStyleSheet(
+            _STATUS_STYLE + f" color:{color}; font-family:Consolas,monospace; font-weight:600;"
+        )
 
     def set_targets(self, choices: Sequence[TargetChoice], mapping: dict[str, str]) -> None:
         """매핑 표를 다시 그린다(물체 등록·삭제·이름 변경 후 호출)."""
