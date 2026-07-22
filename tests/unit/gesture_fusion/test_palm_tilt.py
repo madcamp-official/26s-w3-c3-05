@@ -129,9 +129,9 @@ def test_pose_features_reject_flat_input() -> None:
         pose_features(np.zeros(42, dtype=np.float64))
 
 
-def test_two_fingers_tilt_limit_is_forty_degrees() -> None:
-    """30~40°에 표본 162개가 있어 근거가 있는 한계선(40° 초과는 21개뿐이라 열지 않음)."""
+def test_two_fingers_tilt_limit_is_unrestricted() -> None:
+    """편 두 손가락은 기울여도 99% 정확해 기울기 제한을 없앤다(90° = 사실상 무제한)."""
     from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
 
-    assert DEFAULT_POSE_TILT_LIMITS["two_fingers"] == 40.0
-    assert DEFAULT_POSE_TILT_LIMITS["index_point"] == 20.0
+    assert DEFAULT_POSE_TILT_LIMITS["two_fingers"] == 90.0
+    assert DEFAULT_POSE_TILT_LIMITS["index_point"] == 10.0

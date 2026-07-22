@@ -42,6 +42,27 @@ _KEYCODE_TAB = 0x30
 _KEYCODE_COMMAND = 0x37
 _KEYCODE_SHIFT = 0x38
 _KEYCODE_F11 = 0x67  # 바탕화면 표시
+_KEYCODE_W = 0x0D  # 탭 닫기(Cmd+W)용
+
+
+def dock_transition(
+    y: float, bottom: float, edge_px: float, *, revealed: bool
+) -> bool | None:
+    """커서 Y가 화면 하단에 닿았는지로 Dock 노출 전환을 결정한다(순수 함수).
+
+    Quartz·osascript에 의존하지 않아 단위 테스트할 수 있다. 반환:
+        False → 지금 드러내야 함(autohide 끔). 하단 진입 & 아직 안 드러난 상태.
+        True  → 지금 숨겨야 함(autohide 켬). 하단 이탈 & 드러난 상태.
+        None  → 전환 없음(이미 원하는 상태). 매 프레임 osascript를 피하는 핵심.
+
+    `bottom`은 커서가 있는 디스플레이의 하단 Y(전역 top-left 좌표, Y는 아래로 증가).
+    """
+    at_bottom = y >= bottom - edge_px
+    if at_bottom and not revealed:
+        return False  # 드러내기(autohide off)
+    if not at_bottom and revealed:
+        return True  # 숨기기(autohide on)
+    return None
 
 
 class MacOSInputSink:
@@ -51,6 +72,13 @@ class MacOSInputSink:
     import해, macOS가 아닌 호스트나 `macos` extra 미설치 환경에서 이 모듈을
     import하는 것 자체는 항상 성공한다(실제 호출 시에만 실패).
     """
+
+    def __init__(self) -> None:
+        # 커서가 화면 하단에 있을 때만 Dock을 드러낸다. 합성 마우스 이동은 물리 마우스와
+        # 달리 Dock 자동숨김을 깨우지 못하므로(가장자리 "밀어붙임" 신호가 없다), 커서
+        # 위치를 직접 감지해 Dock autohide를 토글한다. 전환(진입/이탈) 시점에만 명령을
+        # 보내려고 현재 노출 상태를 기억한다 — 매 프레임 osascript를 띄우면 버벅인다.
+        self._dock_revealed = False
 
     def _post(self, event: Any) -> None:
         import Quartz
@@ -121,6 +149,9 @@ class MacOSInputSink:
         if key is InputKey.MISSION_CONTROL:
             self._tap_mission_control()
             return
+        if key is InputKey.CLOSE_TAB:
+            self._tap_close_tab()
+            return
         if key is InputKey.SHOW_DESKTOP:
             import Quartz
 
@@ -148,6 +179,27 @@ class MacOSInputSink:
             check=False,
             capture_output=True,
         )
+
+    def _tap_close_tab(self) -> None:
+        """Cmd+W로 현재 탭(또는 창)을 닫는다.
+
+        `switch_window`의 Cmd+Tab과 같은 구조: Command 플래그를 실은 W 키를
+        누름→뗌으로 보낸다. 표준 keycode 경로라 미디어 키(NSEvent)와 달리
+        Quartz 키보드 이벤트로 충분하다. 앱이 정의한 '탭 또는 창 닫기'로 동작한다.
+        """
+        import Quartz
+
+        flags = Quartz.kCGEventFlagMaskCommand
+
+        def key(code: int, key_down: bool) -> None:
+            event = Quartz.CGEventCreateKeyboardEvent(None, code, key_down)
+            Quartz.CGEventSetFlags(event, flags)
+            self._post(event)
+
+        key(_KEYCODE_COMMAND, True)
+        key(_KEYCODE_W, True)
+        key(_KEYCODE_W, False)
+        key(_KEYCODE_COMMAND, False)
 
     def _tap_media_key(self, key: InputKey) -> None:
         """미디어 키 하나를 누름→뗌으로 전송한다.
@@ -179,24 +231,97 @@ class MacOSInputSink:
         import Quartz
 
         current = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
-        target = (current.x + dx, current.y + dy)
+        # 목표를 전체 화면 경계로 클램프한다. CGEventGetLocation은 직전에 **설정한** 좌표를
+        # 되돌려주므로(하드웨어 클램프 반영 안 됨), 클램프하지 않으면 같은 방향 이동이
+        # 누적돼 커서 논리 위치가 화면 밖으로 무한정 드리프트한다(실측: y가 -4482까지) —
+        # 화면 밖으로 나가면 Dock·핫코너가 트리거되지 않고, 반대로 움직여도 그만큼
+        # "되감아야" 화면에 돌아온다.
+        min_x, min_y, max_x, max_y = self._desktop_bounds()
+        tx = min(max(current.x + dx, min_x), max_x - 1)
+        ty = min(max(current.y + dy, min_y), max_y - 1)
+        target = (tx, ty)
         event_type = Quartz.kCGEventLeftMouseDragged if dragging else Quartz.kCGEventMouseMoved
         event = Quartz.CGEventCreateMouseEvent(
             None, event_type, target, Quartz.kCGMouseButtonLeft
         )
         self._post(event)
+        # 클램프된 목표 = 실제 커서 위치이므로 그대로 Dock 노출 판정에 쓴다.
+        self._update_dock_reveal(tx, ty)
 
-    def screen_size(self) -> tuple[int, int]:
-        """주 디스플레이 크기 — move_cursor(CGEvent)와 같은 **points** 좌표계로 낸다.
+    _DOCK_EDGE_PX = 2  # 이 이내로 하단에 닿으면 "맨 아래"로 본다
 
-        CGDisplayBounds는 논리 좌표(points)를 돌려줘 CGEventCreateMouseEvent가 쓰는
-        좌표계와 일치한다. Retina의 물리 픽셀(CGDisplayPixelsWide)이 아니라 이 값이
-        커서 이동 정규화의 기준이어야 한다.
+    def _update_dock_reveal(self, x: float, y: float) -> None:
+        """커서가 있는 디스플레이의 하단에 닿으면 Dock을 드러내고, 벗어나면 숨긴다.
+
+        `x, y`는 move_cursor가 클램프한 실제 커서 위치(전역 top-left 좌표). 전환 시점에만
+        토글한다(진입 시 한 번 노출, 이탈 시 한 번 숨김). 듀얼 모니터에서 커서가 있는 화면
+        기준으로 판정하므로, 각 화면 하단에서 그 화면의 Dock이 나온다.
         """
         import Quartz
 
-        bounds = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
-        return int(bounds.size.width), int(bounds.size.height)
+        err, display_ids, count = Quartz.CGGetDisplaysWithPoint((x, y), 1, None, None)
+        display_id = display_ids[0] if (err == 0 and count) else Quartz.CGMainDisplayID()
+        bounds = Quartz.CGDisplayBounds(display_id)
+        bottom = bounds.origin.y + bounds.size.height  # 전역 좌표 하단(Y는 아래로 증가)
+
+        # 토글할지·어느 방향인지는 순수 함수로 결정한다(테스트 가능). 전환이 없으면 None.
+        hide = dock_transition(y, bottom, self._DOCK_EDGE_PX, revealed=self._dock_revealed)
+        if hide is None:
+            return
+        self._set_dock_autohide(hide=hide)
+        self._dock_revealed = not hide
+
+    @staticmethod
+    def _set_dock_autohide(*, hide: bool) -> None:
+        """Dock 자동숨김을 켜고 끈다 — System Events로 부드럽게(killall 불필요).
+
+        실패해도 예외를 던지지 않는다(제어 경로가 Dock 토글 하나로 멈추지 않게).
+        """
+        import subprocess
+
+        value = "true" if hide else "false"
+        subprocess.run(
+            ["osascript", "-e",
+             f"tell application \"System Events\" to set autohide of dock preferences to {value}"],
+            check=False,
+            capture_output=True,
+            timeout=2,
+        )
+
+    def restore_dock(self) -> None:
+        """드러낸 Dock을 원래(숨김)대로 되돌린다 — 제어를 끄거나 종료할 때 호출한다.
+
+        커서가 하단에 머문 채 제어가 꺼지면 Dock이 노출된 채 남으므로, 사용자의 원래
+        상태(자동숨김)로 확실히 복구한다.
+        """
+        if self._dock_revealed:
+            self._set_dock_autohide(hide=True)
+            self._dock_revealed = False
+
+    def _desktop_bounds(self) -> tuple[float, float, float, float]:
+        """활성 디스플레이 전체를 감싸는 경계 (min_x, min_y, max_x, max_y). 전역 top-left 좌표.
+
+        디스플레이 구성은 자주 안 바뀌므로 한 번 계산해 캐싱한다.
+        """
+        cached = getattr(self, "_desktop_bounds_cache", None)
+        if cached is not None:
+            return cached
+        import Quartz
+
+        err, ids, count = Quartz.CGGetActiveDisplayList(16, None, None)
+        if err != 0 or not count:
+            b = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
+            cached = (b.origin.x, b.origin.y, b.origin.x + b.size.width, b.origin.y + b.size.height)
+        else:
+            bounds = [Quartz.CGDisplayBounds(did) for did in ids[:count]]
+            cached = (
+                min(b.origin.x for b in bounds),
+                min(b.origin.y for b in bounds),
+                max(b.origin.x + b.size.width for b in bounds),
+                max(b.origin.y + b.size.height for b in bounds),
+            )
+        self._desktop_bounds_cache = cached
+        return cached
 
     def switch_window(self, forward: bool, repeat: int) -> None:
         """Cmd+Tab (forward) / Cmd+Shift+Tab (backward)로 창을 전환한다.

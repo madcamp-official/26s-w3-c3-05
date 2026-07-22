@@ -10,8 +10,11 @@
    들어와도 바로 끊지 않는다(`RELEASE_FRAMES`) — 분류기의 놓침(실측 15.4%)이 조작
    중단으로 이어지면 안 된다.
 
-2. **믿을 수 없는 판정은 상태를 건드리지 않는다.** `trusted=False`(기울기 게이트에
-   걸린 프레임)는 상태를 바꾸지도, 유지를 끊지도 않고 그냥 흘려보낸다.
+2. **믿을 수 없는 판정은 상태를 바꾸지 않되, 연속 동작은 멈춘다.** `trusted=False`(기울기
+   게이트에 걸린 프레임)는 상태를 바꾸지도, 진입 dwell을 재설정하지도 않는다 — 각도를
+   다시 낮추면 재대기 없이 즉시 이어간다. 다만 커서 이동·스크롤 같은 **연속 동작은 그
+   프레임 동안 멈춘다**: 게이트에 걸린 손 이동을 커서에 반영하면 "너무 기울면 정지"가
+   무의미해지기 때문이다(예: 검지 10° 초과 시 커서 정지, 다시 세우면 즉시 재개).
 
 3. **`none`은 자세 이력을 지우지 않는다.** 주먹에서 손바닥으로 갈 때 중간의 어중간하게
    펴진 상태가 `none`으로 분류되기 때문에, `fist → open_palm`을 인접 상태로 보면 절대
@@ -38,21 +41,25 @@ FloatArray = npt.NDArray[np.float64]
 
 INDEX_MCP, INDEX_TIP, MIDDLE_MCP, MIDDLE_TIP = 5, 8, 9, 12
 
-# 자세별 진입 유지 시간(ms). 클릭류는 빠른 반응이 중요해 짧고, 연속 동작인 스크롤은
-# 오발동 비용이 커서 길다(우클릭 준비 중 손가락이 펴진 구간을 확실히 넘기려면 필요).
+# 자세별 진입 유지 시간(ms). 핀치 클릭류만 빠른 반응이 중요해 짧게(60) 명시하고,
+# 그 외 자세(index_point·two_fingers·open_palm·fist)는 모두 기본값(120)을 쓴다.
 DWELL_MS: dict[str, int] = {
-    "index_point": 150,
-    "pinch_index": 120,
-    "pinch_middle": 120,
-    "two_fingers": 300,
-    "open_palm": 200,
-    "fist": 200,
+    "pinch_index": 60,
+    "pinch_middle": 60,
+    # 탭 닫기는 되돌리기 어려운 파괴적 동작이라, 전환 중 스치는 중지 포즈로 오발동하지
+    # 않도록 기본(120)보다 훨씬 길게(500ms) 잡아 명확한 의도만 통과시킨다.
+    "middle_point": 500,
 }
-DEFAULT_DWELL_MS = 200
+DEFAULT_DWELL_MS = 120
 
 # 이 프레임 수만큼 연속으로 자세가 사라져야 상태를 해제한다. 분류기가 정상 자세를
 # none으로 흘리는 비율이 15.4%라, 1프레임만에 끊으면 조작이 계속 끊긴다.
 RELEASE_FRAMES = 3
+
+# 이 프레임 수까지의 연속 `trusted=False`(기울기 초과)는 관용한다 — 순간적인 각도 튐에
+# 커서가 깜빡 멈추지 않게. 이 이상 지속되면 연속 동작(커서·스크롤)을 정지한다. 상태는
+# 유지하므로 각도를 다시 낮추면 dwell 재대기 없이 즉시 재개된다(`RELEASE_FRAMES`와 같은 취지).
+UNTRUSTED_GRACE_FRAMES = 3
 
 # 핀치를 이보다 오래 쥐고 있으면 클릭이 아니라 드래그로 본다.
 CLICK_MAX_MS = 400
@@ -61,10 +68,33 @@ CLICK_MAX_MS = 400
 # 확정 지연을 예산에서 빼야 사용자가 체감하는 간격과 맞는다.
 DOUBLE_CLICK_MS = 600
 # `fist → open_palm` 전이로 인정하는 최대 간격. 중간의 `none` 구간을 건너뛴다.
-TRANSITION_WINDOW_MS = 800
+TRANSITION_WINDOW_MS = 1000
 # 스크롤 방향을 인정할 최소 수직성(|dy| / 길이). 손가락이 옆을 가리키면 위아래를
 # 지어내지 않는다 — 0.5는 수평에서 30° 이상 기울어야 방향을 인정한다는 뜻이다.
 MIN_VERTICALITY = 0.5
+# 스크롤을 인정할 검지·중지 최소 폄 정도(palm_scale 정규화 단위, MCP→끝 거리 평균).
+# 스크롤을 멈추려 주먹을 쥐면 손가락이 접히며 끝이 잠깐 아래로 스윙해 역방향 스크롤이
+# 튀는데, 접히기 시작하면 이 값이 임계 아래로 떨어져 스크롤을 즉시 끊는다. 손 거리·각도에
+# 강건하도록 정규화 좌표로 잰다. 실기기에서 편 두 손가락 vs 접히는 중 값으로 튜닝한다.
+MIN_FINGER_EXTENSION = 0.55
+
+# 검지 회전 → 볼륨. index_point 상태에서 검지(MCP→TIP) 방향이 도는 각도를 누적해,
+# ROT_STEP_DEG마다 볼륨 1스텝을 낸다(시계=증가/반시계=감소). 커서 포인팅은 손 **평행이동**
+# 이라 이 각도가 거의 안 변해 볼륨을 건드리지 않고, 회전만 각도를 누적시킨다 — 두 조작이
+# 자연히 갈린다. 회전은 대부분 tilt>10°(커서 게이트 초과)라 커서는 이미 멈춰 있다.
+# 파라미터는 실측(2026-07-22 rotation_probe: 각속도 중앙 ~400deg/s, 회전 중 tilt 중앙 16°,
+# index_point 유지 88%) 기반이며 실기기 튜닝 대상이다.
+ROT_STEP_DEG = 60.0       # 누적 회전 이만큼마다 볼륨 1스텝(작을수록 민감)
+ROT_MIN_SPEED = 60.0      # deg/s. 이 미만 각속도는 누적하지 않는다(포인팅 지터·드리프트 차단)
+ROT_SIGN = -1.0           # 화면 시계방향을 볼륨 증가로(실기기 확인 결과 -1). 뒤집히면 부호 변경
+# 회전을 감지하면 이 시간 동안 "볼륨 노브 모드"를 유지해 다른 모든 동작(클릭·드래그·커서·
+# 스크롤 등)을 막는다 — 회전 중 순간 오인식(pinch_index·fist)이 클릭/드래그로 새지 않게.
+# 회전을 멈추고 이 시간이 지나야 일반 조작으로 돌아간다.
+ROT_HOLD_MS = 400
+# 회전 게이트는 확정 상태가 아니라 **분류기 라벨**로 연다 — index_point는 고tilt에서
+# 신뢰 게이트에 걸려(trusted=False) 상태로 진입하지 못하지만 라벨 자체는 유지되므로
+# (실측 88%), 손을 눕힌 채로도 회전을 시작할 수 있어야 하기 때문이다.
+ROT_LABEL = "index_point"
 
 # 커서 이동: index_point(이동) 또는 pinch_index(드래그) 상태에서 손 이동을 커서로 옮긴다.
 # 좌표를 1:1로 대응시키지 않고, 마우스처럼 손 이동 **델타**에 이득을 곱한다.
@@ -77,14 +107,12 @@ CURSOR_MAX_STEP_PX = 220      # 한 프레임 최대 이동(검출 튐이 커서
 CURSOR_INVERT_X = True        # 거울 뷰가 아닌 실제 손 기준 — 왼손 이동 = 커서 왼쪽
 CURSOR_Y_GAIN_SCALE = 0.5     # y축 이동 감도 배율. x 대비 세로가 과민해 절반으로 낮춘다
 
-# 위 gain은 "이 해상도의 화면에서" px가 되도록 튜닝됐다(기준 디스플레이). _cursor_move가
-# 내는 delta는 이 기준 화면 기준의 px이며, 실제 방출 직전 pose_control이 실기기 해상도
-# 비율(actual/reference)로 스케일해 **화면 대비 이동 비율**을 기기 무관하게 맞춘다. 그래야
-# 해상도가 다른 노트북에서도 같은 손 이동이 화면의 같은 비율을 가로질러 체감 속도가 같다.
-# 값은 이 gain을 튜닝한 기기(1440×900 macOS 논리 해상도, CGEvent 좌표계)다. 이 기기에서는
-# actual==reference라 스케일이 1.0 → 이동량이 종전과 완전히 동일하다.
-CURSOR_REFERENCE_WIDTH = 1440
-CURSOR_REFERENCE_HEIGHT = 900
+# gain은 델타를 **절대 픽셀**로 바꾼다 — 화면 해상도로 스케일하지 않는다. 같은 손 이동은
+# 어떤 기기·해상도에서도 같은 픽셀 수만큼 커서를 옮긴다("절대 길이" 감도). 예전에는 이 px를
+# 기준 화면(1440×900) 대비 실기기 해상도 비율로 스케일해 "화면 대비 이동 비율"을 맞췄지만,
+# 그러면 고해상도 기기에서 같은 손동작이 더 많은 px를 가로질러 과민해졌다(특히 Windows).
+# 이제는 스케일을 걷어내 체감 감도를 gain 하나로만 조절한다. gain은 1440×900 macOS 논리
+# 해상도에서 튜닝된 값이라, 다른 기기에서 감도를 바꾸고 싶으면 이 값을 조정하면 된다.
 
 # soft deadzone: 데드존을 하드컷(distance<dz면 0)하지 않고, 넘는 순간 이동량이 0부터
 # 연속으로 살아나게 한다 — `distance - deadzone`만큼만 이동에 반영해 경계의 급점프를 없앤다.
@@ -137,12 +165,28 @@ def pointing_direction(landmarks: FloatArray) -> tuple[float, float] | None:
     return float(mean[0] / norm), float(mean[1] / norm)
 
 
+def two_finger_extension(landmarks: FloatArray) -> float | None:
+    """검지·중지가 얼마나 펴졌는지 — MCP→끝 거리의 평균(palm_scale 정규화 단위).
+
+    landmarks는 이미 손목 원점·palm_scale 정규화된 좌표라 이 거리는 손 크기·카메라
+    거리에 무관하다. 편 두 손가락은 값이 크고, 주먹을 쥐려 접기 시작하면 끝이 손바닥으로
+    말려들며 값이 급격히 줄어든다 — 스크롤을 접히는 순간 끊는 게이트로 쓴다.
+    """
+    points = np.asarray(landmarks, dtype=np.float64)
+    if points.ndim != 2 or points.shape[0] <= MIDDLE_TIP:
+        return None
+    index_len = float(np.linalg.norm(points[INDEX_TIP][:2] - points[INDEX_MCP][:2]))
+    middle_len = float(np.linalg.norm(points[MIDDLE_TIP][:2] - points[MIDDLE_MCP][:2]))
+    return (index_len + middle_len) / 2.0
+
+
 @dataclass
 class PoseStateMachine:
     """자세 판정을 받아 동작 이벤트를 낸다. 프레임마다 `update()`를 부른다."""
 
     dwell_ms: dict[str, int] = field(default_factory=lambda: dict(DWELL_MS))
     release_frames: int = RELEASE_FRAMES
+    untrusted_grace_frames: int = UNTRUSTED_GRACE_FRAMES
     click_max_ms: int = CLICK_MAX_MS
     double_click_ms: int = DOUBLE_CLICK_MS
     transition_window_ms: int = TRANSITION_WINDOW_MS
@@ -154,6 +198,8 @@ class PoseStateMachine:
     _pending: str = ""
     _pending_since: int = 0
     _missing: int = 0
+    # 연속 `trusted=False` 프레임 수(관용 카운터). trusted 프레임에서 0으로 리셋.
+    _untrusted: int = 0
     # `none`이 덮어쓰지 않는 "마지막 명령 자세" — 전이 판정이 빈 구간을 건너뛴다.
     _last_pose: str = ""
     _last_pose_end: int = 0
@@ -167,15 +213,26 @@ class PoseStateMachine:
     _cursor_ref_ms: int = 0
     # 커서 speed 분모로 쓰는 palm_scale의 One-Euro 평활기(raw palm_scale 지터 완화).
     _palm_smoother: OneEuroFilter = field(default_factory=_make_cursor_palm_smoother)
+    # 검지 회전 누적(볼륨용). index_point 라벨을 벗어나면(관용 초과) 리셋한다.
+    _rot_prev_angle: float | None = None
+    _rot_prev_ms: int = 0
+    _rot_accum: float = 0.0
+    _rot_missing: int = 0        # 연속으로 index_point 라벨이 아닌 프레임 수(관용 카운터)
+    _rot_active_until: int = 0   # 이 시각까지는 볼륨 노브 모드(다른 동작 차단)
 
     def reset(self) -> None:
         """추적 손실 등으로 이력을 신뢰할 수 없을 때 — 상태를 지어내지 않는다."""
         self.state = ""
         self._pending = ""
         self._missing = 0
+        self._untrusted = 0
         self._last_pose = ""
         self._last_click_ms = -1_000_000
         self._dragging = False
+        self._rot_prev_angle = None
+        self._rot_accum = 0.0
+        self._rot_missing = 0
+        self._rot_active_until = 0
         self._palm_smoother.reset()
 
     def update(
@@ -200,14 +257,29 @@ class PoseStateMachine:
         else:
             self._palm_smoother.reset()
         self._cursor_ctx = (reference_point, palm_scale)
-        # 규칙 2: 믿을 수 없는 판정은 상태를 바꾸지도 끊지도 않는다.
+        # 검지 회전 → 볼륨: 분류기 라벨이 index_point면 trusted·상태와 무관하게 추적한다
+        # (고tilt에서 손을 눕힌 채로도 회전을 시작할 수 있게). 규칙 2 게이트 **앞**에서 돈다.
+        rotation = self._track_rotation(prediction, timestamp_ms, landmarks)
+        # 볼륨 노브 모드: 회전이 활성인 동안엔 다른 모든 동작을 막는다(회전 중 순간 오인식이
+        # 클릭·드래그로 새지 않게). 상태는 건드리지 않아 모드가 풀리면 그대로 이어간다.
+        if timestamp_ms < self._rot_active_until:
+            return rotation
+        # 규칙 2: 믿을 수 없는 판정은 상태·진입 dwell을 건드리지 않는다. 짧은 각도 튐
+        # (관용 프레임 이내)은 그대로 흘려 연속 동작을 유지하지만, 지속적으로 초과하면
+        # 커서·스크롤을 멈춘다 — 이때도 상태는 남아 각도를 낮추면 즉시 재개된다. 멈추는
+        # 순간 커서 참조점을 버려, 멈춘 동안의 손 이동이 재개 시 급점프로 튀지 않게 한다.
         if not prediction.trusted:
-            return self._continuous(timestamp_ms, landmarks)
+            self._untrusted += 1
+            if self._untrusted <= self.untrusted_grace_frames:
+                return rotation + self._continuous(timestamp_ms, landmarks)
+            self._cursor_ref = None
+            return rotation
+        self._untrusted = 0
 
         label = prediction.label
         if label in ("", NONE_POSE):
-            return self._absent(timestamp_ms, landmarks)
-        return self._present(label, timestamp_ms, landmarks)
+            return rotation + self._absent(timestamp_ms, landmarks)
+        return rotation + self._present(label, timestamp_ms, landmarks)
 
     def _cursor_move(self, timestamp_ms: int) -> PoseEvent | None:
         """참조점 델타를 커서 이동으로 바꾼다 — 1:1 대응이 아니라 마우스식 상대 이동.
@@ -244,6 +316,50 @@ class PoseStateMachine:
             scale = CURSOR_MAX_STEP_PX / step
             px, py = px * scale, py * scale
         return PoseEvent("move", timestamp_ms, 0.0, (px, py))
+
+    def _track_rotation(
+        self, prediction: PosePrediction, timestamp_ms: int, landmarks: FloatArray | None
+    ) -> list[PoseEvent]:
+        """검지(index_point) 방향의 회전을 누적해 볼륨 스텝 이벤트를 낸다.
+
+        게이트는 확정 상태가 아니라 **분류기 라벨**(`ROT_LABEL`)이다 — 고tilt에서 손을
+        눕힌 채로도 회전을 시작할 수 있어야 하는데, 그 각도에선 신뢰 게이트에 걸려 상태로
+        진입하지 못하기 때문이다. 검지 MCP→TIP 벡터의 각도를 프레임마다 unwrap해 더하고,
+        각속도가 `ROT_MIN_SPEED` 미만이면(포인팅 지터·손 평행이동) 누적하지 않는다. 누적이
+        `ROT_STEP_DEG`를 넘을 때마다 부호에 따라 volume_up/down을 낸다(빠를수록 초당 스텝↑
+        = 비례 제어). 회전을 감지하면 `ROT_HOLD_MS` 동안 볼륨 노브 모드를 유지한다. 라벨을
+        벗어나도 관용(`untrusted_grace_frames`) 안에서는 누적을 지키고, 넘기면 리셋한다.
+        """
+        index_active = prediction.label == ROT_LABEL or self.state == ROT_LABEL
+        if not index_active or landmarks is None:
+            self._rot_missing += 1
+            if self._rot_missing > self.untrusted_grace_frames:
+                self._rot_prev_angle, self._rot_accum = None, 0.0
+            return []
+        self._rot_missing = 0
+        points = np.asarray(landmarks, dtype=np.float64)
+        if points.ndim != 2 or points.shape[0] <= INDEX_TIP:
+            return []
+        vec = points[INDEX_TIP][:2] - points[INDEX_MCP][:2]
+        if not np.all(np.isfinite(vec)) or (vec[0] == 0.0 and vec[1] == 0.0):
+            return []
+        angle = math.degrees(math.atan2(vec[1], vec[0]))
+        if self._rot_prev_angle is None:
+            self._rot_prev_angle, self._rot_prev_ms = angle, timestamp_ms
+            return []
+        delta = (angle - self._rot_prev_angle + 180.0) % 360.0 - 180.0  # 프레임 간 회전(unwrap)
+        dt_s = max((timestamp_ms - self._rot_prev_ms) / 1000.0, 1e-3)
+        self._rot_prev_angle, self._rot_prev_ms = angle, timestamp_ms
+        if abs(delta) / dt_s < ROT_MIN_SPEED:  # 회전으로 볼 만큼 빠르지 않으면 무시
+            return []
+        self._rot_active_until = timestamp_ms + ROT_HOLD_MS  # 볼륨 노브 모드 연장
+        self._rot_accum += delta
+        steps = int(self._rot_accum / ROT_STEP_DEG)  # 0을 향해 버림
+        if steps == 0:
+            return []
+        self._rot_accum -= steps * ROT_STEP_DEG
+        kind = "volume_up" if steps * ROT_SIGN > 0 else "volume_down"
+        return [PoseEvent(kind, timestamp_ms) for _ in range(abs(steps))]
 
     # --- 내부 ---
 
@@ -285,6 +401,10 @@ class PoseStateMachine:
             and timestamp_ms - self._last_pose_end <= self.transition_window_ms
         ):
             events.append(PoseEvent("media_toggle", timestamp_ms))
+        # 중지만 편 포즈 → 탭 닫기(Cmd/Ctrl+W). 진입 시 한 번만 발화한다(유지 중에는
+        # label==state라 _continuous로 빠져 재발화하지 않는다).
+        elif label == "middle_point":
+            events.append(PoseEvent("close_tab", timestamp_ms))
         self.state, self._state_since = label, timestamp_ms
         self._pending, self._missing = "", 0
         return events
@@ -332,7 +452,16 @@ class PoseStateMachine:
             events.append(PoseEvent("drag_start", self._state_since))
         elif self.state == "two_fingers" and landmarks is not None:
             direction = pointing_direction(landmarks)
-            if direction is not None and abs(direction[1]) >= MIN_VERTICALITY:
+            extension = two_finger_extension(landmarks)
+            # 손가락이 충분히 펴진 동안만 스크롤한다. 주먹을 쥐려 접히기 시작하면 끝이
+            # 잠깐 아래로 스윙해 역방향 스크롤이 튀는데, 그 순간 extension이 임계 아래로
+            # 떨어져 여기서 걸러진다(B안 — 접힘을 물리적으로 감지).
+            if (
+                direction is not None
+                and abs(direction[1]) >= MIN_VERTICALITY
+                and extension is not None
+                and extension >= MIN_FINGER_EXTENSION
+            ):
                 # 화면 y는 아래로 증가하므로 부호를 뒤집어 위쪽을 +로 만든다.
                 events.append(PoseEvent("scroll", timestamp_ms, -direction[1]))
         return events

@@ -9,11 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from jarvis.gesture_fusion.pose_state import (
-    CURSOR_REFERENCE_HEIGHT,
-    CURSOR_REFERENCE_WIDTH,
-    PoseEvent,
-)
+from jarvis.gesture_fusion.pose_state import PoseEvent
 from jarvis.monitoring.pose_control import SCROLL_INTERVAL_MS, PoseControlBridge
 from jarvis.runtime_protocol.adapters.windows import InputKey, MouseButton
 
@@ -21,11 +17,6 @@ from jarvis.runtime_protocol.adapters.windows import InputKey, MouseButton
 @dataclass
 class _FakeSink:
     calls: list[tuple] = field(default_factory=list)
-    # 기본은 기준 화면(스케일 1.0) — 기존 테스트가 delta를 그대로 관찰하도록.
-    screen: tuple[int, int] = (CURSOR_REFERENCE_WIDTH, CURSOR_REFERENCE_HEIGHT)
-
-    def screen_size(self) -> tuple[int, int]:
-        return self.screen
 
     def move_cursor(self, dx: int, dy: int, *, dragging: bool = False) -> None:
         self.calls.append(("move", dx, dy, dragging))
@@ -54,17 +45,9 @@ def test_move_executes_even_though_it_is_not_logged() -> None:
     assert bridge.history == []  # 로그는 남지 않는다
 
 
-def test_move_scaled_to_device_resolution() -> None:
-    # 기준(1440×900)보다 큰 화면에선 같은 delta가 화면 비율만큼 커진다 — 체감 속도 동일.
-    sink = _FakeSink(screen=(CURSOR_REFERENCE_WIDTH * 2, CURSOR_REFERENCE_HEIGHT * 2))
-    bridge = PoseControlBridge(sink=sink, enabled=True)
-    bridge.apply([PoseEvent("move", 0, delta=(12.0, -4.0))])
-    assert ("move", 24, -8, False) in sink.calls
-
-
-def test_move_on_reference_screen_is_unchanged() -> None:
-    # 기준 화면과 같은 기기(튜닝한 macOS 1440×900)에선 스케일 1.0 → delta 그대로.
-    sink = _FakeSink(screen=(CURSOR_REFERENCE_WIDTH, CURSOR_REFERENCE_HEIGHT))
+def test_move_uses_absolute_pixels_regardless_of_resolution() -> None:
+    # delta는 절대 픽셀이라 화면 해상도로 스케일하지 않는다 — 어떤 기기에서도 delta 그대로.
+    sink = _FakeSink()
     bridge = PoseControlBridge(sink=sink, enabled=True)
     bridge.apply([PoseEvent("move", 0, delta=(37.0, -19.0))])
     assert ("move", 37, -19, False) in sink.calls

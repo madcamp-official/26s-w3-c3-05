@@ -26,8 +26,9 @@ def test_macos_module_imports_without_pyobjc_at_module_level() -> None:
 def test_nx_keytype_table_covers_every_media_key() -> None:
     """미디어 키(시스템 정의 이벤트)만 이 표에 있어야 한다.
 
-    F11(SHOW_DESKTOP)은 표준 키보드 이벤트, Mission Control은 앱 직접 실행(open -a)이라
-    둘 다 이 표에 없는 것이 정상이다 — 미디어 키 경로로 보내면 OS가 인식하지 않는다.
+    F11(SHOW_DESKTOP)은 표준 키보드 이벤트, Mission Control은 앱 직접 실행(open -a),
+    CLOSE_TAB(Cmd+W)은 표준 키보드 조합이라 셋 다 이 표에 없는 것이 정상이다 — 미디어
+    키 경로로 보내면 OS가 인식하지 않는다.
     """
     from jarvis.runtime_protocol.adapters.macos import _NX_KEYTYPE
 
@@ -35,6 +36,7 @@ def test_nx_keytype_table_covers_every_media_key() -> None:
         InputKey.SHOW_DESKTOP,
         InputKey.MISSION_CONTROL,
         InputKey.TASK_VIEW,
+        InputKey.CLOSE_TAB,
     }
 
 
@@ -62,3 +64,33 @@ def test_default_input_sink_rejects_unsupported_platform(monkeypatch: pytest.Mon
     monkeypatch.setattr(sys, "platform", "linux")
     with pytest.raises(RuntimeError, match="no InputSink implementation"):
         default_input_sink()
+
+
+def test_dock_transition_reveals_at_bottom_only_once() -> None:
+    """하단 진입 시 한 번만 '드러내기'(False)를 내고, 계속 하단이면 None(전환 없음).
+
+    매 프레임 osascript를 띄우지 않으려면 전환 시점에만 값을 내야 한다.
+    """
+    from jarvis.runtime_protocol.adapters.macos import dock_transition
+
+    bottom = 900.0
+    assert dock_transition(899.0, bottom, 2.0, revealed=False) is False
+    assert dock_transition(899.0, bottom, 2.0, revealed=True) is None
+
+
+def test_dock_transition_hides_when_leaving_bottom() -> None:
+    """하단을 벗어나면 한 번 '숨기기'(True)를 내고, 계속 위쪽이면 None."""
+    from jarvis.runtime_protocol.adapters.macos import dock_transition
+
+    bottom = 900.0
+    assert dock_transition(500.0, bottom, 2.0, revealed=True) is True
+    assert dock_transition(500.0, bottom, 2.0, revealed=False) is None
+
+
+def test_dock_transition_edge_threshold() -> None:
+    """edge_px 이내면 '하단'으로 본다 — 정확히 경계에서의 판정."""
+    from jarvis.runtime_protocol.adapters.macos import dock_transition
+
+    bottom = 900.0
+    assert dock_transition(898.0, bottom, 2.0, revealed=False) is False
+    assert dock_transition(897.9, bottom, 2.0, revealed=False) is None

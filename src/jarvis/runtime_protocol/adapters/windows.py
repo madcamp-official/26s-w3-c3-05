@@ -43,6 +43,7 @@ class InputKey(StrEnum):
     SHOW_DESKTOP = "show_desktop"  # F11 — 바탕화면 표시(누를 때마다 토글)
     MISSION_CONTROL = "mission_control"  # macOS 전용 — Mission Control 열기(Ctrl+↑)
     TASK_VIEW = "task_view"  # Windows 전용 — Task View 열기(Win+Tab). macOS Mission Control 대응
+    CLOSE_TAB = "close_tab"  # 탭 닫기 — Windows Ctrl+W, macOS Cmd+W. 앱이 정의한 탭/창 닫기
 
 
 class MouseButton(StrEnum):
@@ -77,13 +78,6 @@ class InputSink(Protocol):
 
     def move_cursor(self, dx: int, dy: int, *, dragging: bool = False) -> None:
         """Move the cursor by a relative delta. ``dragging``이면 드래그로 이동한다."""
-        ...
-
-    def screen_size(self) -> tuple[int, int]:
-        """주 디스플레이의 (너비, 높이). 커서 이동을 화면 대비 비율로 정규화하는 데 쓴다.
-
-        move_cursor가 쓰는 좌표계와 같은 단위여야 한다(Windows=픽셀, macOS=points).
-        """
         ...
 
     def switch_window(self, forward: bool, repeat: int) -> None:
@@ -213,8 +207,8 @@ _VK_TAB = 0x09
 _VK_MENU = 0x12  # ALT
 _VK_SHIFT = 0x10
 _VK_LWIN = 0x5B  # 왼쪽 Windows 키 — Task View(Win+Tab)용
-_SM_CXSCREEN = 0  # GetSystemMetrics: 주 디스플레이 너비(px)
-_SM_CYSCREEN = 1  # 〃 높이(px)
+_VK_CONTROL = 0x11
+_VK_W = 0x57  # 탭 닫기(Ctrl+W)용
 
 
 class Win32InputSink:
@@ -269,6 +263,14 @@ class Win32InputSink:
             user32.keybd_event(_VK_TAB, 0, _KEYEVENTF_KEYUP, 0)
             user32.keybd_event(_VK_LWIN, 0, _KEYEVENTF_KEYUP, 0)
             return
+        if key is InputKey.CLOSE_TAB:
+            # 탭 닫기는 Ctrl+W 조합키라 modifier(Ctrl)로 감싼다(TASK_VIEW의 Win+Tab과
+            # 같은 구조). 앱이 정의한 "현재 탭 또는 창 닫기"로 동작한다.
+            user32.keybd_event(_VK_CONTROL, 0, 0, 0)
+            user32.keybd_event(_VK_W, 0, 0, 0)
+            user32.keybd_event(_VK_W, 0, _KEYEVENTF_KEYUP, 0)
+            user32.keybd_event(_VK_CONTROL, 0, _KEYEVENTF_KEYUP, 0)
+            return
         vk = _VK[key]
         user32.keybd_event(vk, 0, 0, 0)
         user32.keybd_event(vk, 0, _KEYEVENTF_KEYUP, 0)
@@ -288,10 +290,6 @@ class Win32InputSink:
         point = ctypes.wintypes.POINT()
         user32.GetCursorPos(ctypes.byref(point))
         user32.SetCursorPos(int(point.x + dx), int(point.y + dy))
-
-    def screen_size(self) -> tuple[int, int]:
-        user32 = self._user32()
-        return user32.GetSystemMetrics(_SM_CXSCREEN), user32.GetSystemMetrics(_SM_CYSCREEN)
 
     def switch_window(self, forward: bool, repeat: int) -> None:
         # Alt+Tab (forward) / Alt+Shift+Tab (backward). Hold Alt for the whole
