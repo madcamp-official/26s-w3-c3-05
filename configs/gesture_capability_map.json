@@ -5,6 +5,7 @@
   "_comment_2026_07_22_color": "회전을 색온도(2700~6500K)에서 색상(color, 0~360도)으로 바꿨다. 색온도는 전 구간이 '흰색의 미묘한 차이'라 1000K를 줘도 무대에서 변화가 읽히지 않았다. 색상은 60도마다 색 이름이 바뀌어(빨강→노랑→초록→청록→파랑→자홍) 6번이면 한 바퀴 돈다. color는 순환량이라 WizAdapter가 유일하게 클램프하지 않고 360도에서 감아 돈다 — 클램프하면 회전 제스처가 양 끝에서 죽는다. 또한 slide_left/right를 전구의 밝기 조절에 추가로 매핑했다(up/down과 같은 ±30): 상하 슬라이드가 인식이 덜 될 때 좌우로도 밝기를 잡을 수 있게 한 이중 경로다. color_temperature capability는 프로필에 남겨 두되 어떤 제스처에도 매핑하지 않는다.",
   "_comment_2026_07_22_desktop": "노트북 slide_left/right를 창 전환(window_switch, Alt+Tab/Cmd+Tab)에서 가상 데스크톱 전환(desktop_switch)으로 바꿨다. 어댑터가 Windows는 Ctrl+Win+←/→, macOS는 Ctrl+←/→(Space 이동)를 합성한다. 좌우 슬라이드가 '옆 데스크톱으로 넘긴다'는 공간적 은유와 더 맞는다. capability 이름도 함께 개명해 실제 동작과 이름이 어긋나지 않게 했다(intent.validate_capability_map은 gesture 라벨만 검사하므로 capability 개명에는 영향 없음).",
   "_comment_2026_07_22_desktop_static": "노트북 데스크톱 전환을 동적 slide_left/right(TCN)에서 정적 two_fingers 방향 전이 스와이프로 갈아끼웠다(실측 기반, decisions.md 참고). 그래서 laptop의 slide_two_fingers_left/right → desktop_switch 매핑을 제거한다 — 이제 데스크톱 전환은 pose_state._track_swipe → PoseEvent(desktop_prev/next) → pose_control.switch_desktop이 담당한다(capability map을 타지 않음). slide_two_fingers_left/right 라벨은 room.bulb의 밝기 매핑에 그대로 남아 validate_capability_map을 통과한다. desktop_switch capability와 어댑터의 _desktop_switch 처리는 그대로 두되(다른 경로/미래용) 현재 어떤 제스처도 그 capability로 매핑하지 않는다.",
+  "_comment_2026_07_22_laptop_all_static": "노트북(컴퓨터) 제어를 전부 정적 포즈 경로로 통일한다(사용자 지시). 남아 있던 laptop의 slide_up/down → scroll, rotate → volume 동적 매핑까지 제거해 laptop은 이제 어떤 동적 제스처에도 매핑되지 않는다({} ). 스크롤(two_fingers 수직)·볼륨(검지 회전)·데스크톱 전환(two_fingers 좌우 스와이프)·커서·클릭 모두 pose_state → pose_control 정적 경로가 담당하며 capability map을 타지 않는다. slide_up/down·rotate 라벨은 room.bulb(밝기·색상)에 남아 validate_capability_map을 통과한다. 동적 TCN 경로는 이제 전구(room.bulb) 전용이다.",
   "devices": {
     "room.bulb": {
       "slide_two_fingers_down": { "capability": "brightness", "operation": "decrement", "value": 30 },
@@ -15,11 +16,6 @@
       "rotate_counter_clockwise": { "capability": "color", "operation": "decrement", "value": 60 },
       "stop_sign": { "capability": "power", "operation": "toggle", "value": true }
     },
-    "laptop": {
-      "slide_two_fingers_down": { "capability": "scroll", "operation": "decrement", "value": 3 },
-      "slide_two_fingers_up": { "capability": "scroll", "operation": "increment", "value": 3 },
-      "rotate_clockwise": { "capability": "volume", "operation": "increment", "value": 2 },
-      "rotate_counter_clockwise": { "capability": "volume", "operation": "decrement", "value": 2 }
-    }
+    "laptop": {}
   }
 }

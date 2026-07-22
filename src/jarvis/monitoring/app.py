@@ -2676,30 +2676,22 @@ class MainWindow(QMainWindow):
         # release()는 **억제로 들어가는 전이에서 한 번만** 부른다. 매 프레임 부르면
         # macOS sink의 restore_dock()이 초당 30번 호출된다(Windows sink엔 없어 무해하지만
         # 플랫폼에 기대지 않는다).
-        # 시연 탭은 동적 TCN 명령을 실제 실행 경로로 쓴다. 여기서 정적 pose 제어까지 함께
-        # 실행하면 노트북 대상 slide가 pose scroll + Intent scroll로 중복 작동하므로 막는다.
-        # 손 스켈레톤·pose 판정은 계속 그리되 OS 입력만 막는다.
+        # 노트북(컴퓨터) 제어는 이제 전부 정적 pose 경로다 — 동적 capability 매핑이 없어
+        # (laptop {}) 이중 실행 위험이 사라졌다. 그래서 시연 탭이라도 노트북 맥락(전구 lock이
+        # 아님)이고 시연 실행이 켜져 있으면 정적 pose 제어를 그대로 실행한다: 스크롤·볼륨·
+        # 데스크톱 전환·커서·클릭 모두. 전구 lock 중(gaze_suppressed)에는 계속 억제해 전구를
+        # 보며 손을 움직여도 커서가 안 따라가게 한다. 동적 TCN 경로는 전구 전용으로 남는다.
         gaze_suppressed = self._demo_bridge.should_suppress_pose
         suppressed = self._demo_tab_active() or gaze_suppressed
         if suppressed:
             if not self._pose_suppressed:
                 self._pose_control.release()
-            # 예외: 데스크톱 전환만은 정적 좌우 스와이프가 담당한다(동적 slide→desktop_switch
-            # 매핑을 제거했으므로 이중 실행이 없다). 노트북 맥락(전구 lock이 아님)이고 시연
-            # 실행이 켜져 있을 때만 desktop_prev/next를 실행한다 — scroll·click 등 나머지
-            # 정적 이벤트는 계속 억제해 TCN 경로와 겹치지 않게 한다.
             if (
                 self._demo_tab_active()
                 and not gaze_suppressed
                 and self._demo_bridge.execution_enabled
             ):
-                desktop_events = [
-                    event
-                    for event in snapshot.pose_events
-                    if event.kind in ("desktop_prev", "desktop_next")
-                ]
-                if desktop_events:
-                    self._pose_control.apply(desktop_events)
+                self._pose_control.apply(list(snapshot.pose_events))
         else:
             self._pose_control.apply(list(snapshot.pose_events))
         self._pose_suppressed = suppressed
