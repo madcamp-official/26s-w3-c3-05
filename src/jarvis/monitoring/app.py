@@ -128,6 +128,10 @@ _LOCK_COLOR = {
     GazeLockState.EXPIRED: "#f85149",
     GazeLockState.COMMITTED: "#2ea043",
 }
+
+_TARGET_DEVICE_TYPES: tuple[str, ...] = ("computer", "electric bulb")
+"""시선 등록 UI에서 선택 가능한 데모 기종. 저장값과 표시값을 동일하게 쓴다."""
+
 # 1단계는 "중앙 한 점 응시 + 고개 스윕"이다. 테두리를 훑으며 고개를 돌리면
 # 사람은 보는 방향으로 고개를 돌리므로 head-yaw bin이 센서 편향이 아니라
 # "그 자세에서 보던 테두리 위치"를 학습해 pose 보정의 부호가 뒤집힌다
@@ -1819,8 +1823,18 @@ class MainWindow(QMainWindow):
         name, ok = QInputDialog.getText(self, "물체 등록", "물체 이름")
         if not ok or not name.strip():
             return
+        device_type, ok = QInputDialog.getItem(
+            self,
+            "물체 등록",
+            "기종",
+            list(_TARGET_DEVICE_TYPES),
+            0,
+            False,
+        )
+        if not ok or device_type not in _TARGET_DEVICE_TYPES:
+            return
         target_id = self._next_target_id()
-        self._begin_registration(target_id, name.strip(), "UNKNOWN", target_id)
+        self._begin_registration(target_id, name.strip(), device_type, target_id)
 
     def _next_target_id(self) -> str:
         existing = {record.target_id for record in self._target_registry.records}
@@ -1848,7 +1862,7 @@ class MainWindow(QMainWindow):
         self._registration_progress.setValue(0)
         self._registration_progress.setFormat("1/2 중앙 응시 + 고개 스윕  %p%")
         self._registration_status.setText(
-            f"'{name}' 중앙 한 점에서 눈을 떼지 마세요. 안내에 따라 고개를 "
+            f"'{name}' ({device_type}) 중앙 한 점에서 눈을 떼지 마세요. 안내에 따라 고개를 "
             "좌우 끝까지·위아래로 돌리고 카메라 거리를 바꿔 자세별 편향을 수집합니다."
         )
         self._registration_status.setStyleSheet(
@@ -1856,7 +1870,7 @@ class MainWindow(QMainWindow):
             " border-radius:6px; padding:8px; font-weight:700;"
         )
         self._log.info(
-            f"'{name}' 2단계 등록 시작 — 1/2 중앙 응시 + 고개 스윕: "
+            f"'{name}' ({device_type}) 2단계 등록 시작 — 1/2 중앙 응시 + 고개 스윕: "
             "물체 중앙 한 점을 계속 응시하면서 고개를 좌우 끝까지·위아래로 돌리고 거리 변경"
         )
         self._gaze_video.set_registration_guidance(
@@ -2096,7 +2110,7 @@ class MainWindow(QMainWindow):
                 else " area=none"
             )
             self._target_list.addItem(
-                f"{record.name} [{record.target_id}]  "
+                f"{record.name} [{record.target_id}]  type={record.device_type}  "
                 f"yaw={record.direction.yaw:+.1f} pitch={record.direction.pitch:+.1f}"
                 f" spread={record.spread.yaw:.1f}/{record.spread.pitch:.1f}"
                 f"{scale_label}{feature_label}{area_label}"

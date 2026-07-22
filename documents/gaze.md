@@ -438,6 +438,11 @@ invalidates legacy/stale rows. Renaming does not change the fingerprint.
 
 ### Registration / target profile
 
+모니터링 앱에서 **물체 등록**을 누르면 표시 이름을 입력한 뒤 기종을
+`computer` 또는 `electric bulb` 드롭다운에서 선택한다. 선택값은
+`TargetRecord.device_type`으로 프로필 JSON에 저장된다. **위치 다시 등록**은
+기존 물체의 이름·기종을 유지하고 gaze 위치/영역만 다시 수집한다.
+
 | Setting | Current value | Meaning |
 | --- | ---: | --- |
 | `registration_min_spread_deg` | `4.0` | Minimum angular spread saved for a registered target. Prevents overly tiny target regions. |

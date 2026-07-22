@@ -19,7 +19,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QKeyEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QInputDialog  # noqa: E402
 
 from jarvis.monitoring.app import (  # noqa: E402
     MainWindow,
@@ -265,6 +265,82 @@ def test_target_registration_uses_auto_id(tmp_path: Path) -> None:
     )
     try:
         assert window._next_target_id() == "target_001"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+@pytest.mark.parametrize("device_type", ["computer", "electric bulb"])
+def test_target_registration_selects_device_type_from_dropdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    device_type: str,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        profiles_path=tmp_path / "profiles.json",
+        samples_path=tmp_path / "samples.json",
+        gesture_models_dir=tmp_path,
+    )
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        lambda *_args, **_kwargs: ("테스트 물체", True),
+    )
+
+    def choose_type(
+        _parent: object,
+        _title: str,
+        _label: str,
+        items: list[str],
+        current: int,
+        editable: bool,
+    ) -> tuple[str, bool]:
+        assert items == ["computer", "electric bulb"]
+        assert current == 0
+        assert editable is False
+        return device_type, True
+
+    monkeypatch.setattr(QInputDialog, "getItem", choose_type)
+    try:
+        window._start_target_registration()
+        assert window._registration is not None
+        assert window._registration.name == "테스트 물체"
+        assert window._registration.device_type == device_type
+        assert device_type in window._registration_status.text()
+    finally:
+        window._cancel_target_registration()
+        window.close()
+        app.processEvents()
+
+
+def test_target_registration_cancelled_when_device_type_is_not_selected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        profiles_path=tmp_path / "profiles.json",
+        samples_path=tmp_path / "samples.json",
+        gesture_models_dir=tmp_path,
+    )
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        lambda *_args, **_kwargs: ("테스트 물체", True),
+    )
+    monkeypatch.setattr(
+        QInputDialog,
+        "getItem",
+        lambda *_args, **_kwargs: ("", False),
+    )
+    try:
+        window._start_target_registration()
+        assert window._registration is None
     finally:
         window.close()
         app.processEvents()
