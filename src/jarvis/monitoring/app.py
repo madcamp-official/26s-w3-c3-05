@@ -2024,8 +2024,25 @@ class MainWindow(QMainWindow):
         )
         if not ok or device_type not in _TARGET_DEVICE_TYPES:
             return
+        # 카메라 정면 근처에 두는 computer(노트북) 기종은 "가만히 있을 때의
+        # 기본 시선 방향"과 겹쳐 다른 물체를 안 보고 있을 뿐인 순간에도
+        # 오확정되기 쉽다(2026-07-22). 각도가 확실히 갈라진 electric bulb는
+        # 이 문제가 없어 묻지 않는다 — 다른 물체에서 computer로 돌아올 때만
+        # 끄덕임 확인을 요구할지 등록 시점에 정한다.
+        requires_nod_gate = device_type == "computer" and (
+            QMessageBox.question(
+                self,
+                "끄덕임 확인 게이트",
+                f"'{name.strip()}'로 돌아올 때 고개 끄덕임 확인을 요구할까요?\n"
+                "(다른 물체를 보다가 이 물체로 돌아올 때만 적용 — 카메라 정면"
+                " 근처 물체의 오확정 방지용)",
+            )
+            == QMessageBox.StandardButton.Yes
+        )
         target_id = self._next_target_id()
-        self._begin_registration(target_id, name.strip(), device_type, target_id)
+        self._begin_registration(
+            target_id, name.strip(), device_type, target_id, requires_nod_gate=requires_nod_gate
+        )
 
     def _next_target_id(self) -> str:
         existing = {record.target_id for record in self._target_registry.records}
@@ -2037,7 +2054,13 @@ class MainWindow(QMainWindow):
             index += 1
 
     def _begin_registration(
-        self, target_id: str, name: str, device_type: str, device_id: str
+        self,
+        target_id: str,
+        name: str,
+        device_type: str,
+        device_id: str,
+        *,
+        requires_nod_gate: bool = False,
     ) -> None:
         if self._registration is not None:
             self._log.warn("이미 기기 등록이 진행 중입니다")
@@ -2046,6 +2069,7 @@ class MainWindow(QMainWindow):
             target_id, name, device_type, device_id, config=self._gaze_config,
             coverage_min_frames=self._gaze_config.registration_coverage_min_frames,
             raw_sample_dir=Path("data/calibration/raw_samples"),
+            requires_nod_gate=requires_nod_gate,
         )
         self._registration_phase_marker = None
         self._set_registration_controls(active=True)
@@ -2189,6 +2213,7 @@ class MainWindow(QMainWindow):
                 feature_profile=record.feature_profile,
                 area_profile=record.area_profile,
                 pose_correction=record.pose_correction,
+                requires_nod_gate=record.requires_nod_gate,
                 label=record.name,
             )
             self._log.info(
@@ -2247,7 +2272,11 @@ class MainWindow(QMainWindow):
             self._log.warn("위치를 다시 등록할 기기를 선택하세요")
             return
         self._begin_registration(
-            record.target_id, record.name, record.device_type, record.device_id
+            record.target_id,
+            record.name,
+            record.device_type,
+            record.device_id,
+            requires_nod_gate=record.requires_nod_gate,
         )
 
     def _rename_selected_target(self) -> None:
@@ -2263,6 +2292,7 @@ class MainWindow(QMainWindow):
                 feature_profile=updated.feature_profile,
                 area_profile=updated.area_profile,
                 pose_correction=updated.pose_correction,
+                requires_nod_gate=updated.requires_nod_gate,
                 label=updated.name,
             )
             self._refresh_targets()
@@ -2300,11 +2330,12 @@ class MainWindow(QMainWindow):
                 if record.area_profile is not None
                 else " area=none"
             )
+            nod_label = " 🔁끄덕임필요" if record.requires_nod_gate else ""
             self._target_list.addItem(
                 f"{record.name} [{record.target_id}]  type={record.device_type}  "
                 f"yaw={record.direction.yaw:+.1f} pitch={record.direction.pitch:+.1f}"
                 f" spread={record.spread.yaw:.1f}/{record.spread.pitch:.1f}"
-                f"{scale_label}{feature_label}{area_label}"
+                f"{scale_label}{feature_label}{area_label}{nod_label}"
             )
         self._refresh_session_labels()
         # 시연 탭의 "물체 → 기기" 매핑 표도 같은 목록에서 다시 그린다.

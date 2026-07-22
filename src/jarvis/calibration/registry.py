@@ -78,6 +78,11 @@ class TargetRecord:
     None으로 남아 각도 기반(direction+spread) 매칭만 쓰인다 — 지어낸 3D 위치를
     담지 않는다(documents/decisions.md).
     """
+    requires_nod_gate: bool = False
+    """True면 다른 target이 확정된 뒤 이 target으로 돌아올 때 고개 끄덕임
+    확인을 요구한다(jarvis.gaze.lock의 게이트, 2026-07-22). 카메라 정면
+    근처에 있어 "가만히 있을 때의 기본 시선 방향"과 겹치는 target(예: 노트북)에
+    켜서, 다른 target을 안 보고 있을 뿐인 순간을 오확정으로 만들지 않는다."""
 
     def __post_init__(self) -> None:
         if not self.target_id or not self.name or not self.device_type or not self.device_id:
@@ -158,6 +163,7 @@ class TargetRegistry:
             feature_profile=current.feature_profile,
             area_profile=current.area_profile,
             pose_correction=current.pose_correction,
+            requires_nod_gate=current.requires_nod_gate,
         )
         self.upsert(updated)
         return updated
@@ -206,6 +212,7 @@ class TargetRegistry:
                 feature_profile=self._parse_feature_profile(item.get("feature_profile")),
                 area_profile=self._parse_area_profile(item.get("area_profile")),
                 pose_correction=self._parse_pose_correction(item.get("pose_correction")),
+                requires_nod_gate=bool(item.get("requires_nod_gate", False)),
             )
             self._records[record.target_id] = record
 

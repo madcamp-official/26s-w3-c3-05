@@ -42,6 +42,27 @@ class GazeConfig:
     target_lock_ttl_ms: int = 1500
     """TARGET_LOCKED/GESTURE_WAIT 상태가 만료되기까지의 유예 시간."""
 
+    nod_confirmation_pre_roll_ms: int = 300
+    """끄덕임 확인 게이트(candidate_requires_nod_gate)의 유효 여유 시간.
+
+    다른 target에서 확정된 뒤 게이트가 걸린 target으로 돌아올 때, 끄덕임이
+    후보 시작 시각(candidate_started_at_ms)보다 이만큼 먼저 일어나도 유효한
+    확인으로 인정한다(고개를 돌리며 미리 끄덕이는 자연스러운 타이밍 허용).
+    이보다 오래된 끄덕임은 무관한 과거 동작으로 보고 무시한다."""
+
+    nod_dip_threshold_deg: float = 8.0
+    """끄덕임 시작으로 인정하는 head pitch의 평소 대비 최소 하강폭(도)."""
+
+    nod_recovery_deg: float = 5.0
+    """dip 최저점에서 이만큼 회복하면 끄덕임 완료로 판정한다(도)."""
+
+    nod_max_duration_ms: int = 900
+    """이보다 오래 pitch가 낮게 유지되면 끄덕임이 아니라 지속적인 자세
+    변화로 보고 포기한다(그 시점 pitch로 baseline 재설정)."""
+
+    nod_baseline_decay: float = 0.05
+    """dip이 아닐 때 평소 pitch baseline이 현재값 쪽으로 수렴하는 비율."""
+
     confirmed_unknown_timeout_ms: int = 3000
     """Release the confirmed target after this much continuous UNKNOWN time.
 
@@ -272,8 +293,19 @@ class GazeConfig:
             or self.target_lock_ttl_ms <= 0
             or self.confirmed_unknown_timeout_ms <= 0
             or self.candidate_grace_ms < 0
+            or self.nod_confirmation_pre_roll_ms < 0
         ):
             raise ValueError("Gaze timing thresholds are invalid")
+        for name, value in {
+            "nod_dip_threshold_deg": self.nod_dip_threshold_deg,
+            "nod_recovery_deg": self.nod_recovery_deg,
+        }.items():
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        if self.nod_max_duration_ms <= 0:
+            raise ValueError("nod_max_duration_ms must be positive")
+        if not math.isfinite(self.nod_baseline_decay) or not 0.0 < self.nod_baseline_decay <= 1.0:
+            raise ValueError("nod_baseline_decay must be finite and within (0, 1]")
         if self.registration_coverage_min_frames < 0:
             raise ValueError("registration_coverage_min_frames must be non-negative")
         if not (

@@ -300,6 +300,101 @@ def test_commit_after_gesture_wait_ttl_is_rejected_but_selection_is_retained() -
     assert lock.locked_device == "laptop"
 
 
+def test_nod_gate_does_not_apply_to_first_ever_lock() -> None:
+    """직전에 확정된 target이 없으면 게이트가 걸린 target도 그냥 dwell만으로 확정된다."""
+    config = GazeConfig(dwell_time_ms=100)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("laptop"), candidate_requires_nod_gate=True)
+    state = lock.update(100, _confident("laptop"), candidate_requires_nod_gate=True)
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "laptop"
+    assert lock.nod_gate_pending is False
+
+
+def test_nod_gate_does_not_apply_when_reaffirming_already_locked_target() -> None:
+    """이미 확정된 target을 계속 보는 중이면(다른 곳에서 돌아오는 게 아니면) 게이트가 없다."""
+    config = GazeConfig(dwell_time_ms=0)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("laptop"), candidate_requires_nod_gate=True)
+    assert lock.locked_device == "laptop"
+    state = lock.update(50, _confident("laptop"), candidate_requires_nod_gate=True)
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "laptop"
+
+
+def test_nod_gate_blocks_return_to_gated_target_without_nod() -> None:
+    """다른 target(bulb) 확정 뒤 게이트가 걸린 target(laptop)으로 dwell만 채워 돌아오면
+    승격이 막히고 이전 확정(bulb)이 그대로 유지된다."""
+    config = GazeConfig(dwell_time_ms=100)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("bulb"))
+    lock.update(100, _confident("bulb"))
+    assert lock.locked_device == "bulb"
+
+    lock.update(200, _confident("laptop"), candidate_requires_nod_gate=True)
+    state = lock.update(300, _confident("laptop"), candidate_requires_nod_gate=True)
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "bulb"
+    assert lock.nod_gate_pending is True
+
+
+def test_nod_gate_promotes_once_a_fresh_nod_arrives() -> None:
+    config = GazeConfig(dwell_time_ms=100)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("bulb"))
+    lock.update(100, _confident("bulb"))
+    lock.update(200, _confident("laptop"), candidate_requires_nod_gate=True)
+    lock.update(300, _confident("laptop"), candidate_requires_nod_gate=True)
+    assert lock.locked_device == "bulb"  # dwell met but gate pending
+
+    state = lock.update(
+        320, _confident("laptop"), candidate_requires_nod_gate=True, nod_detected=True
+    )
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "laptop"
+    assert lock.nod_gate_pending is False
+
+
+def test_nod_before_pre_roll_window_is_too_stale_to_count() -> None:
+    config = GazeConfig(dwell_time_ms=100, nod_confirmation_pre_roll_ms=50)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("bulb"))
+    lock.update(100, _confident("bulb"))
+    # 끄덕임이 laptop을 보기 한참 전(t=150)에 일어남 — 나중 후보 시작(t=500)의
+    # pre-roll 컷오프(450)보다도 이전이라 무효.
+    lock.update(150, _unknown(), nod_detected=True)
+    lock.update(500, _confident("laptop"), candidate_requires_nod_gate=True)
+    state = lock.update(600, _confident("laptop"), candidate_requires_nod_gate=True)
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "bulb"
+    assert lock.nod_gate_pending is True
+
+
+def test_nod_gate_persists_through_reset_after_unknown_timeout() -> None:
+    """UNKNOWN 타임아웃으로 SEARCHING을 거쳐도 '직전에 다른 target이 확정돼
+    있었다'는 사실은 남아 게이트가 계속 적용된다."""
+    config = GazeConfig(dwell_time_ms=0, confirmed_unknown_timeout_ms=100)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("bulb"))
+    assert lock.locked_device == "bulb"
+
+    lock.update(50, _unknown())
+    state = lock.update(200, _unknown())
+    assert state == GazeLockState.SEARCHING
+    assert lock.locked_device is None
+
+    state = lock.update(300, _confident("laptop"), candidate_requires_nod_gate=True)
+    assert state == GazeLockState.CANDIDATE
+    assert lock.locked_device is None
+    assert lock.nod_gate_pending is True
+
+    state = lock.update(
+        310, _confident("laptop"), candidate_requires_nod_gate=True, nod_detected=True
+    )
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "laptop"
+
+
 def test_reset_clears_candidate_and_lock() -> None:
     config = GazeConfig(dwell_time_ms=0)
     lock = GazeLockStateMachine(config)

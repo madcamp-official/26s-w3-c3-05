@@ -53,6 +53,7 @@ from jarvis.gaze.features import (
 )
 from jarvis.gaze.lock import GazeLockStateMachine, GazeLockState
 from jarvis.gaze.motion_intent import GazeSettleTracker
+from jarvis.gaze.nod import NodDetector
 from jarvis.gaze.smoothing import GazeSmoother
 
 
@@ -204,6 +205,11 @@ class GazeSnapshot:
     right_eye_open_ratio: float | None = None
     left_eye_open_baseline: float | None = None
     right_eye_open_baseline: float | None = None
+    nod_gate_required: bool = False
+    """이번 프레임의 target(현재 candidate/실시간 판정)이 끄덕임 확인 게이트가
+    걸린 target인지 — 시연 탭에서 "돌아올 때 끄덕임 필요" 표시에 쓴다."""
+    nod_gate_pending: bool = False
+    """dwell은 채웠지만 끄덕임을 기다리며 승격이 막혀 있는지."""
 
     @property
     def tracking_lost(self) -> bool:
@@ -521,6 +527,8 @@ def evaluate(
     previous_gaze_velocity_deg_s: tuple[float, float] | None = None,
     gaze_settle_velocity_deg_s: tuple[float, float] | None = None,
     gaze_settle_age_ms: int | None = None,
+    nod_detector: NodDetector | None = None,
+    nod_gated_devices: frozenset[str] | None = None,
 ) -> GazeSnapshot:
     """Run one observation through the full pipeline, capturing every stage.
 
@@ -528,6 +536,11 @@ def evaluate(
     the resulting ``TargetEstimate`` is identical to what the engine emits; the
     only addition is that the intermediate values are kept for display.
     """
+    nod_detected = (
+        nod_detector.update(observation.head_pitch_deg, observation.timestamp_ms)
+        if nod_detector is not None and observation.face_detected
+        else False
+    )
     blink_hold = observation.face_detected and not observation.eyes_open
     unstable_iris = _unstable_iris_reason(
         observation,
@@ -609,7 +622,14 @@ def evaluate(
         result = ClassificationResult(
             target=config.UNKNOWN_TARGET, probability=0.0, second_best_probability=0.0
         )
-        lock.update(observation.timestamp_ms, result)
+        lock.update(
+            observation.timestamp_ms,
+            result,
+            candidate_requires_nod_gate=bool(
+                nod_gated_devices and result.target in nod_gated_devices
+            ),
+            nod_detected=nod_detected,
+        )
         estimate = TargetEstimate(
             timestamp_ms=observation.timestamp_ms,
             frame_id=observation.frame_id,
@@ -679,7 +699,14 @@ def evaluate(
             gaze_motion_acceleration_deg_s2=gaze_motion_acceleration_deg_s2,
             gaze_settle_velocity_deg_s=gaze_settle_velocity_deg_s,
         )
-        lock.update(smoothed.timestamp_ms, result)
+        lock.update(
+            smoothed.timestamp_ms,
+            result,
+            candidate_requires_nod_gate=bool(
+                nod_gated_devices and result.target in nod_gated_devices
+            ),
+            nod_detected=nod_detected,
+        )
         estimate = TargetEstimate(
             timestamp_ms=smoothed.timestamp_ms,
             frame_id=smoothed.frame_id,
@@ -791,6 +818,8 @@ def evaluate(
         right_eye_open_ratio=observation.right_eye_open_ratio,
         left_eye_open_baseline=observation.left_eye_open_baseline,
         right_eye_open_baseline=observation.right_eye_open_baseline,
+        nod_gate_required=bool(nod_gated_devices and result.target in nod_gated_devices),
+        nod_gate_pending=lock.nod_gate_pending,
     )
 
 
@@ -824,6 +853,8 @@ class GazeProbe:
         self._previous_motion_timestamp_ms: int | None = None
         self._previous_gaze_velocity_deg_s: tuple[float, float] | None = None
         self._settle_tracker = GazeSettleTracker(self._config)
+        self._nod_detector = NodDetector(self._config)
+        self._nod_gated_devices: set[str] = set()
         self._profile_count = self._load_profiles(profiles_path)
 
     def _load_profiles(self, profiles_path: Path | None) -> int:
@@ -850,6 +881,8 @@ class GazeProbe:
                 pose_correction=record.pose_correction,
             )
             self._target_labels[record.target_id] = record.name
+            if record.requires_nod_gate:
+                self._nod_gated_devices.add(record.target_id)
             count += 1
         return count
 
@@ -872,6 +905,7 @@ class GazeProbe:
         feature_profile: TargetFeatureProfile | None = None,
         area_profile: TargetAreaProfile | None = None,
         pose_correction: TargetPoseCorrection | None = None,
+        requires_nod_gate: bool = False,
         label: str | None = None,
     ) -> None:
         """Add or replace one target profile in the live classifier."""
@@ -883,6 +917,10 @@ class GazeProbe:
             area_profile=area_profile,
             pose_correction=pose_correction,
         )
+        if requires_nod_gate:
+            self._nod_gated_devices.add(profile.device_id)
+        else:
+            self._nod_gated_devices.discard(profile.device_id)
         if label is not None:
             self._target_labels[profile.device_id] = label
         if not existed:
@@ -893,6 +931,7 @@ class GazeProbe:
         existed = device_id in self._classifier.profiles
         self._classifier.unregister_profile(device_id)
         self._target_labels.pop(device_id, None)
+        self._nod_gated_devices.discard(device_id)
         if self._lock.locked_device == device_id:
             # Sticky confirmation must not keep pointing at a deleted target.
             self._lock.reset()
@@ -999,6 +1038,8 @@ class GazeProbe:
                 settle_intent.velocity_deg_s if settle_intent is not None else None
             ),
             gaze_settle_age_ms=(settle_intent.age_ms if settle_intent is not None else None),
+            nod_detector=self._nod_detector,
+            nod_gated_devices=frozenset(self._nod_gated_devices),
         )
         if observation.face_detected and not observation.eyes_open:
             self._last_closed_eye_ms = observation.timestamp_ms

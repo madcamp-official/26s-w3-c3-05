@@ -435,6 +435,43 @@ invalidates legacy/stale rows. Renaming does not change the fingerprint.
 | `gaze_settle_stop_speed_deg_s` | `4.0` | Speed below which the armed movement is considered settled. |
 | `gaze_settle_memory_ms` | `500` | Lifetime of the landing-direction tie-break. |
 | `gaze_motion_max_interval_ms` | `250` | Reset derivatives after longer gaps. |
+| `nod_confirmation_pre_roll_ms` | `300` | Nod-gate freshness slack: a nod up to this long before the candidate started still counts. |
+| `nod_dip_threshold_deg` | `8.0` | Minimum downward head-pitch deviation from baseline to start counting as a nod dip. |
+| `nod_recovery_deg` | `5.0` | Recovery from the dip extremum needed to count the nod as complete. |
+| `nod_max_duration_ms` | `900` | Longer low-pitch holds are treated as a posture change, not a nod, and abandoned. |
+| `nod_baseline_decay` | `0.05` | How fast the resting head-pitch baseline (used outside a dip) tracks the current pitch. |
+
+### Nod confirmation gate (2026-07-22)
+
+데모에서 카메라를 노트북 근처에 두는 배치(정확도가 가장 좋은 |head yaw|≤25°
+범위를 두 target 모두에 확보하기 위함)에서는 노트북 방향이 곧 "가만히 있을
+때의 기본 시선 방향"과 겹친다. 전구처럼 각도가 확실히 갈라진 target은 오확정
+위험이 없지만, 노트북은
+다른 target을 잠깐 안 보고 있을 뿐인 순간에도 정면을 스치며 계속 확정될 수
+있다. 그래서 target 등록 시 "다른 target에서 확정된 뒤 이 target으로 돌아올
+때만" 고개 끄덕임(chin dip→recovery) 확인을 요구하는 게이트를 켤 수 있다.
+
+- `jarvis.gaze.nod.NodDetector`: `head_pitch_deg` + `timestamp_ms`만 다루는
+  순수 클래스(blink.py와 같은 패턴, 카메라 없이 단위 테스트). 평소 pitch
+  baseline을 느리게 추적하다 `nod_dip_threshold_deg`만큼 내려가면 dip 시작,
+  `nod_recovery_deg`만큼 회복하면 완료로 본다. `nod_max_duration_ms`를 넘겨
+  낮게 유지되면 끄덕임이 아니라 지속적 자세 변화로 보고 그 시점 pitch로
+  baseline을 재기준한다.
+- `jarvis.gaze.lock.GazeLockStateMachine`: `update()`가
+  `candidate_requires_nod_gate`(호출자가 매 프레임 "지금 target이 게이트
+  대상인지" 알려줌 — lock 자신은 device_type을 모른다)와 `nod_detected`를
+  받는다. `_last_confirmed_device`는 `reset()`으로도 지워지지 않아, UNKNOWN
+  타임아웃으로 SEARCHING을 한 번 거쳐도 "직전에 다른 target이 확정돼
+  있었다"는 사실이 유지된다. 게이트는 dwell을 채운 뒤에만 평가하며, 실패하면
+  승격을 보류할 뿐 후보 자체를 리셋하지 않는다(`nod_gate_pending` 프로퍼티로
+  디버그 UI가 "dwell 완료, 끄덕임 대기 중"을 표시할 수 있다). 최초 확정이나
+  같은 target을 계속 보던 중에는 게이트가 걸리지 않는다.
+- 등록 시 `requires_nod_gate=True`로 저장하며(`TargetRecord.requires_nod_gate`,
+  예전 JSON은 필드가 없어 `False`로 로드), 모니터링 앱의 "물체 등록" 시작
+  시점에 Yes/No로 묻고 대상 목록에 🔁 표시를 남긴다. `GazeTargetingEngine`/
+  `GazeProbe` 둘 다 `register_device`/`register_profile`의
+  `requires_nod_gate` 인자로 게이트 대상 집합을 관리하고, 내부 `NodDetector`
+  하나를 매 프레임(`observation.face_detected`일 때만) 갱신한다.
 
 ### Registration / target profile
 
