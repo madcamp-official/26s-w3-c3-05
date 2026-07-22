@@ -30,8 +30,9 @@ NONE_POSE = "none"
 """제어 명령이 아님. 이 판정이 나오면 어떤 동작도 실행하지 않는다."""
 
 # 수집·학습에서 쓰는 정적 자세 라벨. 순서가 분류기 출력 인덱스와 일치해야 한다
-# (학습 산출물의 `label_names`가 진실이며, 로드 시 대조한다). 2026-07-22 8-class v2:
-# index_point 다음에 middle_point(중지 하나 → 탭 닫기) 추가 — 모델 label_names 순서와 일치.
+# (학습 산출물의 `label_names`가 진실이며, 로드 시 대조한다). 2026-07-22 실험: 주먹(fist)을
+# none으로 흡수하고, 그 자리(index 6)에 ok(엄지-검지 원 → 재생/일시정지)를 넣는다 — 재학습
+# 전까지 모델은 아직 fist라 ok는 동작하지 않는다(fist는 명령 아님으로 처리됨).
 DEFAULT_POSE_LABELS: tuple[str, ...] = (
     "index_point",
     "middle_point",
@@ -39,7 +40,7 @@ DEFAULT_POSE_LABELS: tuple[str, ...] = (
     "pinch_middle",
     "two_fingers",
     "open_palm",
-    "fist",
+    "ok",
     # 제어 자세가 아닌 모든 손 상태(전이 구간, 휴지, 일상 동작). 이게 없으면 분류기가
     # 매 프레임 억지로 6개 중 하나를 골라, 손이 화면에 보이기만 하면 명령이 나간다.
     # 실측 효과(2026-07-20): 우클릭 직전의 엄지-중지 접근 구간이 two_fingers로 분류돼
@@ -77,7 +78,9 @@ DEFAULT_POSE_TILT_LIMITS: dict[str, float] = {
     # 오히려 정상 조작을 막던 문제를 해소한다.
     "two_fingers": 90.0,
     "open_palm": 30.0,
-    "fist": 20.0,
+    # ok(엄지-검지 원, 나머지 펴기) — 새 자세라 실측 표본이 없어 보수적으로 20°. 수집·재학습
+    # 후 middle_point처럼 실측으로 조정한다.
+    "ok": 20.0,
     # none은 "명령 아님"이라 기울기와 무관하게 유효하다 — 기울었다고 거부하면
     # 그 프레임이 다시 명령 후보가 되어버린다(거부의 방향이 반대다).
     NONE_POSE: 90.0,

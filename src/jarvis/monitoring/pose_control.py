@@ -105,6 +105,7 @@ class PoseControlBridge:
                 else "재생/일시정지"
             ),
             "close_tab": "탭 닫기",
+            "play_pause": "재생/일시정지",
             "volume_up": "볼륨 +",
             "volume_down": "볼륨 −",
         }.get(event.kind, "")
@@ -133,6 +134,8 @@ class PoseControlBridge:
             self.sink.tap_key(self.transition_key)
         elif event.kind == "close_tab":
             self.sink.tap_key(InputKey.CLOSE_TAB)
+        elif event.kind == "play_pause":
+            self.sink.tap_key(InputKey.PLAY_PAUSE)
         elif event.kind == "volume_up":
             self.sink.tap_key(InputKey.VOLUME_UP)
         elif event.kind == "volume_down":

@@ -452,6 +452,10 @@ class PoseStateMachine:
         # label==state라 _continuous로 빠져 재발화하지 않는다).
         elif label == "middle_point":
             events.append(PoseEvent("close_tab", timestamp_ms))
+        # OK 사인(엄지-검지 원) → 재생/일시정지. 진입 시 한 번만 발화한다(close_tab과 동일).
+        # 2026-07-22 실험: 주먹을 없앤 자리에 넣은 새 자세 — 모델 재학습 후에 동작한다.
+        elif label == "ok":
+            events.append(PoseEvent("play_pause", timestamp_ms))
         # 핀치(집게) 진입 → 마우스 버튼 down(릴리즈에서 up). 짧게 쥐었다 떼면 클릭,
         # 길게 쥐고 이동하면 드래그가 자연히 갈린다 — 누른 시간·이동을 OS가 판정하므로
         # click/drag를 상태기계가 미리 가를 필요가 없다. 직전 짧은 클릭이 double_click_ms

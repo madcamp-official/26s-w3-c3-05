@@ -95,19 +95,13 @@ def test_sustained_none_releases_state() -> None:
     assert machine.state == ""
 
 
-# --- 규칙 3: none이 자세 이력을 지우지 않는다 ---
+# --- 미션 컨트롤(open_palm) / OK(재생·일시정지) ---
 
-def test_fist_to_open_palm_through_none_fires_media_toggle() -> None:
-    """주먹→손바닥 전이 중간은 none이다. 인접 상태로 보면 절대 성립하지 않는다."""
+def test_ok_pose_fires_play_pause() -> None:
+    """OK 사인(ok) 진입은 재생/일시정지를 한 번 발화한다(주먹 자리에 넣은 새 자세)."""
     machine = PoseStateMachine()
-    _feed(machine, "fist", ms=300)
-    assert machine.state == "fist"
-    # 어중간하게 펴진 중간 구간 — none으로 분류된다
-    for t in (400, 433, 466, 500, 533):
-        machine.update(_pose(NONE_POSE), t)
-    assert machine.state == ""
-    events = _feed(machine, "open_palm", ms=300, start=566)
-    assert [e.kind for e in events] == ["media_toggle"]
+    events = _feed(machine, "ok", ms=300)
+    assert [e.kind for e in events] == ["play_pause"]
 
 
 def test_any_pose_to_open_palm_fires_media_toggle() -> None:

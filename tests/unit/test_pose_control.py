@@ -125,3 +125,12 @@ def test_media_toggle_sends_transition_key() -> None:
     bridge = PoseControlBridge(sink=sink, enabled=True)
     bridge.apply([PoseEvent("media_toggle", 0)])
     assert ("key", _transition_key()) in sink.calls
+
+
+def test_play_pause_sends_media_key() -> None:
+    """OK 자세가 내는 play_pause는 재생/일시정지 미디어 키를 보낸다."""
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=True)
+    bridge.apply([PoseEvent("play_pause", 0)])
+    assert ("key", InputKey.PLAY_PAUSE) in sink.calls
+    assert bridge.last_action == "재생/일시정지"
