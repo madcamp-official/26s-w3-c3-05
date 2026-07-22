@@ -199,13 +199,18 @@ class DemoPanel(QWidget):
         self.bulb_view = BulbView()
         bulb_row.addWidget(self.bulb_view)
         bulb_text = QVBoxLayout()
-        self._bulb_state_label = QLabel("밝기 60% · 색온도 4000K")
+        # 실물을 읽기 전에는 숫자를 지어내지 않는다 — 예전에는 임의의 초기값(60%·4000K)을
+        # 그대로 보여줘 화면이 실물과 어긋난 채 시작했다(2026-07-22 시연 피드백).
+        self._bulb_state_label = QLabel("전구 상태: 확인 전")
         self._bulb_state_label.setStyleSheet(f"font-weight:700; color:{_STATUS_TEXT};")
         bulb_text.addWidget(self._bulb_state_label)
-        bulb_note = QLabel("원은 전구에서 직접 읽어온 실측 색입니다. 위 문구는 보낸 명령 기준입니다.")
-        bulb_note.setWordWrap(True)
-        bulb_note.setStyleSheet("color:#6e7681; font-size:11px;")
-        bulb_text.addWidget(bulb_note)
+        self._bulb_note = QLabel(
+            "보낸 명령 기준 값입니다 — 아직 실물 확인 전. 원은 전구에서 계속 실시간으로"
+            " 읽어온 색입니다."
+        )
+        self._bulb_note.setWordWrap(True)
+        self._bulb_note.setStyleSheet("color:#6e7681; font-size:11px;")
+        bulb_text.addWidget(self._bulb_note)
         self._bulb_badge = QLabel("실물: 미설정")
         self._bulb_badge.setWordWrap(True)
         self._bulb_badge.setStyleSheet("color:#8b949e; font-weight:700;")
@@ -481,9 +486,23 @@ class DemoPanel(QWidget):
         self._gesture_label.setText(f"제스처: {gesture}")
         self._phase_label.setText(f"Intent: {phase}")
 
-    def set_bulb(self, state: VirtualBulbState, *, badge: str, ok: bool) -> None:
-        """명령 기준 문구 + 배지를 갱신한다. 원(BulbView)은 `set_bulb_live`가 맡는다."""
+    def set_bulb(
+        self, state: VirtualBulbState, *, badge: str, ok: bool, verified: bool = False
+    ) -> None:
+        """명령/실측 문구 + 배지를 갱신한다. 원(BulbView)은 `set_bulb_live`가 따로 맡는다.
+
+        `verified`는 `state`가 방금 프로브로 실물에서 읽은 값인지를 뜻한다. 읽은 값과
+        보낸 명령 기준 값을 같은 문구로 보여주면 화면이 실물과 어긋났을 때 그 사실이
+        숨는다 — 이 구분이 정직성 경계다. 원은 `BulbPoller`가 이와 별개로 계속
+        실시간 조회해 그리므로 여기서 다시 건드리지 않는다.
+        """
         self._bulb_state_label.setText(state.describe())
+        self._bulb_note.setText(
+            "실물 전구에서 확인한 값입니다. 원은 전구에서 계속 실시간으로 읽어온 색입니다."
+            if verified
+            else "보낸 명령 기준 값입니다 — 아직 실물 확인 전. 원은 전구에서 계속 실시간으로"
+            " 읽어온 색입니다."
+        )
         self._bulb_badge.setText(f"실물: {badge}")
         self._bulb_badge.setStyleSheet(
             ("color:#3fb950;" if ok else "color:#d29922;") + " font-weight:700;"

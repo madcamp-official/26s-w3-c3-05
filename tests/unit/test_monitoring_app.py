@@ -679,6 +679,41 @@ def test_demo_outcome_updates_virtual_bulb_but_flags_real_failure(tmp_path: Path
         app.processEvents()
 
 
+def test_demo_probe_state_replaces_the_screen_value(tmp_path: Path) -> None:
+    """실물에서 읽은 상태가 화면의 단일 소스가 된다 — 예전에는 이 값을 버려서 화면이
+    임의의 초기값(60%·4000K)에 머물렀고 실물과 하나도 맞지 않았다."""
+    from jarvis.monitoring.bulb_probe import BulbProbeResult
+    from jarvis.monitoring.virtual_bulb import state_from_pilot
+
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    try:
+        assert window._bulb_verified is False
+        state = state_from_pilot({"state": True, "dimming": 30, "r": 255, "g": 0, "b": 0})
+        window._on_bulb_probed(BulbProbeResult(True, "전구 연결됨", state))
+        assert window._bulb_verified is True
+        assert window._virtual_bulb.brightness == 30
+        assert window._virtual_bulb.color_mode is True
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_demo_unreadable_probe_does_not_claim_the_screen_is_real(tmp_path: Path) -> None:
+    """상태를 못 읽었으면 '실물에서 읽은 값'이라고 주장하지 않는다."""
+    from jarvis.monitoring.bulb_probe import BulbProbeResult
+
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    try:
+        window._bulb_verified = True
+        window._on_bulb_probed(BulbProbeResult(False, "전구 연결 실패", None))
+        assert window._bulb_verified is False
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_pose_release_called_once_on_suppression_entry(tmp_path: Path) -> None:
     """억제 중 매 프레임 release()를 부르면 macOS sink의 restore_dock이 초당 30번 돈다."""
     from jarvis.contracts.messages import GestureEstimate, GesturePhase
@@ -999,12 +1034,13 @@ def test_bulb_command_ignores_computer_control_toggle(tmp_path: Path) -> None:
         app.processEvents()
 
 
-def test_demo_tab_runs_static_pose_control_alongside_tcn(tmp_path: Path) -> None:
-    """시연 탭도 실시간 탭과 동일하게 정적 pose 제어를 그대로 실행한다(사용자 지시 2026-07-22).
+def test_demo_tab_runs_static_pose_control_for_laptop(tmp_path: Path) -> None:
+    """노트북(컴퓨터) 제어를 전부 정적 포즈로 통일했으므로(2026-07-22, 사용자 지시),
+    시연 탭이라도 노트북 맥락(전구 lock이 아님)이고 실행이 켜져 있으면 정적 pose 이벤트를
+    실행한다. 노트북에는 동적 capability 매핑이 없어(laptop {}) 이중 실행 위험이 없다.
 
-    시연 탭이라는 이유만으로 정적 pose를 끄지 않는다 — lock이 노트북이 아닌 기기일
-    때만(`should_suppress_pose`) 억제하며, 이는 실시간 탭과 같은 기준이다.
-    """
+    전구를 보는 중(should_suppress_pose=True)에는 계속 억제한다 — 전구를 보며 손을 움직일
+    때 커서가 따라가면 안 되기 때문이다."""
     app = QApplication.instance() or QApplication([])
     window = MainWindow(
         env={},
@@ -1016,11 +1052,49 @@ def test_demo_tab_runs_static_pose_control_alongside_tcn(tmp_path: Path) -> None
     )
     applied: list[int] = []
     window._pose_control.apply = lambda events: applied.append(len(events))  # type: ignore[method-assign]
+    # should_suppress_pose(전구 lock 여부)를 통제해 두 경로를 모두 검증한다.
+    bridge_cls = type(window._demo_bridge)
+    original_suppress = bridge_cls.should_suppress_pose
     try:
         window._demo_panel._execution_toggle.setChecked(True)
+        # 노트북 맥락(전구 lock 아님): 정적 pose 이벤트(click)가 실행 경로로 나간다.
+        bridge_cls.should_suppress_pose = property(lambda self: False)  # type: ignore[assignment]
         window._on_hand(_lost_hand_snapshot(1))
         assert applied == [1]
         assert window._demo_bridge.execution_enabled is True
+
+        # 전구 lock 중이면(should_suppress_pose=True) 억제한다 — 커서가 안 따라가게.
+        applied.clear()
+        bridge_cls.should_suppress_pose = property(lambda self: True)  # type: ignore[assignment]
+        window._on_hand(_lost_hand_snapshot(2))
+        assert applied == []
     finally:
+        bridge_cls.should_suppress_pose = original_suppress  # type: ignore[assignment]
         window.close()
         app.processEvents()
+
+
+def test_static_swipe_routes_to_bulb_brightness() -> None:
+    """전구 lock 중 정적 좌우 스와이프가 전구 좌우 슬라이드(밝기)로 매핑된다(2026-07-22).
+
+    desktop_prev(왼쪽)=밝기 감소, desktop_next(오른쪽)=밝기 증가. 합성 CommitDecision의
+    gesture가 실제 capability map에서 room.bulb 밝기 명령으로 해석되는지(단일 진실원)까지
+    확인한다 — GUI 창 없이 클래스 속성·정적 메서드만 검증한다."""
+    from jarvis.runtime.devices import build_default_capability_map
+
+    cap = build_default_capability_map()
+
+    class _Snap:
+        timestamp_ms = 100
+        frame_id = 3
+
+    for kind, operation in (("desktop_prev", "decrement"), ("desktop_next", "increment")):
+        gesture = MainWindow._SWIPE_TO_SLIDE[kind]
+        decision = MainWindow._synthetic_swipe_decision("room.bulb", gesture, _Snap())
+        assert decision.committed is True
+        assert decision.target == "room.bulb"
+        assert decision.intent_id  # 고유 id가 있어야 실행기가 dedup으로 버리지 않는다
+        action = cap.lookup("room.bulb", gesture)
+        assert action is not None
+        assert action.capability == "brightness"
+        assert action.operation == operation

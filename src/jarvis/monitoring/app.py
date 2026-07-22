@@ -68,7 +68,7 @@ from jarvis.gaze.lock import GazeLockState
 from jarvis.gaze.registration_lint import lint_target_record
 from jarvis.gaze.session_report import build_report, format_report, load_session
 from jarvis.gaze.smoothing import SmoothedGaze
-from jarvis.gesture_fusion.fusion import CommitDecision
+from jarvis.gesture_fusion.fusion import CommitDecision, FusionScore
 from jarvis.gesture_fusion.landmarks import HandObservation
 from jarvis.gesture_fusion.model_protocol import (
     DEFAULT_BACKGROUND_LABELS,
@@ -77,6 +77,7 @@ from jarvis.gesture_fusion.model_protocol import (
 )
 from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
 from jarvis.gesture_fusion.pose_state import TWO_FINGER_STRAIGHTNESS_MIN
+from jarvis.monitoring.bulb_probe import BulbProbeResult, BulbProbeWorker
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
@@ -127,7 +128,12 @@ from jarvis.runtime.devices import (
     build_default_registry,
 )
 from jarvis.runtime.executor import ExecutionOutcome, ExecutionStage, IntentExecutor
-from jarvis.runtime_protocol.adapters.wiz import WizAdapter, WizConfig
+from jarvis.runtime_protocol.adapters.wiz import (
+    UdpWizTransport,
+    WizAdapter,
+    WizConfig,
+    WizTransport,
+)
 from jarvis.runtime_protocol.capture.clock import RuntimeClock
 from jarvis.runtime_protocol.config import read_env_file
 from jarvis.runtime_protocol.protocol.engine import ProtocolEngine
@@ -1247,7 +1253,9 @@ def _build_clip_recorder() -> _ClipRecorder | None:
     return cast("_ClipRecorder", recorder)
 
 
-def _build_demo_executor(env: dict[str, str]) -> tuple[IntentExecutor, WizAdapter] | None:
+def _build_demo_executor(
+    env: dict[str, str], wiz_transport: WizTransport | None = None
+) -> tuple[IntentExecutor, WizAdapter] | None:
     """시연용 `IntentExecutor` — Fusion 커밋을 실제 기기 명령까지 잇는 실행기.
 
     `build_laptop_only_executor()`는 전구 설정을 받지 않으므로 공개 빌더로 직접
@@ -1258,12 +1266,17 @@ def _build_demo_executor(env: dict[str, str]) -> tuple[IntentExecutor, WizAdapte
     이 OS에 입력 어댑터가 없으면(`default_input_sink()`가 raise) None을 돌려
     시연 실행 자체를 끈다 — 제어를 흉내내지 않는다.
 
+    `wiz_transport`를 넘기면 그 인스턴스를 쓴다 — 시작 프로브(`BulbProbeWorker`)·
+    `BulbPoller`와 **같은 transport**를 공유해야 MAC→IP 탐색 캐시가 세 경로(프로브·
+    주기 조회·명령) 사이에서 어긋나지 않는다.
+
     WiZ adapter도 함께 돌려준다 — `BulbPoller`가 명령과 별개로 실물 색을 직접
-    조회하려면 같은 adapter 인스턴스가 필요하다(MAC→IP 탐색 캐시를 공유해야
-    DHCP 주소 변경 흡수가 명령 경로와 어긋나지 않는다).
+    조회하려면 같은 adapter 인스턴스가 필요하다.
     """
     try:
-        adapters = build_default_adapters(wiz_config=WizConfig.from_env(env))
+        adapters = build_default_adapters(
+            wiz_config=WizConfig.from_env(env), wiz_transport=wiz_transport
+        )
     except Exception:  # noqa: BLE001 - 미지원 OS·어댑터 부재는 정직하게 off
         return None
     registry = build_default_registry()
@@ -1470,9 +1483,19 @@ class MainWindow(QMainWindow):
         self._pose_suppressed = False
         self._virtual_bulb = VirtualBulbState()
         self._last_bulb_badge = ("미설정", False)
-        built = _build_demo_executor(self._env)
+        # 전구 표시가 실물에서 읽은 값인지(True) 보낸 명령 누적인지(False). 시작 프로브가
+        # 성공할 때까지는 False이며, UI가 그 사실을 문구로 드러낸다.
+        self._bulb_verified = False
+        self._bulb_quiet_probe = False
+        self._bulb_resync_pending = False
+        # 전구 프로브·주기 조회·실행 어댑터가 같은 transport를 공유한다 — 어느 한 경로가
+        # MAC→IP를 먼저 찾아 두면 나머지 경로가 재탐색 비용을 다시 치르지 않는다
+        # (bulb_probe.py 참조).
+        self._wiz_transport = UdpWizTransport()
+        built = _build_demo_executor(self._env, self._wiz_transport)
         self._execute_worker: ExecuteWorker | None = None
         self._bulb_poller: BulbPoller | None = None
+        self._bulb_probe: BulbProbeWorker | None = None
         if built is not None:
             executor, wiz_adapter = built
             self._execute_worker = ExecuteWorker(executor)
@@ -1878,9 +1901,74 @@ class MainWindow(QMainWindow):
             if device_id is not None:
                 self._device_mapping.set_default(record.target_id, device_id)
 
+    def start_bulb_probe(self, *, quiet: bool = False) -> None:
+        """전구에 `getPilot`을 보내 도달 여부와 **현재 상태**를 읽는다(GUI 스레드 밖).
+
+        WiZ는 연결 없는 UDP라 "연결"이라는 단계가 없다 — 그래서 이 프로브를 넣기
+        전에는 부팅 시 전구를 한 번도 건드리지 않았고, 도달 불가를 첫 제스처에서야
+        알 수 있었다. 시도·성공·실패를 시연 로그에 그대로 찍는다.
+
+        시작할 때 한 번(`quiet=False`), 그리고 전구 명령을 보낼 때마다 한 번 더
+        (`quiet=True`) 부른다. 후자가 화면과 실물을 계속 맞춰 주는 장치다 — 밝기·색은
+        전구가 가진 절대 상태인데 화면이 자기 누적값만 들고 있으면 시작 시점의 차이가
+        영원히 남는다. 재동기화는 로그를 어지럽히지 않도록 조용히 돈다.
+        """
+        if self._bulb_probe is not None and self._bulb_probe.isRunning():
+            # 이미 도는 프로브를 새 객체로 덮으면 실행 중인 QThread가 수거될 수 있다.
+            # 대신 예약해 두고 끝나는 즉시 한 번 더 읽는다(마지막 명령이 반영되도록).
+            self._bulb_resync_pending = True
+            return
+        config = WizConfig.from_env(self._env)
+        if not quiet:
+            target = config.device_targets.get(BULB_DEVICE_ID) if config else None
+            self._demo_panel.append_line(
+                f"전구 연결 시도… ({target})" if target else "전구 연결 시도… (대상 미설정)",
+                ok=True,
+            )
+            self._log.info("전구 연결 확인 중…")
+        self._bulb_quiet_probe = quiet
+        self._bulb_probe = BulbProbeWorker(config, BULB_DEVICE_ID, self._wiz_transport)
+        self._bulb_probe.result_ready.connect(self._on_bulb_probed)
+        self._bulb_probe.start()
+
+    def _on_bulb_probed(self, result: object) -> None:
+        assert isinstance(result, BulbProbeResult)
+        if not self._bulb_quiet_probe:
+            self._demo_panel.append_line(result.detail, ok=result.ok)
+            if result.ok:
+                self._log.info(result.detail)
+            else:
+                self._log.warn(result.detail)
+        # 읽은 상태를 화면의 단일 소스로 삼는다. 못 읽었으면 이전 값을 유지하되
+        # "확인됨" 표시를 내려 화면이 실물이라고 주장하지 않게 한다.
+        if result.state is not None:
+            self._virtual_bulb = result.state
+            self._bulb_verified = True
+        else:
+            self._bulb_verified = False
+        # 배지를 "설정 여부"가 아니라 **실제 도달 여부**로 갱신한다.
+        self._last_bulb_badge = (result.detail, result.ok)
+        self._demo_panel.set_bulb(
+            self._virtual_bulb,
+            badge=result.detail,
+            ok=result.ok,
+            verified=self._bulb_verified,
+        )
+        if self._bulb_resync_pending:
+            self._bulb_resync_pending = False
+            self.start_bulb_probe(quiet=True)
+
     def _refresh_bulb_badge(self) -> None:
+        # 프로브가 실제 도달 여부를 확인했으면 그 결과를 유지한다 — 여기서 "설정됨"으로
+        # 덮으면 닿지도 않는 전구가 다시 정상처럼 보인다.
+        if self._bulb_probe is not None:
+            badge, ok = self._last_bulb_badge
+            self._demo_panel.set_bulb(
+                self._virtual_bulb, badge=badge, ok=ok, verified=self._bulb_verified
+            )
+            return
         configured = WizConfig.from_env(self._env) is not None
-        badge = "설정됨 · 명령 대기" if configured else "미설정 (WIZ_DEVICE_TARGETS 없음)"
+        badge = "설정됨 · 연결 확인 전" if configured else "미설정 (WIZ_DEVICE_TARGETS 없음)"
         self._last_bulb_badge = (badge, configured)
         self._demo_panel.set_bulb(self._virtual_bulb, badge=badge, ok=configured)
 
@@ -1926,9 +2014,11 @@ class MainWindow(QMainWindow):
         intent = outcome.intent
         if intent is None or intent.target != BULB_DEVICE_ID:
             return
-        # 가상 전구는 **보낸 명령**을 누적한다. 실물의 성공 여부는 배지로 따로 말한다 —
-        # dispatch가 실패했는데 그림만 밝아지면 성공을 지어내는 것이다.
+        # 먼저 보낸 명령을 그대로 반영해 즉시 반응을 보여주고(왕복을 기다리면 무대에서
+        # 굼떠 보인다), 곧바로 실물을 다시 읽어 그 값으로 덮는다. 실물의 성공 여부는
+        # 배지로 따로 말한다 — dispatch가 실패했는데 그림만 밝아지면 성공을 지어내는 것이다.
         self._virtual_bulb.apply(intent)
+        self._bulb_verified = False
         if outcome.executed:
             badge = "OK · " + outcome.detail
         elif outcome.stage is ExecutionStage.DISPATCHED:
@@ -1936,7 +2026,12 @@ class MainWindow(QMainWindow):
         else:
             badge = "미전달: " + outcome.detail
         self._last_bulb_badge = (badge, outcome.executed)
-        self._demo_panel.set_bulb(self._virtual_bulb, badge=badge, ok=outcome.executed)
+        self._demo_panel.set_bulb(
+            self._virtual_bulb, badge=badge, ok=outcome.executed, verified=False
+        )
+        # 실물 재확인. 화면 누적값과 전구의 실제 값이 어긋나 있어도 여기서 다시 맞는다
+        # (밝기·색은 전구가 가진 절대 상태이고, 어댑터의 상대 연산도 그 값을 기준으로 한다).
+        self.start_bulb_probe(quiet=True)
 
     def _on_execution_failed(self, message: str) -> None:
         self._log.error(message)
@@ -1997,6 +2092,10 @@ class MainWindow(QMainWindow):
         else:
             self._log.info(f"손동작 제어 {'켜짐' if enabled else '꺼짐'}")
 
+    def _demo_tab_active(self) -> bool:
+        """지금 보고 있는 탭이 '시연'인지. 노트북 맥락 정적 pose 실행 여부 판정에 쓴다."""
+        return self._tabs.tabText(self._tabs.currentIndex()) == "시연"
+
     def _handle_commit_decision(self, decision: CommitDecision) -> None:
         """Fusion 커밋 판정 하나를 화면에 남기고, 통과하면 실행 워커로 넘긴다.
 
@@ -2005,6 +2104,17 @@ class MainWindow(QMainWindow):
         """
         self._demo_panel.append_line(describe_decision(decision), ok=decision.committed)
         if not decision.committed:
+            return
+        # 전구 등 비노트북 기기의 좌우 슬라이드(밝기)는 이제 **정적 two_fingers 좌우 스와이프**가
+        # 담당한다(_route_bulb_swipe). 동적 slide_left/right가 같은 기기에 도달하면 이중 실행이므로
+        # 여기서 건너뛴다. 노트북 좌우는 애초에 capability map에서 빠져 여기 오지 않는다.
+        if decision.target != LAPTOP_DEVICE_ID and decision.gesture in (
+            "slide_two_fingers_left",
+            "slide_two_fingers_right",
+        ):
+            self._demo_panel.set_last_action(
+                f"{decision.gesture} → {decision.target} (좌우는 정적 스와이프가 처리)", ok=False
+            )
             return
         # 노트북(내 PC) 대상 명령은 "손동작으로 컴퓨터 제어" 토글도 지켜야 한다. 이
         # 경로(TCN→Fusion→Intent)는 정적 pose 제어와 배선이 달라 예전에는 그 토글을
@@ -2023,6 +2133,52 @@ class MainWindow(QMainWindow):
             self._demo_panel.set_last_action(
                 f"{decision.gesture} → {decision.target} (실행 안 함)", ok=False
             )
+
+    # 정적 좌우 스와이프 → gaze-lock된 기기(전구)의 좌우 슬라이드 명령. 노트북은 pose_control이
+    # OS 입력으로 직접 처리하지만, 전구는 capability→adapter(WiZ) 경로가 필요하므로 여기서
+    # (기기, slide_left/right) 결정을 합성해 동적 경로와 같은 실행 워커로 흘린다 — 밝기 델타는
+    # capability map(room.bulb의 slide_left/right)에서 그대로 읽혀 config가 단일 진실원으로 남는다.
+    _SWIPE_TO_SLIDE = {
+        "desktop_prev": "slide_two_fingers_left",   # 왼쪽 스와이프 → 밝기 감소
+        "desktop_next": "slide_two_fingers_right",  # 오른쪽 스와이프 → 밝기 증가
+    }
+
+    def _route_bulb_swipe(self, snapshot: object) -> None:
+        """전구 lock 중, 정적 좌우 스와이프 이벤트를 그 기기의 좌우 슬라이드 명령으로 실행한다."""
+        device = self._demo_bridge.locked_device
+        if device is None or self._execute_worker is None:
+            return
+        for event in getattr(snapshot, "pose_events", ()):
+            gesture = self._SWIPE_TO_SLIDE.get(event.kind)
+            if gesture is None:
+                continue
+            self._execute_worker.submit(
+                self._synthetic_swipe_decision(device, gesture, snapshot)
+            )
+
+    @staticmethod
+    def _synthetic_swipe_decision(
+        device: str, gesture: str, snapshot: object
+    ) -> CommitDecision:
+        """정적 스와이프 1회를 실행기가 받는 `CommitDecision`으로 만든다(확신도 만점, 고유 id)."""
+        ts = int(getattr(snapshot, "timestamp_ms", 0))
+        frame = int(getattr(snapshot, "frame_id", 0))
+        return CommitDecision(
+            committed=True,
+            reason="static swipe",
+            target=device,
+            gesture=gesture,
+            score=FusionScore(
+                target_confidence=1.0,
+                gesture_confidence=1.0,
+                gaze_stability=1.0,
+                uncertainty=0.0,
+                value=1.0,
+            ),
+            timestamp_ms=ts,
+            frame_id=frame,
+            intent_id=f"static-swipe-{device}-{gesture}-{frame}-{ts}",
+        )
 
     def _build_pipeline_tab(self) -> QWidget:
         body = QWidget()
@@ -2690,10 +2846,25 @@ class MainWindow(QMainWindow):
         # release()는 **억제로 들어가는 전이에서 한 번만** 부른다. 매 프레임 부르면
         # macOS sink의 restore_dock()이 초당 30번 호출된다(Windows sink엔 없어 무해하지만
         # 플랫폼에 기대지 않는다).
-        suppressed = self._demo_bridge.should_suppress_pose
+        # 노트북(컴퓨터) 제어는 이제 전부 정적 pose 경로다 — 동적 capability 매핑이 없어
+        # (laptop {}) 이중 실행 위험이 사라졌다. 그래서 시연 탭이라도 노트북 맥락(전구 lock이
+        # 아님)이고 시연 실행이 켜져 있으면 정적 pose 제어를 그대로 실행한다: 스크롤·볼륨·
+        # 데스크톱 전환·커서·클릭 모두. 전구 lock 중(gaze_suppressed)에는 계속 억제해 전구를
+        # 보며 손을 움직여도 커서가 안 따라가게 한다. 동적 TCN 경로는 전구 전용으로 남는다.
+        gaze_suppressed = self._demo_bridge.should_suppress_pose
+        suppressed = self._demo_tab_active() or gaze_suppressed
         if suppressed:
             if not self._pose_suppressed:
                 self._pose_control.release()
+            if self._demo_tab_active() and self._demo_bridge.execution_enabled:
+                if not gaze_suppressed:
+                    # 노트북 맥락: 정적 pose 전부 실행(스크롤·볼륨·데스크톱·커서·클릭).
+                    self._pose_control.apply(list(snapshot.pose_events))
+                else:
+                    # 전구 lock 중: 좌우 스와이프만 전구 밝기로 라우팅(정적 이식). 커서·스크롤
+                    # 등 나머지 정적 이벤트는 계속 억제 — 전구를 보며 손을 움직여도 커서가
+                    # 안 따라가게 한다.
+                    self._route_bulb_swipe(snapshot)
         else:
             self._pose_control.apply(list(snapshot.pose_events))
         self._pose_suppressed = suppressed
@@ -2783,6 +2954,9 @@ class MainWindow(QMainWindow):
             self._execute_worker.stop()
         if self._bulb_poller is not None:
             self._bulb_poller.stop()
+        # 프로브는 타임아웃이 짧아 금방 끝나지만, 남은 스레드가 있으면 기다린다.
+        if self._bulb_probe is not None and self._bulb_probe.isRunning():
+            self._bulb_probe.wait(3000)
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
@@ -2827,4 +3001,7 @@ def run(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(argv or [])
     window = MainWindow()
     window.show()
+    # 창이 보인 뒤에 전구 도달 확인을 시작한다 — 시도·결과 메시지가 시연 로그에 찍혀야
+    # 하고, __init__에서 하면 창이 뜨기 전에 메시지가 흘러 사용자가 못 본다.
+    window.start_bulb_probe()
     return int(app.exec())

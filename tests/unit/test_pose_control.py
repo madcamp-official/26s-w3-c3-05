@@ -27,14 +27,17 @@ class _FakeSink:
     def double_click(self, button: MouseButton) -> None:
         self.calls.append(("double_click", button))
 
-    def press(self, button: MouseButton, *, down: bool) -> None:
-        self.calls.append(("press", button, down))
+    def press(self, button: MouseButton, *, down: bool, click_state: int = 1) -> None:
+        self.calls.append(("press", button, down, click_state))
 
     def scroll(self, ticks: int) -> None:
         self.calls.append(("scroll", ticks))
 
     def tap_key(self, key: InputKey) -> None:
         self.calls.append(("key", key))
+
+    def switch_desktop(self, forward: bool, repeat: int) -> None:
+        self.calls.append(("desktop", forward, repeat))
 
 
 def test_move_executes_even_though_it_is_not_logged() -> None:
@@ -56,7 +59,7 @@ def test_move_uses_absolute_pixels_regardless_of_resolution() -> None:
 def test_disabled_bridge_executes_nothing() -> None:
     sink = _FakeSink()
     bridge = PoseControlBridge(sink=sink, enabled=False)
-    bridge.apply([PoseEvent("click", 0), PoseEvent("move", 0, delta=(5.0, 5.0))])
+    bridge.apply([PoseEvent("mouse_down", 0, value=1.0), PoseEvent("move", 0, delta=(5.0, 5.0))])
     assert sink.calls == []
     assert "실행 안 함" in bridge.last_action  # 기록은 남아 관찰 가능
 
@@ -71,39 +74,46 @@ def test_scroll_is_throttled_for_execution_not_just_logging() -> None:
     assert len(scrolls) == 2  # 가운데 것은 솎아진다
 
 
-def test_click_and_right_click() -> None:
+def test_pinch_down_up_and_right_click() -> None:
+    """핀치 down/up은 버튼 press로, 우클릭(pinch_middle)은 그대로 click으로 나간다."""
     sink = _FakeSink()
     bridge = PoseControlBridge(sink=sink, enabled=True)
-    bridge.apply([PoseEvent("click", 0), PoseEvent("right_click", 0)])
-    assert ("click", MouseButton.LEFT) in sink.calls
+    bridge.apply([
+        PoseEvent("mouse_down", 0, value=1.0),
+        PoseEvent("mouse_up", 0, value=1.0),
+        PoseEvent("right_click", 0),
+    ])
+    assert ("press", MouseButton.LEFT, True, 1) in sink.calls
+    assert ("press", MouseButton.LEFT, False, 1) in sink.calls
     assert ("click", MouseButton.RIGHT) in sink.calls
 
 
-def test_double_click_executes_and_logs() -> None:
+def test_double_click_carries_click_state() -> None:
+    """더블클릭 눌림(value=2)은 press에 clickState=2를 실어 보낸다(OS가 합침)."""
     sink = _FakeSink()
     bridge = PoseControlBridge(sink=sink, enabled=True)
-    bridge.apply([PoseEvent("double_click", 0)])
-    assert ("double_click", MouseButton.LEFT) in sink.calls
-    assert bridge.last_action == "더블클릭"
+    bridge.apply([PoseEvent("mouse_down", 0, value=2.0)])
+    assert ("press", MouseButton.LEFT, True, 2) in sink.calls
+    assert bridge.last_action == "더블클릭 ↓"
 
 
-def test_drag_press_and_release() -> None:
+def test_pinch_press_and_release() -> None:
     sink = _FakeSink()
     bridge = PoseControlBridge(sink=sink, enabled=True)
-    bridge.apply([PoseEvent("drag_start", 0)])
-    bridge.apply([PoseEvent("drag_end", 0)])
-    assert ("press", MouseButton.LEFT, True) in sink.calls
-    assert ("press", MouseButton.LEFT, False) in sink.calls
+    bridge.apply([PoseEvent("mouse_down", 0, value=1.0)])
+    bridge.apply([PoseEvent("mouse_up", 0, value=1.0)])
+    assert ("press", MouseButton.LEFT, True, 1) in sink.calls
+    assert ("press", MouseButton.LEFT, False, 1) in sink.calls
 
 
-def test_release_lifts_held_drag_button() -> None:
-    """드래그 중 손을 놓치거나 제어를 끄면 버튼이 눌린 채 남으면 안 된다."""
+def test_release_lifts_held_button() -> None:
+    """핀치(버튼 down) 중 손을 놓치거나 제어를 끄면 버튼이 눌린 채 남으면 안 된다."""
     sink = _FakeSink()
     bridge = PoseControlBridge(sink=sink, enabled=True)
-    bridge.apply([PoseEvent("drag_start", 0)])
+    bridge.apply([PoseEvent("mouse_down", 0, value=1.0)])
     sink.calls.clear()
     bridge.release()
-    assert ("press", MouseButton.LEFT, False) in sink.calls
+    assert any(c[:3] == ("press", MouseButton.LEFT, False) for c in sink.calls)
 
 
 def test_media_toggle_sends_transition_key() -> None:
@@ -118,3 +128,23 @@ def test_media_toggle_sends_transition_key() -> None:
     bridge = PoseControlBridge(sink=sink, enabled=True)
     bridge.apply([PoseEvent("media_toggle", 0)])
     assert ("key", _transition_key()) in sink.calls
+
+
+def test_desktop_swipe_switches_virtual_desktop() -> None:
+    """좌우 스와이프 이벤트는 가상 데스크톱을 앞/뒤로 한 칸 전환한다."""
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=True)
+    bridge.apply([PoseEvent("desktop_next", 0)])
+    bridge.apply([PoseEvent("desktop_prev", 0)])
+    assert ("desktop", True, 1) in sink.calls
+    assert ("desktop", False, 1) in sink.calls
+    assert bridge.history[-2:] == ["데스크톱 다음", "데스크톱 이전"]
+
+
+def test_play_pause_sends_media_key() -> None:
+    """OK 자세가 내는 play_pause는 재생/일시정지 미디어 키를 보낸다."""
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=True)
+    bridge.apply([PoseEvent("play_pause", 0)])
+    assert ("key", InputKey.PLAY_PAUSE) in sink.calls
+    assert bridge.last_action == "재생/일시정지"

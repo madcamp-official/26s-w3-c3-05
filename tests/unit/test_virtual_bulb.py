@@ -1,8 +1,8 @@
-"""가상 전구 상태 — 명령 누적·클램프·무시 규칙을 네트워크 없이 검증한다.
+"""전구 표시 상태 — 실물 readback 반영과 명령 누적·클램프·무시 규칙을 검증한다.
 
-이 상태는 **보낸 명령 기준**이지 실물의 응답이 아니다(virtual_bulb.py docstring).
-따라서 여기서 검증하는 것은 "실물이 이렇게 됐다"가 아니라 "이런 명령을 보냈다"가
-화면에 어떻게 누적되는가다.
+두 입력이 있다: 실물 `getPilot` 응답(`state_from_pilot`)과 보낸 명령(`apply`).
+전자는 "실물이 지금 이렇다", 후자는 "이런 명령을 보냈다"이며 UI는 둘을 구분해
+표시한다(virtual_bulb.py docstring). 네트워크 없이 둘 다 검증한다.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from jarvis.monitoring.virtual_bulb import (
     COLOR_TEMPERATURE_MAX,
     COLOR_TEMPERATURE_MIN,
     VirtualBulbState,
+    state_from_pilot,
 )
 
 
@@ -198,3 +199,66 @@ def test_hue_name_covers_the_whole_circle() -> None:
 
     assert all(hue_name(deg) for deg in range(0, 360, 5))
     assert hue_name(0) == hue_name(359) == "빨강"  # 원형으로 이어진다
+
+
+# --- 실물 상태 읽기(state_from_pilot) --------------------------------------
+#
+# 화면이 실물과 어긋난 근본 원인은 "실물을 한 번도 읽지 않는다"였다. 아래는 그
+# 읽기가 WiZ의 실제 응답 모양을 정확히 옮기는지 고정한다.
+
+
+def test_pilot_cct_mode_is_read_as_color_temperature() -> None:
+    """CCT 모드 응답에는 temp만 온다 — 그대로 색온도 모드가 돼야 한다."""
+    state = state_from_pilot(
+        {"mac": "9877d5cffaf8", "state": True, "dimming": 40, "temp": 4200, "sceneId": 0}
+    )
+    assert state is not None
+    assert state.power is True
+    assert state.brightness == 40
+    assert state.color_temperature == 4200
+    assert state.color_mode is False
+
+
+def test_pilot_rgb_mode_is_read_as_hue() -> None:
+    """RGB 모드 응답에는 r/g/b가 온다 — 각도로 환산하고 색상 모드가 돼야 한다."""
+    state = state_from_pilot(
+        {"state": True, "dimming": 100, "r": 0, "g": 255, "b": 0, "c": 0, "w": 0}
+    )
+    assert state is not None
+    assert state.color_mode is True
+    assert state.hue == 120  # 초록
+    assert "초록" in state.describe()
+
+
+def test_pilot_off_state_is_read_as_off() -> None:
+    state = state_from_pilot({"state": False, "dimming": 60, "temp": 2700})
+    assert state is not None
+    assert state.power is False
+    assert state.describe() == "전원 꺼짐"
+
+
+def test_pilot_without_power_field_is_not_guessed() -> None:
+    """전원조차 못 읽으면 화면을 갱신하지 않는다 — 값을 지어내지 않는다."""
+    assert state_from_pilot({"mac": "9877d5cffaf8", "rssi": -60}) is None
+
+
+def test_pilot_all_zero_rgb_falls_back_to_color_temperature() -> None:
+    """r=g=b=0은 색이 아니라 무채색이다 — 빨강(0도)으로 오해하면 안 된다."""
+    state = state_from_pilot({"state": True, "r": 0, "g": 0, "b": 0, "temp": 6000})
+    assert state is not None
+    assert state.color_mode is False
+    assert state.color_temperature == 6000
+
+
+def test_pilot_values_are_clamped_to_the_capability_range() -> None:
+    """기기가 프로파일 밖 값을 보고해도 화면 보간이 깨지지 않게 경계로 접는다."""
+    state = state_from_pilot({"state": True, "dimming": 255, "temp": 9000})
+    assert state is not None
+    assert state.brightness == BRIGHTNESS_MAX
+    assert state.color_temperature == COLOR_TEMPERATURE_MAX
+
+
+def test_pilot_missing_fields_keep_defaults_without_crashing() -> None:
+    state = state_from_pilot({"state": True})
+    assert state is not None
+    assert state.brightness == VirtualBulbState().brightness

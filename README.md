@@ -4,7 +4,7 @@
 
 ## 시선 기반 모션 제스처 전자기기 제어 OS
 
-> **바라보면 선택되고, 움직이면 실행된다.**
+> **바라보면 선택되고, 제스처로 조작한다.**
 > 
 
 ---
@@ -22,14 +22,16 @@
 9. [핵심 기능 3: Multimodal Intent Fusion](#9-핵심-기능-3-multimodal-intent-fusion)
 10. [핵심 기능 4: 전자기기 제어 프로토콜](#10-핵심-기능-4-전자기기-제어-프로토콜)
 11. [전자기기 연결 방법](#11-전자기기-연결-방법)
-12. [3인 역할 분담](#12-3인-역할-분담)
-13. [평가 지표](#13-평가-지표)
-14. [Baseline](#14-baseline)
-15. [테스트 시나리오](#15-테스트-시나리오)
-16. [개발 일정](#16-개발-일정)
-17. [최종 산출물](#17-최종-산출물)
-18. [최종 시연 구성](#18-최종-시연-구성)
-19. [최종 프로젝트 소개](#19-최종-프로젝트-소개)
+12. [개발·디버깅 도구](#12-개발디버깅-도구)
+13. [제스처 학습 파이프라인](#13-제스처-학습-파이프라인)
+14. [3인 역할 분담](#14-3인-역할-분담)
+15. [평가 지표](#15-평가-지표)
+16. [Baseline](#16-baseline)
+17. [테스트 시나리오](#17-테스트-시나리오)
+18. [개발 일정](#18-개발-일정)
+19. [최종 산출물](#19-최종-산출물)
+20. [최종 시연 구성](#20-최종-시연-구성)
+21. [최종 프로젝트 소개](#21-최종-프로젝트-소개)
 
 ---
 
@@ -37,11 +39,11 @@
 
 ### 프로젝트명
 
-**JARVIS — Gaze-Grounded Motion Control Runtime**
+**JARVIS — Jointly Aligned Real-time Vision Interaction System**
 
 ### 한 줄 정의
 
-일반 노트북 웹캠으로 사용자의 시선과 손동작을 실시간 분석하여, 사용자가 바라보는 전자기기를 선택하고 손 제스처로 명령을 실행하는 멀티모달 전자기기 제어 런타임 파이프라인이다.
+일반 노트북 웹캠으로 사용자의 시선과 손동작을 실시간 분석하여, 사용자가 바라보는 전자기기를 선택하고 손 제스처로 명령을 실행하는 멀티모달 전자기기 런타임 제어 파이프라인이다.
 
 ### 핵심 인터랙션
 
@@ -51,12 +53,12 @@
 → 기기에 맞는 기능 실행
 ```
 
-예를 들어 같은 `Swipe Down` 제스처라도:
+예를 들어 같은 **두 손가락 상하 슬라이드** 제스처라도:
 
 - 노트북을 바라보면 페이지 스크롤
 - 스마트 전구를 바라보면 밝기 감소
-- TV를 바라보면 볼륨 감소 (확장)
-- 에어컨을 바라보면 온도 감소 (확장)
+- TV를 바라보면 볼륨 감소 (확장 가능)
+- 에어컨을 바라보면 온도 감소 (확장 가능)
 
 로 해석한다.
 
@@ -133,9 +135,9 @@ JARVIS가 해결하려는 문제는 다음과 같다.
 실제 구현은 다음 두 종류로 제한한다.
 
 1. Windows/macOS 노트북 (로컬 입력 합성)
-2. 스마트 전구 — **실제 데모는 Philips WiZ(로컬 UDP 직접 제어)로 구현**했다. SmartThings adapter(클라우드 API)도 계약·코드로 갖춰 두었으나, 데모 당일 클라우드 왕복·전구 UUID 확보 리스크를 피해 같은 LAN에서 토큰 없이 제어되는 WiZ를 실행 백엔드로 택했다(두 adapter 모두 같은 `DeviceAdapter` 계약. documents/decisions.md·runtime-protocol.md 참조).
+2. 스마트 전구 — 실제 데모는 Philips WiZ(로컬 UDP 직접 제어)로 구현했다. SmartThings adapter(클라우드 API)도 같은 `DeviceAdapter` 계약으로 코드에 남아 있으나, 데모 당일 클라우드 왕복·전구 UUID 확보 리스크를 피해 같은 LAN에서 토큰 없이 제어되는 WiZ를 실행 백엔드로 택했다.
 
-“모든 전자기기”는 확장 방향이고, MVP에서는 서로 다른 제어 방식을 가진 두 종류의 기기를 하나의 코어로 제어하는 것을 증명한다.
+“모든 전자기기”는 확장 가능성이고, MVP에서는 서로 다른 제어 방식을 가진 두 종류의 기기를 하나의 코어로 제어하는 것을 증명한다.
 
 ---
 
@@ -187,9 +189,9 @@ JARVIS 실행
 
 ```
 전구 Target Lock
-→ Swipe Down 수행
+→ 두 손가락 아래 슬라이드(slide_two_fingers_down) 수행
 → 전구의 brightness capability와 연결
-→ 밝기 감소 명령
+→ 밝기 감소 명령(-30)
 → 정확히 한 번 실행
 ```
 
@@ -213,45 +215,44 @@ flowchart TD
     A["Laptop RGB Webcam"] --> B["Face·Iris Pipeline"]
     A --> C["Hand Landmark Pipeline"]
     B --> D["Gaze Target Estimator"]
-    C --> E["Dynamic Gesture Spotter"]
+    C -->|"12fps 다운샘플"| E["Dynamic Gesture Spotter (Causal TCN)"]
+    C --> L["Static Pose Classifier (MLP)"]
     D --> F["Multimodal Intent Fusion"]
     E --> F
     F --> G["Safe Commit Engine"]
     G --> H["JARVIS Control Protocol"]
     H --> I["Windows Adapter"]
-    H --> J["SmartThings Adapter"]
-    D -->|"Gaze Lock == laptop"| K["Cursor Control Mapper"]
-    C --> K
-    K -->|"연속 좌표 스트림"| I
+    H --> J["WiZ Adapter (로컬 UDP)"]
+    H -.->|"코드만 유지·미배선"| J2["SmartThings Adapter"]
+    L --> K["Pose Control Bridge"]
+    K -->|"연속 좌표 스트림"| M["InputSink (Win32 / macOS)"]
+    I --> M
 ```
 
 MQTT·Home Assistant, ESP32 IR/RF adapter는 확장 방향이며 MVP에는 포함하지 않는다.
 
-## Cursor Control Mapper
+손 스트림은 두 개의 독립된 경로로 갈라진다. **동적 제스처(슬라이드·회전)**는 12fps로 솎아 Causal TCN → Fusion → Intent → Protocol을 타고, 커서·클릭·스크롤 같은 **정적 손 모양**은 별도 MLP 분류기와 시간축 상태기계를 거쳐 OS 입력으로 직접 나간다. 두 모델은 서로를 import하지 않고 입력 차원·산출물이 다르다([gesture-fusion.md](documents/gesture-fusion.md)).
 
-마우스 커서 조작은 이산적인 1회성 명령이 아니라 손 위치를 매 프레임 연속으로 커서 좌표에 매핑하는 동작이라, Dynamic Gesture Spotter·Multimodal Intent Fusion·Safe Commit Engine·Command dedup으로 이어지는 기존 경로를 그대로 타지 않는다. 대신:
+## Pose Control Bridge (커서·클릭·스크롤)
 
-```
-Gaze Lock == laptop (게이트)
-→ Hand Landmark Pipeline의 손 위치를 그대로 사용
-→ 커서 좌표로 매핑
-→ Windows Adapter로 직접 전달 (Intent·Command 미경유)
-```
+마우스 커서 조작은 이산적인 1회성 명령이 아니라 손 모양을 매 프레임 판정해 연속으로 반영하는 동작이라, Intent·Command·dedup 경로를 타지 않는다. `PoseControlBridge`가 `InputSink`(Win32 `user32` / macOS Quartz)를 **직접** 호출하며 `WindowsAdapter`를 경유하지 않는다.
 
-Gaze Lock은 게이트로만 남아있다 — 노트북을 보고 있지 않으면 손을 움직여도 커서가 반응하지 않는다. Target Lock이 풀리는 즉시(예: 시선이 다른 기기로 이동) 이 분기도 즉시 종료되어야 하며, Intent Commit 같은 TTL·중복 방지 로직은 적용되지 않는다(연속 스트림이므로 "중복 실행"이라는 개념 자체가 없다).
-
-### 커서 모드 ↔ 제스처 모드 분기
-
-노트북 Lock 상태에서는 같은 손 스트림이 커서 조작과 이산 제스처 양쪽에 쓰일 수 있으므로 다음 규칙으로 분기한다.
+억제 규칙은 "노트북을 볼 때만 켠다"가 아니라 **"노트북이 아닌 기기에 lock됐을 때만 끈다"**는 반대 방향의 게이트다.
 
 ```
-기본 상태: 커서 모드 (손 위치 → 커서 좌표)
-→ Gesture Spotter가 ONSET 감지: 커서 스트림 일시정지, 제스처 판정 우선
-→ 제스처 완료(ENDING → commit): 이산 명령 실행 후 커서 모드 복귀
-→ 제스처 불성립(IDLE 복귀): 즉시 커서 모드 복귀
+기본: 커서 제어 활성 (아무것도 lock되지 않아도 동작)
+→ 노트북이 아닌 기기(전구)에 Target Lock: 커서 등 정적 pose 억제
+   (전구를 보며 손을 움직일 때 커서가 따라가지 않도록) —
+   단 좌우 스와이프만은 전구 밝기로 라우팅(_route_bulb_swipe, 2026-07-22)
+→ 시연 탭 + 노트북 맥락: 정적 pose 제어를 전부 실행(스크롤·볼륨·데스크톱·커서·클릭)
+   (노트북 제어를 전부 정적으로 통일해 이중 실행 위험이 없어짐, 2026-07-22)
+→ "손동작으로 컴퓨터 제어" 토글 OFF: 커서·클릭 정지
+   + 노트북 대상 Intent 명령도 함께 차단(2026-07-22)
 ```
 
-별도의 모드 전환 동작 없이 자연스럽게 이어지는 대신, 제스처 시작 순간 커서가 미세하게 끌릴 수 있는 것은 감수한다(2026-07-18 결정, [decisions.md](documents/decisions.md)).
+즉 시선이 어디에도 lock되지 않은 상태에서는 커서가 그대로 살아 있다. Target Lock은 "노트북일 때만 허용하는 양성 게이트"가 아니라 "다른 기기를 볼 때 비켜주는 음성 게이트"로 구현돼 있다.
+
+지원 동작: 커서 이동(`index_point`), 클릭·드래그·더블클릭(`pinch_index`, 마우스 down/up), 우클릭(`pinch_middle`), 스크롤(`two_fingers` 수직), 좌우 스와이프로 가상 데스크톱 전환(`two_fingers` 좌우 전이), 탭 닫기(`middle_point`, dwell 500ms), 주먹→보 전이로 Task View(Windows)·Mission Control(macOS), 검지 회전으로 볼륨, OK 사인으로 재생/일시정지. 상세는 아래 8장 "정적 손 자세 파이프라인 — 컴퓨터 제어" 및 [gesture-fusion.md](documents/gesture-fusion.md) 참조.
 
 ---
 
@@ -492,50 +493,111 @@ confirmed_unknown_timeout_ms: 2000
 
 끊기지 않는 웹캠 영상에서 사전에 정의된 동적 제스처의 시작과 종료를 실시간으로 찾는다.
 
-## 지원 제스처
+## 지원 제스처 (2026-07-22 기준)
 
-- Swipe Up
-- Swipe Down
-- Swipe Left
-- Swipe Right
-- Rotate Clockwise
-- Rotate Counter-clockwise
-- Pinch 또는 주먹은 확장 기능
+학습 라벨은 **10개**이고, 그중 **7개가 실제 명령을 유발**한다. 나머지 3개는 배경 클래스다.
+
+| 라벨 | 분류 | 비고 |
+| --- | --- | --- |
+| `slide_two_fingers_up` / `down` / `left` / `right` | 전경 (4) | 두 손가락 슬라이드 |
+| `rotate_clockwise` / `rotate_counter_clockwise` | 전경 (2) | 손목 회전 |
+| `stop_sign` | 전경 (1) | 활짝 편 손바닥 정적 포즈 |
+| `none` | 배경 | index 0 고정(계약) |
+| `drumming_fingers` | 배경 | 손가락 두드림 |
+| `doing_other_things` | 배경 | Jester "Doing other things" |
+
+기획 초기의 `swipe_*` 4종은 **`slide_two_fingers_*`로 대체**됐다(2026-07-20). Pinch·주먹은 이 동적 제스처 집합이 아니라 아래 정적 자세 파이프라인에 있다.
+
+**배경은 학습에서 나누고, 판정에서 합친다.** 가만히 있는 손·손가락 두드림·기타 동작은 물리적으로 다른 신호라 각각 배우게 하는 편이 특징이 깨끗해진다(보조 과제 효과). 대신 실행 판정 시에는 세 배경 확률을 합산해 최고 전경 확률과 비교하므로, **런타임 결정은 8클래스 기준**이다. 배경이 이기면 항상 `none`으로 보고한다. 이 구조 덕에 배경 동작 하나를 진짜 제스처로 승격할 때 집합에서 빼기만 하면 되고 **재학습이 필요 없다**.
 
 ## 처리 과정
 
 ```
-MediaPipe Hand Landmark
-→ 손목 기준 좌표 정규화
-→ 손바닥 크기 정규화
-→ 속도·관절 각도 생성
-→ Causal TCN/GRU
-→ Gesture·Phase 출력
+MediaPipe Hand Landmark (30fps)
+→ 12fps로 프레임 솎기 (학습 cadence 정합)
+→ 손목 기준 좌표 정규화 + 손바닥 크기 정규화 (x·y 2D만)
+→ One-Euro 평활화 3단 (랜드마크 / 손목 평행이동 / palm_scale)
+→ 위치·관절각·속도·손목 평행이동 속도·가속도 조립 (102차원)
+→ Causal TCN (최근 15프레임 윈도우)
+→ Gesture(10) · Phase(4) 출력
+→ 배경 확률 합산 → 8클래스 판정
+→ Gesture Spotter 상태 머신 → 단일 이벤트
 ```
+
+**12fps 정합**: Jester 사전학습이 12fps라서 TCN의 고정 receptive field(프레임 수)가 그 cadence에서 특정 실시간 길이를 덮도록 학습됐다. 웹캠 30fps를 그대로 넣으면 속도 feature와 시야 길이가 함께 어긋나므로, 실시간 추론도 `FrameRateLimiter`로 12fps로 솎아 넣는다.
+
+**좌표는 2D(x·y)만 쓴다** — MediaPipe z는 단안 웹캠 추정값이라 노이즈가 크다. 대신 손 기울기 각도만 z에서 뽑아 정적 자세의 신뢰 게이트로만 쓴다.
+
+**손목 평행이동 항이 별도로 있는 이유**: 손목 기준 정규화는 손목을 매 프레임 (0,0)으로 옮기므로, 손 모양이 그대로인 채 평행이동만 하면 21개 랜드마크의 위치·속도가 이론상 전부 0이 된다 — 슬라이드 상하좌우를 구분할 신호가 사라진다. 그래서 손목 좌표를 원점화 없이 palm_scale로만 정규화한 값을 따로 미분해 넣는다. 위치가 아니라 속도·가속도만 넣어 "화면 어디에 있는가"에 과적합하지 않게 한다.
+
+**feature 102차원** = 위치 42(21×2) + 관절각 14 + 속도 42 + 손목 평행이동 속도·가속도 4.
+
+## 모델 구조
+
+`Causal TCN` 단일 구현이다. dilated causal 1D conv 블록 3개(`channels=(32,32,32)`, `kernel_size=3`, `dropout=0.2`), 각 블록은 같은 dilation의 conv 2개 + residual. gesture head(10) · phase head(4) 두 갈래.
+
+- **receptive field = 29프레임** (≈2.42초 @12fps)
+- **실제 추론 윈도우 = 15프레임** — 실측(2026-07-22) 웹캠 전경 제스처가 중앙값 11프레임(0.92초), p90 15프레임이라 29프레임 창은 62%가 이전 동작·배경이었다. 창을 15로 줄이자 제스처 간 잔상 오염이 19.2%→10.4%로 줄고 인식률은 사실상 동일했다. 재학습 없이 조절 가능한 런타임 값이다.
+- BatchNorm을 쓰지 않는다 — 학습 모드에서 시간축으로 정규화하면 미래 프레임이 현재로 새어 인과성이 깨지는데, 평가 모드 테스트로는 잡히지 않는다.
+
+`GestureModel` Protocol로 감싸 두어 torch 없이도 나머지 파이프라인을 테스트할 수 있고, 나중에 다른 아키텍처나 원격 추론 서버로 교체할 수 있다.
 
 ## 모델 출력
 
 ```
-Gesture:
-swipe_down 0.92
-
-Phase:
-ENDING 0.88
-
-Uncertainty:
-0.07
+Gesture:        slide_two_fingers_down 0.92   (배경 합산 후 8클래스 기준)
+Phase:          ACTIVE                        (상태 머신 상태)
+Uncertainty:    0.07                          (합산 분포의 정규화 엔트로피)
 ```
 
-Phase 종류:
+Phase 종류: `IDLE` · `ONSET` · `ACTIVE` · `ENDING`
+
+## Gesture Spotter — 이벤트 확정
+
+제스처가 여러 프레임에서 검출되더라도 상태 머신으로 하나의 이벤트를 만든다. `ENDING`은 제스처당 정확히 한 프레임만 방출하고 즉시 `IDLE`로 리셋한다.
+
+**중요(2026-07-21 변경): lifecycle은 phase head가 아니라 gesture 활성 신호로 구동한다.** 학습된 phase head가 `ONSET`을 **실측 0%(0/1432 프레임)** 예측했기 때문이다 — ONSET 라벨(클립 앞 15%)이 스트리밍 윈도우의 0-패딩 시작부와 구분되지 않는다. 이전의 phase 기반 전이는 `IDLE→ONSET`이 영영 일어나지 않아 **모든 동적 제스처의 이벤트가 0개**였다(raw 분류 자체는 정상이었다).
+
+현재 규칙 — "활성"은 `비배경 라벨 AND gesture_confidence ≥ 0.5`:
 
 ```
-IDLE
-ONSET
-ACTIVE
-ENDING
+IDLE   --활성 2프레임 연속-->        ONSET   (이 프레임의 라벨을 이벤트 내내 lock)
+ONSET  --활성 지속-->               ACTIVE
+ONSET  --비활성-->                  IDLE    (불성립, lock 해제)
+ACTIVE --비활성 1프레임-->           ENDING  (방출 후 즉시 IDLE)
 ```
 
-제스처가 여러 프레임에서 검출되더라도 `ENDING`과 상태 머신을 이용해 하나의 이벤트로 만든다.
+진입은 2프레임(≈167ms)으로 느리게, 이탈은 1프레임(≈83ms)으로 빠르게 잡는 비대칭 구조다. `ENDING`은 "제스처가 완결됐다"가 아니라 **"더 이상 감지되지 않는다"**를 뜻한다. 추적 손실 시에는 진행 중이던 제스처를 즉시 포기한다.
+
+## 정적 손 자세 파이프라인 — 컴퓨터 제어 (별개 경계)
+
+노트북(컴퓨터) 제어 — 커서·클릭·드래그·스크롤·좌우 스와이프·볼륨·탭 닫기·미션컨트롤·재생/일시정지 — 는 **단일 프레임의 손 모양**으로 판정하는 별도 파이프라인이다. 위 동적 TCN과 코드를 공유하지 않으며, 컴퓨터 제어는 전적으로 이 정적 경로가 담당한다(동적 TCN은 전구 전용). MLP 분류기는 시작점일 뿐이고, 실제 조작감은 그 뒤에 얹은 **상태기계·기하 게이트·평활·포인터 가속** 같은 장치들이 만든다.
+
+### 인식 — 9-class MLP 분류기
+- **9-class MLP**: `index_point` · `middle_point` · `pinch_index` · `pinch_middle` · `two_fingers` · `open_palm` · `fist` · `ok` · `none`
+- **입력 52차원** = 정규화 좌표 42 + 손끝 쌍거리 10. 좌표만 주면 작은 MLP가 손끝 사이 *관계*를 못 뽑는다(쌍거리 추가로 전체 82.6%→92.3%)
+- **`none` 배경 클래스**가 필수 — 소프트맥스는 반드시 한 클래스를 고르므로, 없으면 손이 보이기만 해도 명령이 나간다
+- **손 기울기 게이트**: 손바닥을 카메라 쪽으로 눕히면 2D에서 자세 정보가 실제로 소실된다(0~10° 정확도 90.8% → 30° 초과 37.0%). 자세별 허용 각도를 두고 분류 뒤에 신뢰 여부를 판정한다
+
+### 판정 → 동작 — 상태기계와 게이트가 만드는 조작감
+분류기의 한 프레임 라벨만으로는 동작이 정해지지 않는다(같은 핀치라도 짧으면 클릭, 길면 드래그). `pose_state.PoseStateMachine`이 시간 구조와 여러 게이트를 얹어 실제 OS 입력으로 바꾼다. 임계는 대부분 **시간**이라 투영(손 각도·거리)에 흔들리지 않는다 — 이 프로젝트에서 반복 실패한 것은 기하학적 임계(손 각도에 8.85배까지 요동)였다.
+
+- **진입 느리게·이탈 빠르게**: 자세가 dwell만큼 유지돼야 상태 진입(전이 프레임 차단), `none`이 몇 프레임 들어와도 관용(분류기 놓침 실측 15.4%가 조작 중단으로 이어지지 않게).
+- **커서 이동 = 마우스식 상대 이동 + 포인터 가속**: 손 이동 델타에 이득(gain)을 곱하되 속도가 빠를수록 이득을 키워 정밀 조작과 빠른 이동을 양립시킨다. 델타는 **절대 픽셀**이라 해상도에 무관하고, 검출 튐이 커서를 순간이동시키지 않게 프레임당 이동을 상한(`max_step`)한다. 정지 시 손떨림은 데드존 + **soft deadzone**(경계에서 0부터 연속으로 살아남)으로 죽인다.
+
+  ![커서 포인터 가속 곡선](assets/cursor_speed_curve.png)
+
+  *손 속도(palm_scale/초) → 프레임당 커서 이동(px)의 실제 전달 함수. 데드존(v<0.21)에서 0, 이후 포인터 가속으로 상승, `max_step` 220px에서 포화. `base_gain`=480 · `accel`=1.4 · `max_accel`=4 @30fps.*
+
+- **클릭/드래그·더블클릭 = 마우스 down/up 모델**: 핀치 진입=버튼 down, 릴리즈=up — 짧게 쥐면 클릭, 길게 쥐고 이동하면 드래그로 OS가 자연히 가른다(유지시간 분기 불필요). 빠른 두 번 핀치는 2번째 down/up에 `clickState`=2를 실어 macOS가 더블클릭으로 합친다(단일 클릭 두 번만으론 macOS가 더블클릭을 인식 안 함).
+- **스크롤 = 가리키는 방향**: 손 *이동*이 아니라 두 손가락 MCP→끝 벡터라 손을 멈춰도 유지된다. 수직성 게이트(`MIN_VERTICALITY`=cos20°) 이내면 위/아래 스크롤, 그 밖은 좌/우로 넘긴다(스크롤·스와이프 공용 기준).
+- **좌우 스와이프 = 데스크톱 전환/밝기**: two_fingers가 가리키는 수평 방향의 부호가 반대로 넘어가면 1회 발화(`_track_swipe`). 불안정하던 동적 slide 인식을 정적 전이로 대체한 것(실측 좌우 대칭 발화 확인). 노트북=가상 데스크톱 전환, 전구=밝기(gaze-lock 시 라우팅).
+- **검지 회전 = 볼륨**: 검지 MCP→끝 방향의 누적 각도를 재고, **워밍업 게이트**(약 3/4바퀴)를 넘어야 볼륨이 시작돼 일상 동작의 작은 회전이 갑자기 볼륨을 바꾸지 않는다. 회전 감지 시 `ROT_HOLD_MS` 동안 **볼륨 노브 모드**로 다른 동작(클릭·드래그·커서·스크롤)을 차단.
+- **직진도(straightness) 게이트**: 손가락 폄 정도를 MCP→끝 직선거리 / 관절 세그먼트 합으로 잰다(1.0=곧음, 스케일·거리·기울기 불변). 애매하게 굽힌 검지의 커서 오진입, 주먹 쥘 때 손끝이 아래로 스윙해 튀는 역방향 스크롤을 막는다 — 거리 지표(`MIN_FINGER_EXTENSION`)보다 강건.
+- **One-Euro 평활**: 모델 입력 좌표·웹캠 오버레이·커서 speed 분모에 각각 적용(좌표계가 달라 파라미터 분리)해 지터를 줄인다.
+- **그 외 포즈 동작**: 손 펴기(fist→open_palm 전이)=Mission Control(macOS)·Task View(Windows), 중지(`middle_point`)=탭 닫기(파괴적이라 dwell 500ms), OK 사인(`ok`)=재생/일시정지.
+
+상세는 [gesture-fusion.md](documents/gesture-fusion.md) 참조.
 
 ---
 
@@ -552,22 +614,31 @@ IDLE
 → TARGET_CANDIDATE
 → TARGET_LOCKED
 → GESTURE_TRACKING
-→ INTENT_CANDIDATE
-→ COMMITTED
+→ (INTENT_CANDIDATE → COMMITTED)
 → COOLDOWN
 ```
 
+괄호 안 두 상태는 `ENDING` 처리 한 번 안에서 동기적으로 지나가는 **순간 상태**라 외부에서 관측되지 않는다 — `CommitDecision`으로만 드러난다.
+
 ## Commit 조건
 
-다음 조건을 모두 만족해야 한다.
+기획상의 7개 조건은 코드에서 다음 순서의 게이트로 구현돼 있다. 조건 6(시간 관계 유효)은 별도 검사가 아니라 **조건 2·3의 결합으로 자연히 충족**된다.
 
-1. 등록된 기기 하나가 Lock됨
-2. Target Lock 이후 제스처가 시작됨
-3. Target Lock TTL 안에 제스처가 완료됨
-4. Target confidence 기준 충족
-5. Gesture confidence 기준 충족
-6. 시선과 제스처의 시간 관계가 유효함
-7. 동일 이벤트가 이전에 실행되지 않음
+| # | 게이트 | 차단 사유 문자열 |
+| --- | --- | --- |
+| — | 조기 발사로 이미 실행됨 | `already dispatched early` |
+| — | 쿨다운 중 | `cooldown active` |
+| 1 | 등록 기기 Lock 없음 | `target not locked` |
+| 2 | Lock보다 제스처가 먼저 시작 | `gesture started before target lock` |
+| 3 | Lock TTL 만료 후 완료 | `gesture completed after target lock ttl` |
+| 4 | Target confidence 하한 미달 | `target confidence below minimum` |
+| 5 | Gesture confidence 하한 미달 | `gesture confidence below minimum` |
+| — | 결합 점수 미달 | `fusion score below commit threshold` |
+| 7 | 같은 프레임이 이미 커밋됨 | `duplicate event (frame already committed)` |
+
+앞의 두 게이트(조기 발사·쿨다운)는 기획서에 없던 실행 단계 보호 장치다. 중복 방지(조건 7)는 목록상 마지막이 아니라 **실제로도 마지막**에 검사한다.
+
+기본 임계값(`FusionConfig`): `commit_threshold=0.5`, `min_target_confidence=0.80`, `min_gesture_confidence=0.80`, `cooldown_ms=500`, dwell `3000ms`, TTL `1500ms`, margin `0.20`.
 
 ## 결합 점수
 
@@ -575,13 +646,13 @@ IDLE
 S = P(target) × P(gesture) × gaze_stability × (1 − uncertainty)
 ```
 
-```python
-if (target_locked
-    and gesture_ended
-    and fusion_score >= commit_threshold
-    and not already_committed):
-    commit_intent()
-```
+`uncertainty`는 배경 합산 후 8클래스 분포의 정규화 엔트로피다 — `P(gesture)`와 **같은 분포에서 나오므로** 확신도가 낮으면 두 항이 함께 작아진다. 즉 개별 confidence 하한을 낮춰도 이 곱이 다시 막을 수 있어, 두 값을 함께 조정해야 한다.
+
+## 조기 발사 (early dispatch)
+
+`ENDING`("더 이상 감지되지 않음")을 기다리면 동작을 멈추고 분류기가 알아챌 때까지의 대기가 그대로 체감 지연이 된다. 그래서 `ACTIVE`가 같은 라벨로 N프레임 지속되면 기다리지 않고 실행하는 경로가 있다.
+
+**기본값은 꺼져 있고**(`early_dispatch_frames=0`), 시연 "느슨" 프리셋에서만 켠다(3프레임 ≈250ms, 확신도 ≥0.50). 되돌릴 수 있는 상대 연산(회전 2종·슬라이드 4종)에만 허용하며, 멱등이 아닌 `stop_sign`(전원 toggle)은 제외한다 — 조기 발사가 틀리면 불이 꺼지고 뒤이은 `ENDING`까지 겹쳐 깜빡이기 때문이다.
 
 ## Intent 예시
 
@@ -589,15 +660,17 @@ if (target_locked
 {
   "intent_id":"intent-1042",
   "target":"room.bulb",
-  "gesture":"swipe_down",
+  "gesture":"slide_two_fingers_down",
   "capability":"brightness",
   "operation":"decrement",
-  "value":1,
+  "value":30,
   "target_confidence":0.87,
   "gesture_confidence":0.92,
   "expires_in_ms":1000
 }
 ```
+
+`value`는 capability의 `step` 격자에 맞아야 한다 — 전구 brightness는 `step=10`이라 30은 유효하지만 1은 `INVALID_VALUE`로 거부된다.
 
 ---
 
@@ -605,37 +678,63 @@ if (target_locked
 
 ## Device Capability Model
 
-전자기기를 제조사 이름이 아니라 지원 기능으로 표현한다.
+전자기기를 제조사 이름이 아니라 지원 기능으로 표현한다. 현재 등록된 기기는 두 개다.
 
 ```
 {
   "device_id":"room.bulb",
-  "adapter":"smartthings",
+  "adapter":"wiz",
   "capabilities": {
-    "power": {
-      "type":"boolean"
-    },
-    "brightness": {
-      "type":"number",
-      "min":0,
-      "max":100,
-      "step":10
-    },
-    "color_temperature": {
-      "type":"number",
-      "min":2700,
-      "max":6500,
-      "step":100
-    }
+    "power":            { "type":"boolean" },
+    "brightness":       { "type":"number", "min":10,   "max":100,  "step":10  },
+    "color_temperature":{ "type":"number", "min":2700, "max":6500, "step":100 },
+    "color":            { "type":"number", "min":0,    "max":360,  "step":30,
+                          "operations":["increment","decrement"] }
   }
 }
 ```
 
+```
+{
+  "device_id":"laptop",
+  "adapter":"windows",
+  "capabilities": {
+    "scroll":         { "type":"number", "min":0, "max":100, "step":1,
+                        "operations":["increment","decrement"] },
+    "volume":         { "type":"number", "min":0, "max":100, "step":1,
+                        "operations":["increment","decrement"] },
+    "desktop_switch": { "type":"number", "min":0, "max":100, "step":1,
+                        "operations":["increment","decrement"] }
+  }
+}
+```
+
+노트북의 세 capability는 절대 상태가 없는 **상대 연산 전용**이라 `set`을 지원하지 않는다. 전구 `brightness`의 최솟값이 0이 아니라 10인 것은 기기 자체의 `minDimLevel`이다. `color`는 순환값이라 범위를 벗어나면 clamp가 아니라 360으로 wrap한다.
+
+`desktop_switch`는 원래 `window_switch`(Alt+Tab)였으나 2026-07-22에 가상 데스크톱 전환으로 바뀌었다 — 좌우 슬라이드의 공간적 은유에 맞추기 위해서다. 이후 트리거를 동적 slide 제스처에서 **정적 two_fingers 좌우 스와이프**로 갈아끼워, 노트북 제어는 전부 정적 pose 경로가 담당한다(2026-07-22).
+
+## 제스처 → capability 매핑
+
+코드가 아니라 [`configs/gesture_capability_map.json`](configs/gesture_capability_map.json)이 정의한다. 새 제스처·기기는 이 파일만 고치면 된다.
+
+| 제스처 | `laptop` | `room.bulb` |
+| --- | --- | --- |
+| `slide_two_fingers_up` | — (정적) | brightness +30 |
+| `slide_two_fingers_down` | — (정적) | brightness −30 |
+| `slide_two_fingers_left` | — (정적) | brightness −30 |
+| `slide_two_fingers_right` | — (정적) | brightness +30 |
+| `rotate_clockwise` | — (정적) | color +60 |
+| `rotate_counter_clockwise` | — (정적) | color −60 |
+| `stop_sign` | — | power toggle |
+
+**노트북 전면 정적화(2026-07-22)**: 노트북(컴퓨터) 제어는 전부 정적 pose 경로로 옮겨져 `laptop` 매핑이 모두 제거됐다(config에서 `"laptop": {}`). 스크롤(two_fingers 수직)·볼륨(검지 회전)·데스크톱 전환·좌우(two_fingers 좌우 스와이프)·커서·클릭 모두 `pose_state`→`pose_control`이 OS 입력으로 직접 처리한다. 그래서 위 **동적 capability 표는 이제 전구(room.bulb) 전용**이다. 다만 전구의 **좌우 슬라이드(밝기)는 정적 좌우 스와이프**가 트리거해 이 매핑(slide_left/right→brightness)을 재사용한다(gaze-lock 시 결정 합성, `_route_bulb_swipe`) — up/down·rotate·stop_sign만 TCN이 직접 발화한다.
+
+같은 제스처가 기기에 따라 다르게 해석되는 설계는 유효하나, 현 구성에서 동적 경로는 전구만 구동한다. 배경 라벨(`none`·`drumming_fingers`·`doing_other_things`)은 "동작 없음"이 곧 의도이므로 매핑하지 않는다.
+
 ## 명령 상태
 
 ```
-CREATED
-→ VALIDATED
+VALIDATED
 → DISPATCHED
 → ACKNOWLEDGED
 → VERIFIED
@@ -644,27 +743,29 @@ CREATED
 실패 상태:
 
 ```
-REJECTED
+REJECTED     (VALIDATED에서 바로 갈 수 있다 — 미등록 기기 등)
 EXPIRED
 FAILED
 UNVERIFIED
 ```
 
-실제 상태 확인이 어려운 기기(예: 확장 방향의 IR 기기)는 `UNVERIFIED`로 구분한다.
+수명주기는 `VALIDATED`에서 시작한다 — 검증을 통과한 명령만 원장에 등록되므로 `CREATED` 같은 선행 상태는 두지 않는다. 실제 상태 확인이 어려운 기기(예: 확장 방향의 IR 기기)는 `UNVERIFIED`로 구분한다. WiZ는 `getPilot` 읽기가 일치할 때만 `VERIFIED`를 주고, 노트북 입력은 확인 수단이 없어 항상 `ACKNOWLEDGED`에서 멈춘다.
 
 ## 중복 실행 방지
 
-모든 명령에 고유 ID를 부여한다.
+ID는 프레임에서 결정적으로 파생된다 — 재전송·재생이 같은 ID로 수렴해야 중복이 걸린다.
 
 ```
-{
-  "command_id":"command-3901",
-  "intent_id":"intent-1042",
-  "expires_at":1939401300
-}
+frame_id 1042
+→ intent_id  "intent-1042"      (Fusion 계층)
+→ command_id "cmd-intent-1042"  (Protocol 계층)
 ```
 
-동일한 `command_id`는 두 번 실행하지 않는다.
+방어선은 세 겹이다.
+
+1. **Fusion**: 이미 커밋한 `frame_id`를 bounded LRU(256개)로 기억
+2. **Protocol 원장**: 같은 `command_id` 재등록 시 `DuplicateCommandError` → `REJECTED/DUPLICATE`. 별도 조회 없이 등록 자체를 단일 원자 지점으로 두어 TOCTOU 경합을 막는다
+3. **Dispatch**: 상태가 `VALIDATED`가 아니면 어댑터를 다시 건드리지 않는다
 
 ---
 
@@ -672,10 +773,17 @@ UNVERIFIED
 
 MVP에서 실제로 연결하는 기기는 다음 두 가지다.
 
-| 대상 | 연결 방식 | 추가 장치 |
-| --- | --- | --- |
-| Windows 노트북 | Win32 API | 없음 |
-| 스마트싱스 전구 | SmartThings API | 제품에 따라 Hub |
+| 대상 | 연결 방식 | 추가 장치 | 설정 |
+| --- | --- | --- | --- |
+| 노트북 (Windows) | `user32` (ctypes) + 가상 데스크톱 조회용 `winreg` | 없음 | 없음 |
+| 노트북 (macOS) | Quartz `CGEvent` + AppKit `NSEvent`(미디어 키) + `osascript`/System Events(Space 전환) | 없음 | 손쉬운 사용·자동화 권한 |
+| Philips WiZ 전구 | **로컬 UDP 38899, JSON-RPC `setPilot`/`getPilot`** | 없음 (같은 Wi-Fi) | `WIZ_DEVICE_TARGETS` |
+
+전구는 **클라우드도 허브도 토큰도 필요 없다**. 같은 LAN이면 UDP로 직접 제어하고, `getPilot` 읽기가 지시값과 일치할 때만 `VERIFIED`로 보고한다. 주소는 `IP` · `MAC` · `MAC@IP` 세 형식을 받으며 `MAC@IP`를 권장한다(IP가 바뀌어도 MAC으로 재탐색). `WIZ_DEVICE_TARGETS`가 없으면 네트워크를 건드리지 않고 `UNCONFIGURED`로 정직하게 실패한다.
+
+SmartThings adapter(`SMARTTHINGS_TOKEN`·`SMARTTHINGS_DEVICE_TARGETS`)는 같은 `DeviceAdapter` 계약으로 코드에 남아 있으나 현재 어떤 기기 프로파일도 참조하지 않아 **배선되어 있지 않다**.
+
+macOS Space 전환만 `osascript`를 쓰는 이유: 우리 프로세스가 직접 만든 합성 키(CGEvent)는 커서·물리 키는 되는데 Space 전환만 WindowServer가 무시했고, SkyLight로 공간을 직접 바꾸면 창↔Space 소속이 꼬였다. Apple 자체 프로세스인 System Events가 보낸 키만 진짜 Ctrl+화살표로 인정된다.
 
 확장 방향의 기기는 다음과 같이 연결할 수 있다.
 
@@ -690,7 +798,98 @@ MVP에서 실제로 연결하는 기기는 다음 두 가지다.
 
 ---
 
-# 12. 3인 역할 분담
+# 12. 개발·디버깅 도구
+
+## 실시간 모니터 (`jarvis-monitor`)
+
+파이프라인 전 단계를 눈으로 확인하는 PySide6 데스크탑 앱이다. 카메라 한 대에서 gaze·hand를 함께 돌리고, 각 단계의 중간 산출물을 그대로 보여준다.
+
+| 탭 | 용도 |
+| --- | --- |
+| 실시간 | 웹캠 + 손 스켈레톤 + 인식 스트림(12fps) + 시선 샘플·물체 등록 |
+| 시선 인식 | 라벨된 진단 세션 녹화·분석(F9, 정답 키 `0`~`9`) |
+| Gaze 파이프라인 | gaze 벡터·source(`head+iris`/`held`/`head-only`/…) |
+| 손 추적 | 손목 이동 속도·가속도 벡터, 평활화 on/off |
+| 파이프라인 | 모듈별 가용성과 모듈 간 메시지 계약 |
+| 지연·어댑터 | 단계별 지연, 어댑터 준비 상태 |
+| 파인튜닝 | 웹캠 클립 녹화(스페이스바로 시작·종료) |
+| 시연 | Fusion 판정·차단 사유·기기 명령 실행 |
+
+```bash
+pip install -e ".[vision,ml,ui]"
+python -m jarvis.monitoring.cli          # 저장소 루트에서 실행
+```
+
+**저장소 루트에서 `python -m`으로 실행해야 한다.** `training/`은 런타임 패키지(`src/jarvis`) 밖에 있어 설치 대상이 아니므로, 콘솔 스크립트(`jarvis-monitor`)로 실행하면 파인튜닝 녹화 탭이 "training 패키지를 불러올 수 없습니다"로 비활성화된다. 이는 런타임 배포를 가볍게 유지하려는 의도적 경계다.
+
+## 정직성 원칙
+
+모든 프로브는 **가짜 결과를 지어내지 않는다**. mediapipe·torch·모델 파일이 없거나 체크포인트가 미학습(`trained=false`)이면 인식을 켜지 않고 그 사유를 화면에 남긴다. 시연 탭도 판정과 실행을 분리해, 실행을 끈 채로 판정만 관찰할 수 있다. 가상 전구 표시는 **명령 기준**이지 실물 응답이 아니며, 실물 성공 여부는 `ExecutionOutcome` 배지로 따로 보여준다.
+
+## Gaze 세션 분석 CLI
+
+```bash
+jarvis-gaze report data/diagnostics/session_*.jsonl
+```
+
+세션 파일에는 숫자 feature만 저장하고 이미지 프레임은 저장하지 않는다.
+
+## 테스트
+
+```bash
+pip install -e ".[dev]"
+pytest            # 1,000개 이상, torch·PySide6 없으면 해당 테스트만 skip
+```
+
+---
+
+# 13. 제스처 학습 파이프라인
+
+동적 제스처 분류기(Causal TCN)는 오프라인으로 학습한다. `training/`은 `src/jarvis` **밖**의 최상위 디렉토리다 — 런타임 배포에 학습 의존성(torch·pandas·tensorboard)이 딸려가지 않게 하려는 분리다.
+
+## 2단계 학습
+
+```
+1) Jester 사전학습    공개 데이터셋(12fps) → models/gesture_tcn_jester.pt
+2) 웹캠 파인튜닝      팀원이 직접 녹화한 클립 → models/gesture_tcn_finetuned.pt
+```
+
+Jester는 12fps·타인의 손·다른 카메라 조건이라 그대로는 실사용과 어긋난다. 파인튜닝 단계가 그 도메인 갭을 메운다. 웹캠 클립은 저장 직전 12fps로 리샘플해 사전학습 cadence와 맞춘다.
+
+```bash
+pip install -e ".[training]"
+python -m training.extract.extract_jester --jester-dir /data/20bn-jester-v1 --workers 8
+python -m training.train --stage pretrain
+python -m training.record_webcam_clips --person-id me-s1     # 또는 모니터 파인튜닝 탭
+python -m training.train --stage finetune --init-from models/gesture_tcn_jester.pt
+python -m training.evaluate --checkpoint models/gesture_tcn_finetuned.pt --data-root training/cache/...
+```
+
+## 캐시 설계 — 무엇이 구워지고 무엇이 재계산되나
+
+캐시(`.npz`)에는 `normalize_hand`까지 적용한 **평활화 전** 관측값만 담는다. One-Euro 평활화·속도·관절각 같은 feature 조립은 학습이 캐시를 읽을 때마다 다시 계산한다. 덕분에 평활 파라미터나 feature 그룹을 바꿔도 **몇 시간짜리 MediaPipe 배치를 다시 돌릴 필요가 없다**. 단 `LANDMARK_DIMS`·원점·palm_scale 기준처럼 좌표계 자체를 바꾸는 변경은 캐시에 이미 구워진 값을 바꾸는 것이라 재추출이 필요하다.
+
+학습과 추론이 **같은 전처리 코드**를 타므로 모델 재현성이 자동으로 보장된다.
+
+## Augmentation
+
+- **좌우반전: 꺼짐**(`flip_probability=0.0`). 슬라이드에는 기하학적으로 정확하지만 회전에는 해롭다 — Jester "Turning Hand"는 팔뚝축 회전이라 2D 반전이 유효한 반대 회전을 만들지 못하는데 라벨만 바꿔 경계를 흐린다. A/B 실측: 끄면 회전 F1 +0.033/+0.031, 상호혼동 −12%, 전체 macro-F1 0.8196→0.8291
+- **시간축 속도 변형**: 같은 제스처를 다른 속도로 수행한 것처럼 리샘플
+
+## 현재 성능
+
+| 체크포인트 | val macro-F1 (배경 합산 8클래스) | 원본 10클래스 |
+| --- | ---: | ---: |
+| `gesture_tcn_jester.pt` (사전학습) | 0.8291 | 0.8497 |
+| `gesture_tcn_finetuned.pt` (활성) | **0.9200** | 0.8086 |
+
+**배경 합산 8클래스 값이 런타임 결정 규칙과 같은 기준**이므로 모델 선택에 쓰는 지표다.
+
+파인튜닝 검증은 클립 단위 무작위 split(pooled)이라 **같은 사람이 train·val 양쪽에 들어갈 수 있다** — 지표가 낙관적으로 편향된다. "고정 사용자 대상 데모"라는 목표에서만 유효하며 새 사용자 일반화를 주장하지 않는다. 사람 단위로 나누려면 `--train-persons`/`--val-persons`를 준다.
+
+---
+
+# 14. 3인 역할 분담
 
 ## 1인 — Gaze Targeting
 
@@ -708,13 +907,14 @@ MVP에서 실제로 연결하는 기기는 다음 두 가지다.
 
 - Hand landmark
 - 동적 gesture spotting
-- Causal TCN/GRU
+- Causal TCN
 - gesture phase
 - 시선·제스처 temporal alignment
 - fusion confidence
 - safe commit
 - duplicate intent 방지
 - hard-negative mining
+- 정적 손 자세 분류기·커서 제어
 
 ## 3인 — Runtime & Device Protocol
 
@@ -722,8 +922,9 @@ MVP에서 실제로 연결하는 기기는 다음 두 가지다.
 - timestamp 동기화
 - bounded queue
 - device capability model
-- Windows adapter
-- SmartThings adapter
+- Windows·macOS adapter
+- WiZ adapter (로컬 UDP)
+- SmartThings adapter (코드 유지)
 - 명령 timeout·ACK·deduplication
 - End-to-End latency 측정
 
@@ -731,7 +932,7 @@ MVP에서 실제로 연결하는 기기는 다음 두 가지다.
 
 ---
 
-# 13. 평가 지표
+# 15. 평가 지표
 
 ## 핵심 지표 1: Wrong Actuation Rate
 
@@ -765,10 +966,10 @@ Wrong Actuation Rate ≤ 1%
 
 ```
 노트북 p95 ≤ 150ms
-스마트싱스 전구 p95 ≤ 1000ms
+전구 p95 ≤ 1000ms
 ```
 
-전구는 SmartThings 클라우드 API를 경유하므로 노트북과 같은 기준을 적용할 수 없다. 대신 Intent Commit까지의 내부 지연(프레임 → Commit)은 두 기기 모두 150ms 기준을 공유하고, 이후 네트워크 구간만 분리해 측정한다.
+Intent Commit까지의 내부 지연(프레임 → Commit)은 두 기기가 150ms 기준을 공유하고, 이후 실행 구간만 분리해 측정한다. 전구를 로컬 UDP(WiZ)로 바꾸면서 클라우드 왕복이 사라져 실행 구간이 크게 짧아졌다 — 다만 `getPilot` 읽기 확인(`VERIFIED`)까지 포함하면 왕복이 한 번 더 들어간다. 1000ms 기준은 SmartThings 클라우드를 전제로 잡은 값이라 WiZ 기준으로는 여유가 크다.
 
 ## 필수 제약
 
@@ -780,7 +981,7 @@ Duplicate Actuation = 0
 
 ---
 
-# 14. Baseline
+# 16. Baseline
 
 | 방식 | 시선 | 손동작 | 시간적 결합 |
 | --- | --- | --- | --- |
@@ -802,14 +1003,16 @@ Ablation을 통해 다음 요소의 기여를 확인한다.
 
 ---
 
-# 15. 테스트 시나리오
+# 17. 테스트 시나리오
 
 ## 정상 명령
 
-- 노트북 응시 후 Swipe Down (스크롤)
-- 전구 응시 후 Swipe Down (밝기 감소)
-- 노트북 응시 후 Swipe Left (창 전환)
-- 전구 응시 후 Rotate (색온도 조절)
+- 노트북 응시 후 두 손가락 아래로 (정적 스크롤 — two_fingers 수직)
+- 전구 응시 후 두 손가락 아래 슬라이드 (밝기 감소 — TCN)
+- 노트북 응시 후 두 손가락 좌우 스와이프 (가상 데스크톱 전환 — 정적)
+- 전구 응시 후 두 손가락 좌우 스와이프 (밝기 — 정적, 2026-07-22)
+- 전구 응시 후 손목 회전 (색상 변경 — TCN)
+- 전구 응시 후 stop_sign (전원 toggle — TCN)
 
 ## 오작동 테스트
 
@@ -834,13 +1037,13 @@ Ablation을 통해 다음 요소의 기여를 확인한다.
 
 ---
 
-# 16. 개발 일정
+# 18. 개발 일정
 
 | 날짜 | Gaze | Gesture·Fusion | Runtime·Protocol |
 | --- | --- | --- | --- |
 | Day 1 | 얼굴·홍채 추적 | 손 추적 baseline | PC 명령 실행 |
-| Day 2 | 기기 calibration | Swipe 규칙 모델 | SmartThings 연결 |
-| Day 3 | Target classifier | Causal TCN/GRU | capability model |
+| Day 2 | 기기 calibration | 슬라이드 규칙 모델 | 전구 adapter 연결 |
+| Day 3 | Target classifier | Causal TCN | capability model |
 | Day 4 | Gaze Lock | temporal fusion | 전체 pipeline |
 | Day 5 | Unknown rejection | safe commit | timeout·dedup |
 | Day 6 | 환경 변화 평가 | hard-negative 평가 | latency·장애 테스트 |
@@ -848,39 +1051,42 @@ Ablation을 통해 다음 요소의 기여를 확인한다.
 
 ---
 
-# 17. 최종 산출물
+# 19. 최종 산출물
 
 - Gaze Targeting Engine
-- Continuous Gesture Spotter
+- Continuous Gesture Spotter (Causal TCN) + 정적 손 자세 분류기
 - Multimodal Intent Fusion Engine
 - JARVIS Control Protocol
-- Windows Adapter
-- SmartThings Adapter
+- Windows·macOS Adapter
+- WiZ Adapter (로컬 UDP) · SmartThings Adapter (코드 유지)
 - Calibration Tool
 - Trace Replay·Benchmark Tool
 - Baseline 및 Ablation 결과
-- 최소 모니터링 화면
+- 실시간 모니터링·디버깅 데스크탑 앱 (8개 탭)
+- 제스처 학습 파이프라인 (Jester 사전학습 → 웹캠 파인튜닝)
 
 ---
 
-# 18. 최종 시연 구성
+# 20. 최종 시연 구성
 
 1. 노트북·전구 위치 등록
 2. 전구를 바라보며 Target Lock
-3. Swipe Down으로 전구 밝기 감소
+3. 두 손가락 아래 슬라이드로 전구 밝기 감소
 4. 노트북을 바라보며 같은 제스처 수행
 5. 노트북 페이지 스크롤
 6. 아무 기기도 보지 않고 제스처 수행
-7. 명령 실행되지 않음
+7. 명령 실행되지 않음 (차단 사유가 화면에 그대로 표시됨)
 8. 전구를 보면서 물을 마심
 9. 명령 실행되지 않음
 10. 네트워크 지연·중복 패킷 주입
 11. 오래되거나 중복된 명령 차단
 12. Wrong Actuation과 p95 latency 결과 출력
 
+시연 탭은 판정과 실행을 분리해, 실행을 끈 채로도 모든 판정과 **차단 사유**를 관찰할 수 있다. 무대에서 "왜 실행되지 않았는가"를 그 자리에서 설명하는 것이 시나리오 6~11의 핵심이라, 사유를 삼키지 않고 한국어로 그대로 띄운다. 임계값은 느슨/보통/빡빡 프리셋으로 즉시 교체할 수 있다.
+
 ---
 
-# 19. 최종 프로젝트 소개
+# 21. 최종 프로젝트 소개
 
 > JARVIS는 일반 RGB 웹캠을 통해 사용자의 시선과 손동작을 동시에 분석하고, 바라보는 전자기기를 선택한 뒤 동적 제스처로 명령을 확정하는 멀티모달 제어 런타임이다. 시선과 손동작을 독립적으로 인식하는 데 그치지 않고, 두 신호의 불확실성과 시간적 관계를 결합하여 사용자가 의도한 대상에만 명령을 정확히 한 번 실행하는 것을 핵심 문제로 다룬다.
 > 
