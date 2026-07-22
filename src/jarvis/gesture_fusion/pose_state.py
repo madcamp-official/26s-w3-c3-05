@@ -39,7 +39,8 @@ from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
 FloatArray = npt.NDArray[np.float64]
 
-INDEX_MCP, INDEX_TIP, MIDDLE_MCP, MIDDLE_TIP = 5, 8, 9, 12
+INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP = 5, 6, 7, 8
+MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP = 9, 10, 11, 12
 
 # 자세별 진입 유지 시간(ms). 핀치 클릭류만 빠른 반응이 중요해 짧게(60) 명시하고,
 # 그 외 자세(index_point·two_fingers·open_palm·fist)는 모두 기본값(120)을 쓴다.
@@ -74,11 +75,20 @@ TRANSITION_WINDOW_MS = 1000
 # 스크롤 방향을 인정할 최소 수직성(|dy| / 길이). 손가락이 옆을 가리키면 위아래를
 # 지어내지 않는다 — 0.5는 수평에서 30° 이상 기울어야 방향을 인정한다는 뜻이다.
 MIN_VERTICALITY = 0.5
-# 스크롤을 인정할 검지·중지 최소 폄 정도(palm_scale 정규화 단위, MCP→끝 거리 평균).
-# 스크롤을 멈추려 주먹을 쥐면 손가락이 접히며 끝이 잠깐 아래로 스윙해 역방향 스크롤이
-# 튀는데, 접히기 시작하면 이 값이 임계 아래로 떨어져 스크롤을 즉시 끊는다. 손 거리·각도에
-# 강건하도록 정규화 좌표로 잰다. 실기기에서 편 두 손가락 vs 접히는 중 값으로 튜닝한다.
-MIN_FINGER_EXTENSION = 0.55
+# 손가락 '폄 정도'는 MCP→끝 직선거리(span)를 관절 세그먼트 합으로 나눈 **직진도**
+# (straightness)로 잰다: 1.0=완전히 곧음, 접힐수록 낮아진다. MCP→끝 거리 하나만 쓰면
+# 손을 기울이거나 멀어질 때 거리가 함께 줄어 '펴짐'인데도 값이 떨어졌지만(구 지표
+# MIN_FINGER_EXTENSION=0.55, 임의값), 직진도는 비율이라 손 크기·거리·기울기에 불변이다.
+#
+# 경계값은 실측으로 정했다(2026-07-22 finger_gate_probe, 검지 101/108·중지 104/102 샘플):
+#   검지: 편 상태 straightness [0.994,1.000], 애매히 굽힘 μ0.508 → 0.97이면 편 상태를
+#         전부 통과시키며(여유 0.024) 굽힘을 확실히 막는다.
+#   중지 포함 두 손가락 스크롤: 굽힘 straightness 최대 0.833 → 0.85면 굽힘을 깨끗이 막는다.
+# 검지 커서 게이트: index_point로 분류돼도 이 값 미만이면 커서 이동에 진입하지 않는다.
+INDEX_STRAIGHTNESS_MIN = 0.97
+# 두 손가락 스크롤 게이트. 주먹을 쥐려 접히기 시작하면 직진도가 이 값 아래로 떨어져
+# 스크롤을 즉시 끊는다(접힘 순간 끝이 아래로 스윙하는 역방향 튐 차단).
+TWO_FINGER_STRAIGHTNESS_MIN = 0.85
 
 # 검지 회전 → 볼륨. index_point 상태에서 검지(MCP→TIP) 방향이 도는 각도를 누적해,
 # ROT_STEP_DEG마다 볼륨 1스텝을 낸다(시계=증가/반시계=감소). 커서 포인팅은 손 **평행이동**
@@ -167,19 +177,41 @@ def pointing_direction(landmarks: FloatArray) -> tuple[float, float] | None:
     return float(mean[0] / norm), float(mean[1] / norm)
 
 
-def two_finger_extension(landmarks: FloatArray) -> float | None:
-    """검지·중지가 얼마나 펴졌는지 — MCP→끝 거리의 평균(palm_scale 정규화 단위).
+def finger_straightness(
+    landmarks: FloatArray, mcp: int, pip: int, dip: int, tip: int
+) -> float | None:
+    """손가락 직진도 — MCP→끝 직선거리 / 관절 세그먼트 합. 1.0=완전히 곧음.
 
-    landmarks는 이미 손목 원점·palm_scale 정규화된 좌표라 이 거리는 손 크기·카메라
-    거리에 무관하다. 편 두 손가락은 값이 크고, 주먹을 쥐려 접기 시작하면 끝이 손바닥으로
-    말려들며 값이 급격히 줄어든다 — 스크롤을 접히는 순간 끊는 게이트로 쓴다.
+    분자는 MCP→끝 벡터 길이(span), 분모는 MCP→PIP→DIP→끝을 따라간 꺾은선 길이다.
+    곧게 펴면 둘이 같아 1.0, 접힐수록 꺾은선이 길어져 값이 준다. 비율이라 손 크기·
+    카메라 거리·기울기에 불변이다(MCP→끝 거리 하나만 쓰던 구 지표의 약점을 없앤다).
     """
     points = np.asarray(landmarks, dtype=np.float64)
-    if points.ndim != 2 or points.shape[0] <= MIDDLE_TIP:
+    if points.ndim != 2 or points.shape[0] <= tip:
         return None
-    index_len = float(np.linalg.norm(points[INDEX_TIP][:2] - points[INDEX_MCP][:2]))
-    middle_len = float(np.linalg.norm(points[MIDDLE_TIP][:2] - points[MIDDLE_MCP][:2]))
-    return (index_len + middle_len) / 2.0
+    lm = points[:, :2]
+    span = float(np.linalg.norm(lm[tip] - lm[mcp]))
+    seg = (
+        float(np.linalg.norm(lm[pip] - lm[mcp]))
+        + float(np.linalg.norm(lm[dip] - lm[pip]))
+        + float(np.linalg.norm(lm[tip] - lm[dip]))
+    )
+    if seg < 1e-9:
+        return None
+    return span / seg
+
+
+def two_finger_straightness(landmarks: FloatArray) -> float | None:
+    """검지·중지 중 **덜 편** 손가락의 직진도(min). 스크롤 폄 게이트가 쓴다.
+
+    어느 한 손가락이라도 접히기 시작하면 값이 떨어지도록 min을 쓴다 — 두 손가락이
+    함께 펴져 있을 때만 스크롤을 인정하고, 주먹으로 접는 순간 끊는다.
+    """
+    index = finger_straightness(landmarks, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP)
+    middle = finger_straightness(landmarks, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP)
+    if index is None or middle is None:
+        return None
+    return min(index, middle)
 
 
 @dataclass
@@ -442,10 +474,24 @@ class PoseStateMachine:
         held = timestamp_ms - self._state_since
         # 커서 이동: index_point(이동)·pinch_index(드래그) 상태에서 손 이동을 옮긴다.
         # 드래그도 여기서 커서가 따라 움직인다 — pinch_index가 CURSOR_POSES에 있다.
+        # 검지 폄 게이트: index_point로 분류돼도 검지가 충분히 펴지지 않았으면(애매하게
+        # 굽힌 손이 index_point로 오분류되는 경우) 커서 이동에 진입하지 않는다(실측
+        # 2026-07-22). pinch_index(드래그)는 손가락을 모은 자세라 이 게이트를 적용하지
+        # 않는다. landmarks가 없으면(측정 불가) 게이트를 걸지 않아 기존 동작을 유지한다.
         if self.state in CURSOR_POSES:
-            move = self._cursor_move(timestamp_ms)
-            if move is not None:
-                events.append(move)
+            gated = False
+            if self.state == "index_point" and landmarks is not None:
+                straightness = finger_straightness(
+                    landmarks, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP
+                )
+                gated = straightness is not None and straightness < INDEX_STRAIGHTNESS_MIN
+            if gated:
+                # 게이트로 멈춘 동안의 손 이동이 재개 시 급점프로 튀지 않게 참조점을 버린다.
+                self._cursor_ref = None
+            else:
+                move = self._cursor_move(timestamp_ms)
+                if move is not None:
+                    events.append(move)
         else:
             self._cursor_ref = None  # 이동 자세를 벗어나면 참조점을 버린다
         if self.state == "pinch_index" and not self._dragging and held > self.click_max_ms:
@@ -454,15 +500,15 @@ class PoseStateMachine:
             events.append(PoseEvent("drag_start", self._state_since))
         elif self.state == "two_fingers" and landmarks is not None:
             direction = pointing_direction(landmarks)
-            extension = two_finger_extension(landmarks)
-            # 손가락이 충분히 펴진 동안만 스크롤한다. 주먹을 쥐려 접히기 시작하면 끝이
-            # 잠깐 아래로 스윙해 역방향 스크롤이 튀는데, 그 순간 extension이 임계 아래로
+            straightness = two_finger_straightness(landmarks)
+            # 두 손가락이 충분히 펴진 동안만 스크롤한다. 주먹을 쥐려 접히기 시작하면 끝이
+            # 잠깐 아래로 스윙해 역방향 스크롤이 튀는데, 그 순간 직진도가 임계 아래로
             # 떨어져 여기서 걸러진다(B안 — 접힘을 물리적으로 감지).
             if (
                 direction is not None
                 and abs(direction[1]) >= MIN_VERTICALITY
-                and extension is not None
-                and extension >= MIN_FINGER_EXTENSION
+                and straightness is not None
+                and straightness >= TWO_FINGER_STRAIGHTNESS_MIN
             ):
                 # 화면 y는 아래로 증가하므로 부호를 뒤집어 위쪽을 +로 만든다.
                 events.append(PoseEvent("scroll", timestamp_ms, -direction[1]))

@@ -76,7 +76,7 @@ from jarvis.gesture_fusion.model_protocol import (
     EXPECTED_INPUT_FPS,
 )
 from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
-from jarvis.gesture_fusion.pose_state import MIN_FINGER_EXTENSION
+from jarvis.gesture_fusion.pose_state import TWO_FINGER_STRAIGHTNESS_MIN
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.console import ConsoleLog, StderrCapture
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
@@ -755,11 +755,11 @@ class HandPanel(QScrollArea):
                 pose_line = f"거부 — {s.pose.reason}" + (
                     f"  [{s.pose.label} {s.pose.confidence:.0%}]" if s.pose.label else ""
                 )
-            if s.finger_extension is None:
+            if s.finger_straightness is None:
                 ext_line = "—"
             else:
-                gate = "스크롤 가능" if s.finger_extension >= MIN_FINGER_EXTENSION else "게이트 차단"
-                ext_line = f"{s.finger_extension:.3f}  / {MIN_FINGER_EXTENSION:g} ({gate})"
+                gate = "스크롤 가능" if s.finger_straightness >= TWO_FINGER_STRAIGHTNESS_MIN else "게이트 차단"
+                ext_line = f"{s.finger_straightness:.3f}  / {TWO_FINGER_STRAIGHTNESS_MIN:g} ({gate})"
             self._numeric.setText(
                 f"모델 입력   : {mode}\n"
                 f"자세 판정   : {pose_line}\n"
