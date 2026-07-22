@@ -3,6 +3,7 @@
   "_comment_2026_07_20": "라벨 집합이 swipe 4종 제거·slide_two_fingers 4종 추가로 바뀌었는데 이 파일이 따라가지 않아, swipe_* 매핑 6개가 전부 죽어 있었다(scroll·window_switch·brightness 세 capability가 어떤 제스처로도 도달 불가). 두 손가락 슬라이드를 기존 swipe 자리에 그대로 대응시켜 복구한다. 배경 label(none·drumming_fingers·doing_other_things)은 '동작 없음'이 곧 의도이므로 매핑하지 않는다 — intent.validate_capability_map()이 이 정합성을 검사한다.",
   "_comment_2026_07_22": "시연 가시성을 위해 전구 델타를 키웠다: brightness 10→30(범위 10~100 중 1/3). 이전 값은 한 제스처당 변화가 눈에 띄지 않아 '명령이 갔는지' 무대에서 보이지 않았다. step 격자(10)의 배수라 validate_request를 통과한다. 상대 연산은 델타만 검증되고 결과값 클램프는 adapter 책임이므로(capability.py validate_request, wiz.py _apply_number), 하한/상한을 넘겨도 거부되지 않고 경계에서 멈춘다.",
   "_comment_2026_07_22_color": "회전을 색온도(2700~6500K)에서 색상(color, 0~360도)으로 바꿨다. 색온도는 전 구간이 '흰색의 미묘한 차이'라 1000K를 줘도 무대에서 변화가 읽히지 않았다. 색상은 60도마다 색 이름이 바뀌어(빨강→노랑→초록→청록→파랑→자홍) 6번이면 한 바퀴 돈다. color는 순환량이라 WizAdapter가 유일하게 클램프하지 않고 360도에서 감아 돈다 — 클램프하면 회전 제스처가 양 끝에서 죽는다. 또한 slide_left/right를 전구의 밝기 조절에 추가로 매핑했다(up/down과 같은 ±30): 상하 슬라이드가 인식이 덜 될 때 좌우로도 밝기를 잡을 수 있게 한 이중 경로다. color_temperature capability는 프로필에 남겨 두되 어떤 제스처에도 매핑하지 않는다.",
+  "_comment_2026_07_22_desktop": "노트북 slide_left/right를 창 전환(window_switch, Alt+Tab/Cmd+Tab)에서 가상 데스크톱 전환(desktop_switch)으로 바꿨다. 어댑터가 Windows는 Ctrl+Win+←/→, macOS는 Ctrl+←/→(Space 이동)를 합성한다. 좌우 슬라이드가 '옆 데스크톱으로 넘긴다'는 공간적 은유와 더 맞는다. capability 이름도 함께 개명해 실제 동작과 이름이 어긋나지 않게 했다(intent.validate_capability_map은 gesture 라벨만 검사하므로 capability 개명에는 영향 없음).",
   "devices": {
     "room.bulb": {
       "slide_two_fingers_down": { "capability": "brightness", "operation": "decrement", "value": 30 },
@@ -16,8 +17,8 @@
     "laptop": {
       "slide_two_fingers_down": { "capability": "scroll", "operation": "decrement", "value": 3 },
       "slide_two_fingers_up": { "capability": "scroll", "operation": "increment", "value": 3 },
-      "slide_two_fingers_left": { "capability": "window_switch", "operation": "decrement", "value": 1 },
-      "slide_two_fingers_right": { "capability": "window_switch", "operation": "increment", "value": 1 },
+      "slide_two_fingers_left": { "capability": "desktop_switch", "operation": "decrement", "value": 1 },
+      "slide_two_fingers_right": { "capability": "desktop_switch", "operation": "increment", "value": 1 },
       "rotate_clockwise": { "capability": "volume", "operation": "increment", "value": 2 },
       "rotate_counter_clockwise": { "capability": "volume", "operation": "decrement", "value": 2 }
     }

@@ -20,8 +20,8 @@ class FakeSink:
     def move_cursor(self, dx: int, dy: int) -> None:
         self.moves.append((dx, dy))
 
-    def switch_window(self, forward: bool, repeat: int) -> None:  # pragma: no cover
-        raise AssertionError("pointer must not switch windows")
+    def switch_desktop(self, forward: bool, repeat: int) -> None:  # pragma: no cover
+        raise AssertionError("pointer must not switch desktops")
 
 
 def _config(**overrides: object) -> PointerConfig:

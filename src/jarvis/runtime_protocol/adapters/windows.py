@@ -80,11 +80,12 @@ class InputSink(Protocol):
         """Move the cursor by a relative delta. ``dragging``이면 드래그로 이동한다."""
         ...
 
-    def switch_window(self, forward: bool, repeat: int) -> None:
-        """Switch between application windows ``repeat`` times.
+    def switch_desktop(self, forward: bool, repeat: int) -> None:
+        """Switch between virtual desktops ``repeat`` times.
 
-        ``forward`` advances to the next window (Alt+Tab / Cmd+Tab), else the
-        previous one. The modifier-chord details live in each OS implementation.
+        ``forward`` advances to the next desktop (Ctrl+Win+→ on Windows,
+        Ctrl+→ / 다음 Space on macOS), else the previous one. The
+        modifier-chord details live in each OS implementation.
         """
         ...
 
@@ -123,8 +124,8 @@ class WindowsAdapter:
             return self._volume(command)
         if command.capability == "media":
             return self._media(command)
-        if command.capability == "window_switch":
-            return self._window_switch(command)
+        if command.capability == "desktop_switch":
+            return self._desktop_switch(command)
         return AdapterResult(
             AdapterStatus.FAILED,
             f"windows adapter does not handle capability {command.capability!r}",
@@ -168,11 +169,11 @@ class WindowsAdapter:
         self._sink.tap_key(InputKey.PLAY_PAUSE)
         return AdapterResult(AdapterStatus.ACKNOWLEDGED, "media play/pause toggled")
 
-    def _window_switch(self, command: Command) -> AdapterResult:
+    def _desktop_switch(self, command: Command) -> AdapterResult:
         count = _as_count(command.value)
         if count is None:
             return AdapterResult(
-                AdapterStatus.FAILED, f"invalid window_switch count {command.value!r}"
+                AdapterStatus.FAILED, f"invalid desktop_switch count {command.value!r}"
             )
         if command.operation == "increment":
             forward = True
@@ -180,11 +181,11 @@ class WindowsAdapter:
             forward = False
         else:
             return AdapterResult(
-                AdapterStatus.FAILED, f"window_switch does not support {command.operation!r}"
+                AdapterStatus.FAILED, f"desktop_switch does not support {command.operation!r}"
             )
-        self._sink.switch_window(forward, count)
+        self._sink.switch_desktop(forward, count)
         direction = "next" if forward else "previous"
-        return AdapterResult(AdapterStatus.ACKNOWLEDGED, f"window switch {direction} x{count}")
+        return AdapterResult(AdapterStatus.ACKNOWLEDGED, f"desktop switch {direction} x{count}")
 
 
 # --- Hardware boundary ------------------------------------------------------
@@ -206,9 +207,11 @@ _WHEEL_DELTA = 120
 _VK_TAB = 0x09
 _VK_MENU = 0x12  # ALT
 _VK_SHIFT = 0x10
-_VK_LWIN = 0x5B  # 왼쪽 Windows 키 — Task View(Win+Tab)용
+_VK_LWIN = 0x5B  # 왼쪽 Windows 키 — Task View(Win+Tab)·가상 데스크톱 전환(Ctrl+Win+←/→)용
 _VK_CONTROL = 0x11
 _VK_W = 0x57  # 탭 닫기(Ctrl+W)용
+_VK_LEFT = 0x25  # ← 화살표 — 이전 가상 데스크톱
+_VK_RIGHT = 0x27  # → 화살표 — 다음 가상 데스크톱
 
 
 class Win32InputSink:
@@ -256,8 +259,8 @@ class Win32InputSink:
     def tap_key(self, key: InputKey) -> None:
         user32 = self._user32()
         if key is InputKey.TASK_VIEW:
-            # Task View는 Win+Tab 조합키라 modifier(Win)로 감싼다(switch_window의
-            # Alt+Tab과 같은 구조). macOS Mission Control에 대응하는 창 개요 화면이다.
+            # Task View는 Win+Tab 조합키라 modifier(Win)로 감싼다(switch_desktop의
+            # Ctrl+Win+화살표와 같은 modifier-hold 구조). macOS Mission Control에 대응하는 창 개요 화면이다.
             user32.keybd_event(_VK_LWIN, 0, 0, 0)
             user32.keybd_event(_VK_TAB, 0, 0, 0)
             user32.keybd_event(_VK_TAB, 0, _KEYEVENTF_KEYUP, 0)
@@ -291,19 +294,19 @@ class Win32InputSink:
         user32.GetCursorPos(ctypes.byref(point))
         user32.SetCursorPos(int(point.x + dx), int(point.y + dy))
 
-    def switch_window(self, forward: bool, repeat: int) -> None:
-        # Alt+Tab (forward) / Alt+Shift+Tab (backward). Hold Alt for the whole
-        # sequence so the window switcher stays up across repeated Tab taps.
+    def switch_desktop(self, forward: bool, repeat: int) -> None:
+        # 가상 데스크톱 전환: Ctrl+Win+→ (forward) / Ctrl+Win+← (backward).
+        # Ctrl+Win을 시퀀스 전체 동안 누른 채로 화살표를 repeat번 눌러, 여러 칸을
+        # 이동해도 조합이 유지되게 한다(Alt+Tab 스위처의 Alt hold와 같은 구조).
         user32 = self._user32()
-        user32.keybd_event(_VK_MENU, 0, 0, 0)
-        if not forward:
-            user32.keybd_event(_VK_SHIFT, 0, 0, 0)
+        arrow = _VK_RIGHT if forward else _VK_LEFT
+        user32.keybd_event(_VK_CONTROL, 0, 0, 0)
+        user32.keybd_event(_VK_LWIN, 0, 0, 0)
         for _ in range(repeat):
-            user32.keybd_event(_VK_TAB, 0, 0, 0)
-            user32.keybd_event(_VK_TAB, 0, _KEYEVENTF_KEYUP, 0)
-        if not forward:
-            user32.keybd_event(_VK_SHIFT, 0, _KEYEVENTF_KEYUP, 0)
-        user32.keybd_event(_VK_MENU, 0, _KEYEVENTF_KEYUP, 0)
+            user32.keybd_event(arrow, 0, 0, 0)
+            user32.keybd_event(arrow, 0, _KEYEVENTF_KEYUP, 0)
+        user32.keybd_event(_VK_LWIN, 0, _KEYEVENTF_KEYUP, 0)
+        user32.keybd_event(_VK_CONTROL, 0, _KEYEVENTF_KEYUP, 0)
 
 
 def default_input_sink() -> InputSink:
