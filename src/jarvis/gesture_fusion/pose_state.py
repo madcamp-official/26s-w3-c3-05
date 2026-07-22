@@ -3,7 +3,7 @@
 프레임별 `PosePrediction`만으로는 동작이 정해지지 않는다. 같은 `pinch_index`라도 짧게
 떼면 클릭, 유지하면 드래그다. 이 모듈이 그 시간 구조를 담당한다.
 
-설계 규칙 두 가지:
+설계 규칙 세 가지:
 
 1. **진입은 느리게, 이탈은 빠르게.** 자세가 `DWELL_MS` 연속 유지돼야 상태로 진입한다.
    전이 프레임은 짧아서(보통 100~200ms) 여기서 걸러진다. 반대로 `none`이 몇 프레임
@@ -15,6 +15,11 @@
    다시 낮추면 재대기 없이 즉시 이어간다. 다만 커서 이동·스크롤 같은 **연속 동작은 그
    프레임 동안 멈춘다**: 게이트에 걸린 손 이동을 커서에 반영하면 "너무 기울면 정지"가
    무의미해지기 때문이다(예: 검지 10° 초과 시 커서 정지, 다시 세우면 즉시 재개).
+
+3. **`none`은 자세 이력을 지우지 않는다.** 주먹에서 손바닥으로 갈 때 중간의 어중간하게
+   펴진 상태가 `none`으로 분류되기 때문에, `fist → open_palm`(미션 컨트롤)을 인접 상태로
+   보면 절대 성립하지 않는다. 그래서 "마지막 명령 자세"를 따로 기억하고 `none`은 그걸
+   덮어쓰지 않는다 — 전이 판정이 중간의 빈 구간을 건너뛴다.
 
 여기서 쓰는 임계는 전부 **시간**이다. 이 프로젝트에서 반복적으로 실패한 것은 기하학적
 임계(palm_scale로 나눈 거리 등)였고, 그것들은 손 각도·거리에 따라 값이 8.85배까지
@@ -65,6 +70,9 @@ CLICK_MAX_MS = 400
 # 간격은 두 핀치의 **진입** 시각으로 잰다(_leave 확정 간격이 아니라) — dwell·release
 # 확정 지연을 예산에서 빼야 사용자가 체감하는 간격과 맞는다.
 DOUBLE_CLICK_MS = 800
+# 미션 컨트롤: 주먹(fist) → 보(open_palm) 전이로 인정하는 최대 간격. 전이 중간의 어중간
+# 하게 펴진 구간은 none으로 분류되므로 인접 프레임이 아니라 직전 명령 자세와 비교한다.
+TRANSITION_WINDOW_MS = 1000
 # 스크롤 방향을 인정할 최소 수직성(|dy| / 길이). 손가락이 옆을 가리키면 위아래를
 # 지어내지 않는다 — cos(30°)는 수직에서 30° 이상 벗어나면(=수평에서 60° 미만이면)
 # 방향을 인정하지 않는다는 뜻이다.
@@ -221,6 +229,7 @@ class PoseStateMachine:
     untrusted_grace_frames: int = UNTRUSTED_GRACE_FRAMES
     click_max_ms: int = CLICK_MAX_MS
     double_click_ms: int = DOUBLE_CLICK_MS
+    transition_window_ms: int = TRANSITION_WINDOW_MS
 
     # 확정된 현재 상태(진입 조건을 통과한 자세). 없으면 "".
     state: str = ""
@@ -231,6 +240,10 @@ class PoseStateMachine:
     _missing: int = 0
     # 연속 `trusted=False` 프레임 수(관용 카운터). trusted 프레임에서 0으로 리셋.
     _untrusted: int = 0
+    # `none`이 덮어쓰지 않는 "마지막 명령 자세" — 미션 컨트롤 fist→보 전이 판정이 중간의
+    # none 구간을 건너뛰도록 한다.
+    _last_pose: str = ""
+    _last_pose_end: int = 0
     # 직전 **짧은 단일 클릭**의 pinch 진입 시각 — 다음 핀치의 진입이 double_click_ms
     # 안이면 그 눌림을 더블클릭(clickState=2)으로 실어 보낸다. 확정(_leave)이 아니라
     # 진입 기준이라 dwell·release 지연이 예산에 들어가지 않는다. 드래그·이미 더블인
@@ -260,6 +273,7 @@ class PoseStateMachine:
         self._pending = ""
         self._missing = 0
         self._untrusted = 0
+        self._last_pose = ""
         self._last_click_ms = -1_000_000
         self._press_click_state = 1
         self._rot_prev_angle = None
@@ -442,11 +456,14 @@ class PoseStateMachine:
 
     def _enter(self, label: str, timestamp_ms: int) -> list[PoseEvent]:
         events: list[PoseEvent] = []
-        # 미션 컨트롤: 보(open_palm) 진입 자체를 트리거로 쓴다 — 직전이 다른 자세든
-        # 맨손(none)이든 상관없이 손을 펴면 발화한다(사용자 지시: none에서 가도 인정).
-        # 진입에서 한 번만 나가고(유지 중엔 label==state라 _continuous로 빠짐), 다시
-        # 발화하려면 손을 접었다(none/다른 자세) 다시 펴야 한다.
-        if label == "open_palm":
+        # 미션 컨트롤: 주먹(fist) → 보(open_palm) 전이일 때만 발화한다. 전이 중간의 어중간
+        # 하게 펴진 구간은 none으로 분류되므로, 인접 프레임이 아니라 "직전 명령 자세"
+        # (none이 덮어쓰지 않는 _last_pose)와 비교하고 transition_window 안일 때만 인정한다.
+        if (
+            label == "open_palm"
+            and self._last_pose == "fist"
+            and timestamp_ms - self._last_pose_end <= self.transition_window_ms
+        ):
             events.append(PoseEvent("media_toggle", timestamp_ms))
         # 중지만 편 포즈 → 탭 닫기(Cmd/Ctrl+W). 진입 시 한 번만 발화한다(유지 중에는
         # label==state라 _continuous로 빠져 재발화하지 않는다).
@@ -485,6 +502,10 @@ class PoseStateMachine:
                 self._last_click_ms = -1_000_000
         elif self.state == "pinch_middle" and held <= self.click_max_ms:
             events.append(PoseEvent("right_click", timestamp_ms))
+        # none이 덮어쓰지 않는 "직전 명령 자세" 기록 — 미션 컨트롤 fist→보 전이가 중간의
+        # none 구간을 건너뛰어 비교하도록 한다.
+        if self.state:
+            self._last_pose, self._last_pose_end = self.state, timestamp_ms
         self.state, self._missing = "", 0
         return events
 
