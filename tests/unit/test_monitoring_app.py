@@ -597,20 +597,28 @@ def test_demo_mapping_change_persists_and_resets_lock(tmp_path: Path) -> None:
 
 def test_demo_raw_target_reflects_latest_gaze_and_fallback(tmp_path: Path) -> None:
     """실시간 시선(원시 classifier 결과)은 push_target()이 실제로 쓰는 값과
-    항상 일치해야 한다 — 특히 타깃 고정(fallback)이 켜지면 push_target()은
-    합성 estimate로 바뀌므로 화면도 원시 시선 대신 고정 기기를 보여준다."""
+    항상 일치해야 한다 — 특히 타깃 고정(fallback)이 켜져 있으면 push_target()은
+    합성 estimate로 바뀌므로 화면도 원시 시선 대신 고정 기기를 보여준다.
+    시연 탭은 기본적으로 laptop 고정이 켜진 채 시작한다(2026-07-22)."""
     from types import SimpleNamespace
 
-    from jarvis.monitoring.demo_bridge import BULB_DEVICE_ID, UNKNOWN_TARGET
+    from jarvis.monitoring.demo_bridge import BULB_DEVICE_ID, LAPTOP_DEVICE_ID, UNKNOWN_TARGET
 
     app = QApplication.instance() or QApplication([])
     window = _demo_window(tmp_path)
     try:
         window._on_demo_mapping_changed("target_001", BULB_DEVICE_ID)
 
+        # 기본값(laptop 고정)이 켜져 있는 동안은 원시 시선과 무관하게 고정
+        # 기기를 보여준다 — push_target()이 실제로 쓰는 합성값과 일치해야 한다.
         window._latest_gaze = SimpleNamespace(
             target_estimate=SimpleNamespace(target="target_001")
         )
+        window._update_demo_state("-")
+        assert window._demo_panel._raw_target_label.text() == f"실시간 시선: {LAPTOP_DEVICE_ID}"
+
+        # 고정을 끄면 원시 gaze 결과가 그대로 드러난다.
+        window._demo_bridge.set_fallback(None)
         window._update_demo_state("-")
         assert window._demo_panel._raw_target_label.text() == f"실시간 시선: {BULB_DEVICE_ID}"
 
