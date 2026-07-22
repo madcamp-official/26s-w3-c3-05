@@ -77,3 +77,21 @@ gaze 파이프라인을 LIVE로 만들려면:
 라이브 연결 지점: 제스처 사이드바는 `monitoring/gesture_source.py`의 `GestureSource`에
 바인딩되어 있다. 2인 파트가 완성되면 `GestureEstimate`를 어댑트하는 실제 소스로
 `NullGestureSource`를 교체하기만 하면 UI는 그대로 채워진다.
+
+## Finger gate probe (검지·중지 폄 게이트 실측)
+
+`tools/finger_gate_probe.py` — 검지를 애매하게 굽힌 상태가 `index_point`로 오분류돼
+커서로 새는 것을 막을 **폄 게이트**의 경계값을 실측으로 정하는 간이 툴. `pose_state`가
+쓰는 것과 같은 정규화 좌표(`HandProbe`의 `observation.landmarks`)로 특징을 계산하므로,
+여기서 나온 경계값을 게이트 코드(`MIN_FINGER_EXTENSION` 등)에 그대로 옮길 수 있다.
+
+```powershell
+pip install -e ".[ui,vision,dev]"          # opencv + mediapipe + hand_landmarker.task 필요
+python tools/finger_gate_probe.py          # cv2 창이 뜨면 포커스를 두고 아래 키로 수집
+python tools/finger_gate_probe.py --analyze data/finger_gate/<파일>.json  # 카메라 없이 재분석
+```
+
+수집 키: `1` 검지 펴짐 · `2` 검지 굽힘 · `3` 중지 펴짐 · `4` 중지 굽힘 · `u` 취소 ·
+`q`/`ESC` 저장 후 분석. 각 상태를 여러 각도·거리에서 20~30개씩 모은 뒤, 리포트가
+Fisher 판별비로 특징(dist·straightness·pip_angle·dip_angle)을 정렬하고 두 상태를 가장
+잘 가르는 경계값·정확도를 추천한다. 샘플은 `data/finger_gate/`에 JSON으로 남는다.

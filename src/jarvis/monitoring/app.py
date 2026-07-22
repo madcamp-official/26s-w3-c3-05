@@ -77,7 +77,7 @@ from jarvis.gesture_fusion.model_protocol import (
     EXPECTED_INPUT_FPS,
 )
 from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
-from jarvis.gesture_fusion.pose_state import MIN_FINGER_EXTENSION
+from jarvis.gesture_fusion.pose_state import TWO_FINGER_STRAIGHTNESS_MIN
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.console import ConsoleLog, StderrCapture
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
@@ -161,17 +161,33 @@ _TARGET_DEVICE_TYPES: tuple[str, ...] = ("computer", "electric bulb")
 # "그 자세에서 보던 테두리 위치"를 학습해 pose 보정의 부호가 뒤집힌다
 # (2026-07-22 실측, documents/gaze.md).
 _CENTER_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
-    (5_000, "물체 중앙 한 점을 응시한 채 고개를 왼쪽으로 천천히 끝까지", "FIX CENTER - TURN HEAD LEFT"),
+    (
+        5_000,
+        "물체 중앙 한 점을 응시한 채 고개를 왼쪽으로 천천히 끝까지",
+        "FIX CENTER - TURN HEAD LEFT",
+    ),
     (10_000, "중앙 응시 유지, 고개를 오른쪽으로 천천히 끝까지", "FIX CENTER - TURN HEAD RIGHT"),
-    (14_000, "중앙 응시 유지, 고개를 정면으로 되돌리고 위·아래로 천천히", "FIX CENTER - HEAD UP / DOWN"),
+    (
+        14_000,
+        "중앙 응시 유지, 고개를 정면으로 되돌리고 위·아래로 천천히",
+        "FIX CENTER - HEAD UP / DOWN",
+    ),
     (17_000, "중앙 응시 유지, 카메라에 조금 가까이·멀리 이동", "FIX CENTER - MOVE NEAR / FAR"),
     (20_000, "중앙 응시 유지, 편한 자세로 되돌아오기", "FIX CENTER - RETURN NEUTRAL"),
 )
 _BOUNDARY_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
     (2_000, "고개를 고정하고 시선을 물체의 왼쪽 위 모서리로 이동", "HEAD STILL - LOOK TOP-LEFT"),
     (5_500, "윗변을 따라 왼쪽 위에서 오른쪽 위까지 천천히 응시", "TRACE TOP EDGE  LEFT -> RIGHT"),
-    (9_000, "오른쪽 변을 따라 오른쪽 위에서 오른쪽 아래까지 응시", "TRACE RIGHT EDGE  TOP -> BOTTOM"),
-    (12_500, "아랫변을 따라 오른쪽 아래에서 왼쪽 아래까지 응시", "TRACE BOTTOM EDGE  RIGHT -> LEFT"),
+    (
+        9_000,
+        "오른쪽 변을 따라 오른쪽 위에서 오른쪽 아래까지 응시",
+        "TRACE RIGHT EDGE  TOP -> BOTTOM",
+    ),
+    (
+        12_500,
+        "아랫변을 따라 오른쪽 아래에서 왼쪽 아래까지 응시",
+        "TRACE BOTTOM EDGE  RIGHT -> LEFT",
+    ),
     (16_000, "왼쪽 변을 따라 왼쪽 아래에서 왼쪽 위까지 응시", "TRACE LEFT EDGE  BOTTOM -> TOP"),
 )
 _MONO = "font-family:Consolas,monospace; font-size:12px; color:#c9d1d9;"
@@ -321,10 +337,7 @@ class GazePanel(QScrollArea):
         else:
             source_status = ""
             status_color = "#3fb950"
-        self._status.setText(
-            f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame"
-            + source_status
-        )
+        self._status.setText(f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame" + source_status)
         self._status.setStyleSheet(f"color:{status_color};")
 
         self._lock_strip.set_state(s.lock_state)
@@ -354,8 +367,7 @@ class GazePanel(QScrollArea):
             self._confirmed_target.setStyleSheet(_MONO + " color:#d29922;")
         else:
             self._confirmed_target.setText(
-                f"3초 확정 응시 대상: {s.locked_target_label or '--'} "
-                f"[{s.locked_device or '--'}]"
+                f"3초 확정 응시 대상: {s.locked_target_label or '--'} [{s.locked_device or '--'}]"
             )
             color = "#3fb950" if s.locked_device is not None else "#8b949e"
             self._confirmed_target.setStyleSheet(_MONO + f" color:{color};")
@@ -649,7 +661,9 @@ class HandPanel(QScrollArea):
         layout.addWidget(self._model_canvas)
 
         # Toggle: show the model input smoothed (real, default) or raw, to compare.
-        self._smooth_toggle = QCheckBox("스무딩 적용 (모델이 실제로 쓰는 입력 · 끄면 raw 정규화 정점)")
+        self._smooth_toggle = QCheckBox(
+            "스무딩 적용 (모델이 실제로 쓰는 입력 · 끄면 raw 정규화 정점)"
+        )
         self._smooth_toggle.setChecked(smoothing)
         if on_smoothing_toggled is not None:
             self._smooth_toggle.toggled.connect(on_smoothing_toggled)
@@ -716,7 +730,11 @@ class HandPanel(QScrollArea):
         self._status.setStyleSheet("color:#3fb950;" if s.hand_detected else "color:#8b949e;")
         self._detected.setText(
             f"hand detected : {s.hand_detected}"
-            + (f"   handedness : {s.handedness} ({s.handedness_score:.0%})" if s.hand_detected else "")
+            + (
+                f"   handedness : {s.handedness} ({s.handedness_score:.0%})"
+                if s.hand_detected
+                else ""
+            )
         )
         self._det_conf.set_value(
             s.detection_confidence if s.hand_detected else 0.0, color="#58a6ff"
@@ -759,11 +777,11 @@ class HandPanel(QScrollArea):
                 pose_line = f"거부 — {s.pose.reason}" + (
                     f"  [{s.pose.label} {s.pose.confidence:.0%}]" if s.pose.label else ""
                 )
-            if s.finger_extension is None:
+            if s.finger_straightness is None:
                 ext_line = "—"
             else:
-                gate = "스크롤 가능" if s.finger_extension >= MIN_FINGER_EXTENSION else "게이트 차단"
-                ext_line = f"{s.finger_extension:.3f}  / {MIN_FINGER_EXTENSION:g} ({gate})"
+                gate = "스크롤 가능" if s.finger_straightness >= TWO_FINGER_STRAIGHTNESS_MIN else "게이트 차단"
+                ext_line = f"{s.finger_straightness:.3f}  / {TWO_FINGER_STRAIGHTNESS_MIN:g} ({gate})"
             self._numeric.setText(
                 f"모델 입력   : {mode}\n"
                 f"자세 판정   : {pose_line}\n"
@@ -790,7 +808,9 @@ class ContractPanel(QFrame):
     def __init__(self, title: str, message_type: Any, note: str) -> None:
         super().__init__()
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet("QFrame{background:#161b22; border:1px solid #30363d; border-radius:8px;}")
+        self.setStyleSheet(
+            "QFrame{background:#161b22; border:1px solid #30363d; border-radius:8px;}"
+        )
         layout = QVBoxLayout(self)
         head = QLabel(title)
         head.setStyleSheet("font-weight:600; color:#e6e6e6; border:none;")
@@ -799,9 +819,7 @@ class ContractPanel(QFrame):
         note_label.setWordWrap(True)
         note_label.setStyleSheet("color:#8b949e; border:none;")
         layout.addWidget(note_label)
-        fields = "\n".join(
-            f"  {f.name}: {f.type}" for f in dataclasses.fields(message_type)
-        )
+        fields = "\n".join(f"  {f.name}: {f.type}" for f in dataclasses.fields(message_type))
         shape = QLabel(f"{message_type.__name__}\n{fields}")
         shape.setStyleSheet(_MONO + " border:none;")
         layout.addWidget(shape)
@@ -938,16 +956,19 @@ class VideoView(QLabel):
     """
 
     def __init__(
-        self, *, show_overlay: bool = True, show_hand_overlay: bool | None = None
+        self,
+        *,
+        show_overlay: bool = True,
+        show_hand_overlay: bool | None = None,
+        show_hand_details: bool = True,
     ) -> None:
         super().__init__()
         self.setMinimumSize(480, 360)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background:#0b0e13;")
         self._show_overlay = show_overlay
-        self._show_hand_overlay = (
-            show_overlay if show_hand_overlay is None else show_hand_overlay
-        )
+        self._show_hand_overlay = show_overlay if show_hand_overlay is None else show_hand_overlay
+        self._show_hand_details = show_hand_details
         self._fps_times: deque[float] = deque(maxlen=30)
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
@@ -971,9 +992,8 @@ class VideoView(QLabel):
         """실시간 탭에도 제어 상태를 띄운다 — 3번 탭에만 있으면 자세를 보며 못 고친다."""
         self._control_action = action
         self._control_enabled = enabled
-    def set_registration_guidance(
-        self, title: str, instruction: str, progress: float
-    ) -> None:
+
+    def set_registration_guidance(self, title: str, instruction: str, progress: float) -> None:
         self._registration_guide = (title, instruction, progress)
 
     def clear_registration_guidance(self) -> None:
@@ -1014,6 +1034,7 @@ class VideoView(QLabel):
                 mirror=True,
                 control_action=self._control_action,
                 control_enabled=self._control_enabled,
+                show_details=self._show_hand_details,
             )
         self._render(display)
 
@@ -1055,7 +1076,9 @@ class GestureSidebar(QWidget):
         super().__init__()
         self._source = source
         layout = QVBoxLayout(self)
-        title = QLabel(f"인식 스트림 ({int(EXPECTED_INPUT_FPS)}fps · frame · gesture · conf · phase)")
+        title = QLabel(
+            f"인식 스트림 ({int(EXPECTED_INPUT_FPS)}fps · frame · gesture · conf · phase)"
+        )
         title.setStyleSheet("font-weight:600; color:#58a6ff; padding:4px 0;")
         self._status = QLabel(source.status_text)
         self._status.setWordWrap(True)
@@ -1074,7 +1097,9 @@ class GestureSidebar(QWidget):
     def set_hand_status(self, snapshot: HandSnapshot) -> None:
         if snapshot.hand_detected:
             label = snapshot.handedness or "?"
-            self._hand_line.setText(f"손 추적: {label} 검출 (det {snapshot.detection_confidence:.0%})")
+            self._hand_line.setText(
+                f"손 추적: {label} 검출 (det {snapshot.detection_confidence:.0%})"
+            )
             self._hand_line.setStyleSheet(_MONO + " color:#3fb950;")
         else:
             self._hand_line.setText("손 추적: 손 없음")
@@ -1156,7 +1181,9 @@ class StageCard(QFrame):
     def __init__(self, status: StageStatus) -> None:
         super().__init__()
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet("QFrame{background:#161b22; border:1px solid #30363d; border-radius:8px;}")
+        self.setStyleSheet(
+            "QFrame{background:#161b22; border:1px solid #30363d; border-radius:8px;}"
+        )
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
         name = QLabel(status.name)
@@ -1352,7 +1379,9 @@ class FinetuneRecordingPanel(QWidget):
 
     def set_status(self, text: str, *, ok: bool = True) -> None:
         self._status.setText(text)
-        self._status.setStyleSheet(("color:#3fb950;" if ok else "color:#d29922;") + " padding:4px 0;")
+        self._status.setStyleSheet(
+            ("color:#3fb950;" if ok else "color:#d29922;") + " padding:4px 0;"
+        )
 
 
 class MainWindow(QMainWindow):
@@ -1387,7 +1416,9 @@ class MainWindow(QMainWindow):
         self._gesture_source: GestureSource = self._make_gesture_source()
         self._env = env if env is not None else _load_env()
         self._model_path = model_path if model_path is not None else _default_model_path()
-        self._profiles_path = profiles_path if profiles_path is not None else _default_profiles_path()
+        self._profiles_path = (
+            profiles_path if profiles_path is not None else _default_profiles_path()
+        )
         self._hand_model_path = (
             hand_model_path if hand_model_path is not None else _default_hand_model_path()
         )
@@ -1584,7 +1615,9 @@ class MainWindow(QMainWindow):
         self._sidebar = GestureSidebar(self._gesture_source)
         # 손 추적 탭과 상태를 공유하는 제어 토글 — 자세를 취하며 보는 화면이 실시간
         # 탭이라 여기서도 켜고 끌 수 있어야 한다.
-        self._control_toggle_live = QCheckBox("🖱 손동작으로 컴퓨터 제어 (실제 클릭·스크롤이 실행됩니다)")
+        self._control_toggle_live = QCheckBox(
+            "🖱 손동작으로 컴퓨터 제어 (실제 클릭·스크롤이 실행됩니다)"
+        )
         self._control_toggle_live.setChecked(True)
         self._control_toggle_live.setStyleSheet("color:#f0b429; font-weight:600;")
         self._control_toggle_live.toggled.connect(self._on_control_toggled_live)
@@ -1660,9 +1693,7 @@ class MainWindow(QMainWindow):
             "세션을 녹화하면 target별 정확도, 자세·거리·얼굴 위치 구간과 "
             "대표 실패 프레임이 여기에 표시됩니다."
         )
-        self._session_report_view.setStyleSheet(
-            "font-family:Consolas,monospace; font-size:11px;"
-        )
+        self._session_report_view.setStyleSheet("font-family:Consolas,monospace; font-size:11px;")
         layout.addWidget(self._session_report_view)
         QShortcut(QKeySequence("F9"), self, self._toggle_session_recording)
         for digit in range(10):
@@ -1771,7 +1802,11 @@ class MainWindow(QMainWindow):
         """
         # 관객용 화면에서는 gaze/HUD 디버그는 숨기되, 실제 MediaPipe 손 입력과
         # 제스처 판정을 사용자가 확인할 수 있도록 손 스켈레톤만 남긴다.
-        self._demo_video = VideoView(show_overlay=False, show_hand_overlay=True)
+        self._demo_video = VideoView(
+            show_overlay=False,
+            show_hand_overlay=True,
+            show_hand_details=False,
+        )
         self._demo_panel = DemoPanel(
             on_mapping_changed=self._on_demo_mapping_changed,
             on_fallback_changed=self._on_demo_fallback_changed,
@@ -1944,7 +1979,10 @@ class MainWindow(QMainWindow):
     def _set_control_enabled(self, enabled: bool) -> None:
         """실제 OS 제어를 켜고 끈다. 끌 때는 눌린 버튼을 반드시 놓는다."""
         # 손 추적 탭에서 토글되면 실시간 탭 토글도 맞춘다.
-        if hasattr(self, "_control_toggle_live") and self._control_toggle_live.isChecked() != enabled:
+        if (
+            hasattr(self, "_control_toggle_live")
+            and self._control_toggle_live.isChecked() != enabled
+        ):
             self._control_toggle_live.blockSignals(True)
             self._control_toggle_live.setChecked(enabled)
             self._control_toggle_live.blockSignals(False)
@@ -2003,7 +2041,9 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(
             ContractPanel(
-                "Fusion → Protocol", Intent, "시선 타겟 + 제스처를 합쳐 만든 의도 (모델 학습 후 활성)."
+                "Fusion → Protocol",
+                Intent,
+                "시선 타겟 + 제스처를 합쳐 만든 의도 (모델 학습 후 활성).",
             )
         )
         layout.addWidget(
@@ -2172,7 +2212,11 @@ class MainWindow(QMainWindow):
             self._log.warn("이미 기기 등록이 진행 중입니다")
             return
         self._registration = TargetRegistrationSession(
-            target_id, name, device_type, device_id, config=self._gaze_config,
+            target_id,
+            name,
+            device_type,
+            device_id,
+            config=self._gaze_config,
             coverage_min_frames=self._gaze_config.registration_coverage_min_frames,
             raw_sample_dir=Path("data/calibration/raw_samples"),
             requires_nod_gate=requires_nod_gate,
@@ -2494,8 +2538,7 @@ class MainWindow(QMainWindow):
             summary = self._session_recorder.stop()
             path = self._session_recorder.path
             self._log.info(
-                f"세션 녹화 종료: {path} — {summary['frames']} frames, "
-                f"labels {summary['labels']}"
+                f"세션 녹화 종료: {path} — {summary['frames']} frames, labels {summary['labels']}"
             )
             self._session_record_button.setText("세션 녹화 시작 (F9)")
             self._update_session_status()
@@ -2562,9 +2605,7 @@ class MainWindow(QMainWindow):
             return
         self._sample_list.addItem(format_gaze_sample(sample))
         self._sample_list.scrollToBottom()
-        self._log.info(
-            f"Gaze 샘플 {sample['sample_index']}/{self._sample_store.capacity} 저장"
-        )
+        self._log.info(f"Gaze 샘플 {sample['sample_index']}/{self._sample_store.capacity} 저장")
         self._refresh_sample_button()
 
     def _refresh_sample_button(self) -> None:
@@ -2586,6 +2627,15 @@ class MainWindow(QMainWindow):
         # 손을 놓치면 드래그가 눌린 채 남지 않게 먼저 정리한다.
         if not snapshot.hand_detected:
             self._pose_control.release()
+        # 중지(middle_point) 포즈의 '창 닫기': **디버깅 툴 창이 활성일 때만** 이 툴을
+        # 닫는다(사용자 지시 2026-07-22) — 카메라 앞에서 손만으로 툴을 종료할 수 있게.
+        # 다른 창이 활성이면 가로채지 않고 아래 pose_control.apply가 평소대로 그 창에
+        # Cmd+W를 보낸다 — 모든 close_tab을 가로채면 배경 앱의 탭을 닫을 수 없게 된다.
+        if self.isActiveWindow() and any(
+            event.kind == "close_tab" for event in snapshot.pose_events
+        ):
+            self.close()
+            return
         # 시선 lock에 의한 경로 중재: 노트북이 아닌 기기(전구)를 보는 동안에는 pose
         # 제어를 멈춘다 — 전구를 보며 손을 움직일 때 커서까지 따라가면 안 된다. 사용자의
         # 제어 토글(`_pose_control.enabled`)은 건드리지 않고 억제만 얹으므로, 전구에서
@@ -2608,6 +2658,10 @@ class MainWindow(QMainWindow):
         self._demo_video.set_control(
             "TCN 판정 대기",
             self._demo_bridge.execution_enabled,
+        )
+        self._demo_panel.set_hand_status(
+            snapshot,
+            execution_enabled=self._demo_bridge.execution_enabled,
         )
         self._hand_panel.update_snapshot(snapshot, self._pose_control.last_action)
         self._sidebar.set_hand_status(snapshot)

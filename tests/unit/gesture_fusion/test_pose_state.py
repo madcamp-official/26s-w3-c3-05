@@ -30,18 +30,23 @@ def _pose(label: str, *, trusted: bool = True) -> PosePrediction:
 
 
 def _hand(dx: float, dy: float) -> np.ndarray:
-    """검지·중지가 (dx, dy) 방향을 가리키는 랜드마크.
+    """검지·중지가 (dx, dy) 방향을 가리키는, 곧게 편 손가락 랜드마크.
 
-    방향은 (dx, dy)를 따르되, 손가락 길이는 편 손가락에 해당하는 현실적 값(palm_scale
-    정규화 0.7)으로 뻗어 스크롤 폄 게이트(MIN_FINGER_EXTENSION)를 통과하게 한다.
+    방향은 (dx, dy)를 따르되, 두 손가락을 곧게(MCP·PIP·DIP·끝을 일직선으로) 펴
+    직진도 게이트(TWO_FINGER_STRAIGHTNESS_MIN)를 통과하게 한다. PIP·DIP를 MCP→끝
+    선분 위 등간격에 두므로 straightness=1.0이 되어 경계값과 무관하게 안정적이다.
     """
     d = np.array([dx, dy], dtype=np.float64)
     norm = float(np.linalg.norm(d))
     unit = d / norm if norm > 0 else d
     tip = unit * 0.7  # 편 손가락 길이(palm 단위)
     points = np.zeros((21, 2), dtype=np.float64)
-    points[5], points[9] = [0.0, 0.0], [0.1, 0.0]              # MCP
-    points[8], points[12] = tip, np.array([0.1, 0.0]) + tip     # 끝
+    for mcp, pip, dip, end, base in ((5, 6, 7, 8, [0.0, 0.0]), (9, 10, 11, 12, [0.1, 0.0])):
+        origin = np.array(base, dtype=np.float64)
+        points[mcp] = origin
+        points[pip] = origin + tip * (1.0 / 3.0)  # MCP→끝 선분 위 등간격 → 곧음(straightness 1.0)
+        points[dip] = origin + tip * (2.0 / 3.0)
+        points[end] = origin + tip
     return points
 
 
@@ -267,6 +272,53 @@ def test_pinch_drag_also_moves_cursor() -> None:
     events = _feed_cursor(machine, "pinch_index", ((0.4, 0.4), (0.6, 0.6)), ms=700)
     assert any(e.kind == "move" for e in events)
     assert any(e.kind == "drag_start" for e in events)
+
+
+def _index_hand(*, straight: bool) -> np.ndarray:
+    """검지를 곧게 편(True) / 애매하게 굽힌(False) index_point 랜드마크."""
+    points = np.zeros((21, 2), dtype=np.float64)
+    tip = np.array([0.0, -0.7])
+    if straight:  # MCP·PIP·DIP·끝 일직선 → straightness 1.0
+        points[5], points[6], points[7], points[8] = [0.0, 0.0], tip / 3, 2 * tip / 3, tip
+    else:  # 끝이 손바닥으로 말려 straightness가 게이트 아래로 떨어진다
+        points[5], points[6], points[7], points[8] = [0.0, 0.0], [0.0, -0.35], [0.25, -0.45], [0.45, -0.25]
+    return points
+
+
+def _feed_cursor_lm(machine, ref, landmarks, *, ms, start=0, step=33, palm=0.15):
+    """`_feed_cursor`와 같되 매 프레임 landmarks도 넘긴다(폄 게이트 검증용)."""
+    events, t = [], start
+    while t <= start + ms:
+        frac = (t - start) / max(ms, 1)
+        if isinstance(ref[0], tuple):
+            point = (ref[0][0] + (ref[1][0] - ref[0][0]) * frac,
+                     ref[0][1] + (ref[1][1] - ref[0][1]) * frac)
+        else:
+            point = ref
+        events.extend(
+            machine.update(_pose("index_point"), t, landmarks, reference_point=point, palm_scale=palm)
+        )
+        t += step
+    return events
+
+
+def test_bent_index_gates_cursor() -> None:
+    """검지를 애매하게 굽히면 index_point로 분류돼도 커서 이동에 진입하지 않는다."""
+    machine = PoseStateMachine()
+    bent = _index_hand(straight=False)
+    _feed_cursor_lm(machine, (0.5, 0.5), bent, ms=200)  # 진입
+    events = _feed_cursor_lm(machine, ((0.5, 0.5), (0.8, 0.5)), bent, ms=300, start=233)
+    assert machine.state == "index_point"  # 상태는 유지된다
+    assert [e for e in events if e.kind == "move"] == []  # 커서 이동은 차단
+
+
+def test_straight_index_moves_cursor_through_gate() -> None:
+    """검지를 곧게 펴면 폄 게이트를 통과해 커서가 이동한다(landmarks가 있어도)."""
+    machine = PoseStateMachine()
+    straight = _index_hand(straight=True)
+    _feed_cursor_lm(machine, (0.5, 0.5), straight, ms=200)  # 진입
+    events = _feed_cursor_lm(machine, ((0.5, 0.5), (0.8, 0.5)), straight, ms=300, start=233)
+    assert any(e.kind == "move" for e in events)
 
 
 def test_stationary_hand_does_not_move_cursor() -> None:

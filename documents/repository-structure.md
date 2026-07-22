@@ -24,7 +24,7 @@
 │   │   └── telemetry/                # trace·상태 전이·latency
 │   ├── runtime/                      # composition root: 기기 레지스트리·executor 배선(devices.py)
 │   ├── calibration/                  # 기기 등록 및 사용자 calibration
-│   ├── pointer/                      # 커서·pinch click·drag 연속 제어
+│   ├── pointer/                      # (미배선) 커서·pinch click·drag 연속 제어 목적으로 신설했으나, 실제 구현은 gesture_fusion/pose_state.py + monitoring/pose_control.py 경로로 대체됨(어디서도 import 안 됨, 아래 의존 방향 참조)
 │   └── monitoring/                   # 로컬 모니터링·시연 UI
 │       # pose_control.py: 자세→실제 OS 입력
 │       # demo_bridge.py: 실시간 gaze·gesture 스트림→FusionEngine 배선(시연 탭 코어, Qt 무관)
@@ -62,7 +62,7 @@ gaze ────────────────┐
 gesture_fusion ──────┘
 
 calibration -> gaze
-pointer -> contracts + runtime_protocol/adapters
+pointer -> (미배선, 어디서도 import 안 됨 — 실제 커서/클릭/드래그는 gesture_fusion.pose_state + monitoring.pose_control 경로)
 runtime -> contracts + runtime_protocol (composition root: 기기 레지스트리·executor)
 monitoring -> contracts + telemetry + gesture_fusion + runtime (시연 배선)
 ```

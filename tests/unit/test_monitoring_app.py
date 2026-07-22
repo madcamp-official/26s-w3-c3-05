@@ -90,11 +90,15 @@ def test_space_toggles_recording_only_on_finetune_tab(tmp_path: Path) -> None:
     window._toggle_recording = _fake_toggle  # type: ignore[method-assign]
     try:
         window._tabs.setCurrentIndex(0)  # 실시간 탭 — 스페이스는 무시돼야 한다
-        window.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier))
+        window.keyPressEvent(
+            QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier)
+        )
         assert calls == 0
 
         window._tabs.setCurrentWidget(window._finetune_panel)
-        window.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier))
+        window.keyPressEvent(
+            QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier)
+        )
         assert calls == 1
     finally:
         window.close()
@@ -144,7 +148,9 @@ def test_space_always_toggles_recording_even_when_combo_has_focus(tmp_path: Path
         # 포커스가 콤보/버튼 밖(예: 아무 포커스도 없음)이면 MainWindow.keyPressEvent
         # 경로로도 여전히 토글돼야 한다.
         combo.clearFocus()
-        window.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier))
+        window.keyPressEvent(
+            QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier)
+        )
         assert calls == 2
     finally:
         window.close()
@@ -308,6 +314,7 @@ def test_target_registration_selects_device_type_from_dropdown(
         return device_type, True
 
     monkeypatch.setattr(QInputDialog, "getItem", choose_type)
+
     # computer는 끄덕임 게이트 여부를 실제 모달(QMessageBox.question)로 묻는다
     # (2026-07-22) — mock하지 않으면 자동 테스트가 응답 없는 모달에서 멈춘다.
     # electric bulb는 이 다이얼로그를 아예 띄우지 않으므로 호출되면 실패시켜
@@ -611,9 +618,7 @@ def test_demo_raw_target_reflects_latest_gaze_and_fallback(tmp_path: Path) -> No
 
         # 기본값(laptop 고정)이 켜져 있는 동안은 원시 시선과 무관하게 고정
         # 기기를 보여준다 — push_target()이 실제로 쓰는 합성값과 일치해야 한다.
-        window._latest_gaze = SimpleNamespace(
-            target_estimate=SimpleNamespace(target="target_001")
-        )
+        window._latest_gaze = SimpleNamespace(target_estimate=SimpleNamespace(target="target_001"))
         window._update_demo_state("-")
         assert window._demo_panel._raw_target_label.text() == f"실시간 시선: {LAPTOP_DEVICE_ID}"
 
@@ -629,9 +634,7 @@ def test_demo_raw_target_reflects_latest_gaze_and_fallback(tmp_path: Path) -> No
         assert "없음" in window._demo_panel._raw_target_label.text()
 
         window._demo_bridge.set_fallback(BULB_DEVICE_ID)
-        window._latest_gaze = SimpleNamespace(
-            target_estimate=SimpleNamespace(target="target_001")
-        )
+        window._latest_gaze = SimpleNamespace(target_estimate=SimpleNamespace(target="target_001"))
         window._update_demo_state("-")
         assert window._demo_panel._raw_target_label.text() == f"실시간 시선: {BULB_DEVICE_ID}"
     finally:
@@ -730,13 +733,15 @@ def test_video_view_can_show_only_hand_tracking_without_other_debug_overlays(
     import jarvis.monitoring.app as app_module
 
     calls: list[str] = []
+    hand_detail_flags: list[bool] = []
     monkeypatch.setattr(app_module, "draw_hud", lambda *a, **k: calls.append("hud"))
-    monkeypatch.setattr(
-        app_module, "draw_gaze_overlay", lambda *a, **k: calls.append("gaze")
-    )
-    monkeypatch.setattr(
-        app_module, "draw_hand_overlay", lambda *a, **k: calls.append("hand")
-    )
+    monkeypatch.setattr(app_module, "draw_gaze_overlay", lambda *a, **k: calls.append("gaze"))
+
+    def _record_hand(*args: object, **kwargs: object) -> None:
+        calls.append("hand")
+        hand_detail_flags.append(bool(kwargs["show_details"]))
+
+    monkeypatch.setattr(app_module, "draw_hand_overlay", _record_hand)
     monkeypatch.setattr(
         app_module,
         "draw_registration_guidance",
@@ -758,6 +763,18 @@ def test_video_view_can_show_only_hand_tracking_without_other_debug_overlays(
     hand_only.set_registration_guidance("t", "i", 0.5)
     hand_only.show_frame(frame)
     assert calls == ["hand"]
+    assert hand_detail_flags[-1] is True
+    calls.clear()
+
+    skeleton_only = VideoView(
+        show_overlay=False,
+        show_hand_overlay=True,
+        show_hand_details=False,
+    )
+    skeleton_only.set_hand(object())
+    skeleton_only.show_frame(frame)
+    assert calls == ["hand"]
+    assert hand_detail_flags[-1] is False
     calls.clear()
 
     debug = VideoView()  # 기본값 True — 다른 탭은 여전히 다 그려야 한다.
@@ -779,6 +796,7 @@ def test_demo_tab_video_keeps_only_hand_overlay(tmp_path: Path) -> None:
     try:
         assert window._demo_video._show_overlay is False
         assert window._demo_video._show_hand_overlay is True
+        assert window._demo_video._show_hand_details is False
         assert window._video._show_overlay is True
     finally:
         window.close()
@@ -838,10 +856,7 @@ def test_registered_device_type_is_automatically_mapped_for_demo(
     )
     try:
         assert window._device_mapping.get("target_001") == runtime_device
-        assert (
-            window._demo_panel._mapping_combos["target_001"].currentData()
-            == runtime_device
-        )
+        assert window._demo_panel._mapping_combos["target_001"].currentData() == runtime_device
     finally:
         window.close()
         app.processEvents()
