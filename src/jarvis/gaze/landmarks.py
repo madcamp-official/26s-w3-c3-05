@@ -264,6 +264,12 @@ class FaceLandmarkerAdapter:
         # 이 이진 근사로 충분히 표현된다.
         confidence = 1.0
 
+        eyes_open = self._blink_detector.update(
+            left_eye_open_ratio,
+            right_eye_open_ratio,
+        )
+        left_eye_baseline, right_eye_baseline = self._blink_detector.eye_baselines
+
         return FaceObservation(
             timestamp_ms=timestamp_ms,
             frame_id=frame_id,
@@ -277,9 +283,10 @@ class FaceLandmarkerAdapter:
             face_detected=True,
             left_eye_center_normalized=left_eye_center,
             right_eye_center_normalized=right_eye_center,
-            eyes_open=self._blink_detector.update(
-                left_eye_open_ratio,
-                right_eye_open_ratio,
-            ),
+            eyes_open=eyes_open,
+            left_eye_open_ratio=left_eye_open_ratio,
+            right_eye_open_ratio=right_eye_open_ratio,
+            left_eye_open_baseline=left_eye_baseline,
+            right_eye_open_baseline=right_eye_baseline,
             head_position_mm=head_position_mm,
         )

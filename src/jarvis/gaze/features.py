@@ -45,6 +45,10 @@ class FaceObservation:
     left_eye_center_normalized: tuple[float, float] | None = None
     right_eye_center_normalized: tuple[float, float] | None = None
     eyes_open: bool = True
+    left_eye_open_ratio: float | None = None
+    right_eye_open_ratio: float | None = None
+    left_eye_open_baseline: float | None = None
+    right_eye_open_baseline: float | None = None
     head_position_mm: Vector3 | None = None
     """머리(얼굴 모델 원점)의 카메라 기준 3D 위치 근사값 — MediaPipe facial
     transformation matrix의 translation 성분(`transform[:3, 3]`)에서 얻는다.
@@ -83,6 +87,14 @@ class FaceObservation:
                 continue
             if not all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in center):
                 raise ValueError(f"{name} must contain normalized coordinates within [0, 1]")
+        for name, ratio in (
+            ("left_eye_open_ratio", self.left_eye_open_ratio),
+            ("right_eye_open_ratio", self.right_eye_open_ratio),
+            ("left_eye_open_baseline", self.left_eye_open_baseline),
+            ("right_eye_open_baseline", self.right_eye_open_baseline),
+        ):
+            if ratio is not None and (not math.isfinite(ratio) or ratio < 0.0):
+                raise ValueError(f"{name} must be finite and non-negative")
         if self.head_position_mm is not None:
             if self.head_position_mm.shape != (3,) or not np.all(
                 np.isfinite(self.head_position_mm)
@@ -99,6 +111,7 @@ class GazeVector:
     timestamp_ms: int
     frame_id: int
     origin: Vector3 | None = None
+    source: str = "head+iris"
     """시선 광선의 원점(카메라 기준 머리 위치, mm 근사) — FaceObservation의
     head_position_mm을 그대로 옮긴 값. 없으면 None(3D 삼각측량에 쓰이지 않고
     각도 기반 매칭으로만 처리된다)."""
@@ -116,6 +129,8 @@ class GazeVector:
         if self.origin is not None:
             if self.origin.shape != (3,) or not np.all(np.isfinite(self.origin)):
                 raise ValueError("origin must contain exactly three finite values")
+        if self.source not in {"head+iris", "head-only"}:
+            raise ValueError("gaze source must be 'head+iris' or 'head-only'")
 
 
 def _rotate_2d(x: float, y: float, angle_deg: float) -> tuple[float, float]:
@@ -143,6 +158,22 @@ def _direction_from_yaw_pitch(yaw_deg: float, pitch_deg: float) -> Vector3:
 def compose_gaze_vector(
     observation: FaceObservation, config: GazeConfig = GazeConfig()
 ) -> GazeVector | None:
+    return _compose_gaze_vector(observation, config, use_iris=observation.eyes_open)
+
+
+def compose_head_vector(
+    observation: FaceObservation, config: GazeConfig = GazeConfig()
+) -> GazeVector | None:
+    """Compose a low-confidence fallback from face/head pose only."""
+    return _compose_gaze_vector(observation, config, use_iris=False)
+
+
+def _compose_gaze_vector(
+    observation: FaceObservation,
+    config: GazeConfig,
+    *,
+    use_iris: bool,
+) -> GazeVector | None:
     """단일 프레임의 관측값을 시선 방향 단위 벡터로 합성한다.
 
     얼굴을 잃었거나 tracking confidence가 `config.minimum_tracking_confidence`
@@ -153,7 +184,7 @@ def compose_gaze_vector(
     if not observation.face_detected or confidence < config.minimum_tracking_confidence:
         return None
 
-    if observation.eyes_open:
+    if use_iris:
         left_x, left_y = observation.left_iris_relative
         right_x, right_y = observation.right_iris_relative
         eye_offset_x = (left_x + right_x) / 2.0
@@ -186,4 +217,5 @@ def compose_gaze_vector(
         timestamp_ms=observation.timestamp_ms,
         frame_id=observation.frame_id,
         origin=observation.head_position_mm,
+        source="head+iris" if use_iris else "head-only",
     )

@@ -176,8 +176,9 @@ class HandSnapshot:
 
 def _landmark_bbox(landmarks: object) -> tuple[float, float, float, float]:
     """손 랜드마크 리스트의 image-space bounding box (x_min, y_min, x_max, y_max)."""
-    xs = [lm.x for lm in landmarks]
-    ys = [lm.y for lm in landmarks]
+    items = cast("list[object]", landmarks)
+    xs = [float(getattr(item, "x")) for item in items]
+    ys = [float(getattr(item, "y")) for item in items]
     return (min(xs), min(ys), max(xs), max(ys))
 
 

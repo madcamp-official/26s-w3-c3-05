@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import sys
 import time
 from dataclasses import asdict
@@ -127,6 +128,274 @@ def _run_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_diagnose_composition(args: argparse.Namespace) -> int:
+    from jarvis.gaze.composition_diagnostics import analyze_fixation_sweep, summarize
+    from jarvis.gaze.config import GazeConfig
+
+    config = GazeConfig()
+    print(
+        "한 지점(문제가 되는 물체의 중앙)에서 눈을 떼지 말고 고개만 움직이세요.\n"
+        f"  1) 좌↔우로 천천히 끝까지 (yaw), 2) 상↓하로 천천히 끝까지 (pitch).\n"
+        f"{args.duration_seconds:.0f}초 캡처합니다. 먼저 끝나면 Ctrl+C."
+    )
+    observations = []
+    deadline = time.monotonic() + args.duration_seconds
+    last_printed_ms = -args.interval_ms
+    try:
+        for observation in _observation_stream(Path(args.model), args.camera_index):
+            observations.append(observation)
+            if observation.timestamp_ms - last_printed_ms >= args.interval_ms:
+                last_printed_ms = observation.timestamp_ms
+                mean_x = (
+                    observation.left_iris_relative[0] + observation.right_iris_relative[0]
+                ) / 2.0
+                mean_y = (
+                    observation.left_iris_relative[1] + observation.right_iris_relative[1]
+                ) / 2.0
+                clamp_metric = max(abs(mean_x), abs(mean_y))
+                marker = "  <-- CLAMP" if clamp_metric > config.max_valid_eye_offset else ""
+                remaining = max(0.0, deadline - time.monotonic())
+                print(
+                    f"[{remaining:4.1f}s] head_yaw={observation.head_yaw_deg:+6.1f} "
+                    f"head_pitch={observation.head_pitch_deg:+6.1f} "
+                    f"iris=({mean_x:+.2f}, {mean_y:+.2f}){marker}"
+                )
+            if time.monotonic() >= deadline:
+                break
+    except KeyboardInterrupt:
+        print("캡처를 중단하고 지금까지의 프레임으로 분석합니다.")
+
+    diagnostics = analyze_fixation_sweep(observations, config)
+    if diagnostics.valid_frames < args.minimum_frames:
+        raise RuntimeError(
+            f"Only {diagnostics.valid_frames} valid frames captured; "
+            f"need {args.minimum_frames}."
+        )
+
+    if args.csv_output:
+        csv_path = Path(args.csv_output)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with csv_path.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(
+                [
+                    "timestamp_ms",
+                    "frame_id",
+                    "head_yaw_deg",
+                    "head_pitch_deg",
+                    "head_roll_deg",
+                    "left_iris_x",
+                    "left_iris_y",
+                    "right_iris_x",
+                    "right_iris_y",
+                    "eyes_open",
+                    "face_detected",
+                    "tracking_confidence",
+                ]
+            )
+            for item in observations:
+                writer.writerow(
+                    [
+                        item.timestamp_ms,
+                        item.frame_id,
+                        item.head_yaw_deg,
+                        item.head_pitch_deg,
+                        item.head_roll_deg,
+                        item.left_iris_relative[0],
+                        item.left_iris_relative[1],
+                        item.right_iris_relative[0],
+                        item.right_iris_relative[1],
+                        item.eyes_open,
+                        item.face_detected,
+                        min(item.eye_tracking_confidence, item.face_tracking_confidence),
+                    ]
+                )
+        print(f"frames written to {csv_path}")
+
+    print(json.dumps(asdict(diagnostics), indent=2, ensure_ascii=False))
+    for line in summarize(diagnostics):
+        print(f"- {line}")
+    return 0
+
+
+def _run_verify_target(args: argparse.Namespace) -> int:
+    """재등록-검증 루프의 한 회차: 등록된 target을 응시 스윕으로 재검증한다.
+
+    사용법: 재등록 **직후** `--label after-registration --output <a.json>`으로
+    1회, 시간이 지나거나 자세·조명이 바뀐 뒤 `--compare <a.json>`으로 1회 더
+    실행한다. 직후부터 OUT이면 등록 수집 문제, 직후엔 IN인데 나중에 OUT이면
+    세션 드리프트다(target_verification.py 판정 문구 참고).
+    """
+    import datetime as _datetime
+
+    from jarvis.calibration.registry import TargetRegistry
+    from jarvis.gaze.classifier import TargetClassifier
+    from jarvis.gaze.config import GazeConfig
+    from jarvis.gaze.direction import direction_to_yaw_pitch
+    from jarvis.gaze.feature_profile import TargetFeatureSample
+    from jarvis.gaze.smoothing import GazeSmoother
+    from jarvis.gaze.features import compose_gaze_vector
+    from jarvis.gaze.target_verification import (
+        compare_verifications,
+        verify_target_samples,
+    )
+
+    config = GazeConfig()
+    registry = TargetRegistry(Path(args.profiles))
+    records = registry.records
+    if not records:
+        raise RuntimeError(f"no registered targets in {args.profiles}")
+    if args.target_id:
+        record = registry.get(args.target_id)
+        if record is None:
+            known = ", ".join(item.target_id for item in records)
+            raise RuntimeError(f"unknown target '{args.target_id}' (registered: {known})")
+    elif len(records) == 1:
+        record = records[0]
+    else:
+        known = ", ".join(item.target_id for item in records)
+        raise RuntimeError(f"multiple targets registered ({known}) — pass target_id")
+
+    classifier = TargetClassifier(config)
+    for item in records:
+        classifier.register_profile(
+            item.to_profile(),
+            geometry_3d=item.to_geometry_3d(),
+            feature_profile=item.feature_profile,
+            area_profile=item.area_profile,
+            pose_correction=item.pose_correction,
+        )
+    area_profile = classifier.area_profiles.get(record.target_id)
+    if area_profile is None:
+        raise RuntimeError(f"'{record.target_id}' has no traced area profile — re-register it")
+
+    print(
+        f"'{record.name}' 중앙 한 점에서 눈을 떼지 말고 고개만 움직이세요.\n"
+        f"  좌로 끝까지 → 우로 끝까지 → 위·아래 → 카메라 가까이·멀리.\n"
+        f"{args.duration_seconds:.0f}초 캡처합니다. 먼저 끝나면 Ctrl+C.",
+        flush=True,
+    )
+    smoother = GazeSmoother(config)
+    samples: list[TargetFeatureSample] = []
+    deadline = time.monotonic() + args.duration_seconds
+    last_printed_ms = -args.interval_ms
+    try:
+        for observation in _observation_stream(Path(args.model), args.camera_index):
+            # deadline 검사는 유효성 필터보다 먼저 한다 — 얼굴 미검출/눈 감음
+            # 프레임이 continue로 빠지면 루프 끝의 검사를 영영 만나지 못해
+            # 캡처가 종료되지 않는다.
+            if time.monotonic() >= deadline:
+                break
+            if not observation.eyes_open:
+                continue
+            gaze_vector = compose_gaze_vector(observation, config)
+            smoothed = smoother.update(gaze_vector)
+            if smoothed is None:
+                continue
+            left_eye = observation.left_eye_center_normalized
+            right_eye = observation.right_eye_center_normalized
+            if left_eye is None or right_eye is None:
+                continue
+            face_scale = math.hypot(right_eye[0] - left_eye[0], right_eye[1] - left_eye[1])
+            if not math.isfinite(face_scale) or face_scale <= 0.0:
+                continue
+            gaze_yaw, gaze_pitch = direction_to_yaw_pitch(smoothed.direction)
+            try:
+                sample = TargetFeatureSample(
+                    gaze_yaw=gaze_yaw,
+                    gaze_pitch=gaze_pitch,
+                    head_yaw=observation.head_yaw_deg,
+                    head_pitch=observation.head_pitch_deg,
+                    head_roll=observation.head_roll_deg,
+                    face_scale=face_scale,
+                    face_center_x=(left_eye[0] + right_eye[0]) * 0.5,
+                    face_center_y=(left_eye[1] + right_eye[1]) * 0.5,
+                )
+            except ValueError:
+                continue
+            samples.append(sample)
+            if observation.timestamp_ms - last_printed_ms >= args.interval_ms:
+                last_printed_ms = observation.timestamp_ms
+                distance, _gy, _gp = classifier.area_distance_and_gaze(
+                    record.target_id, area_profile, sample
+                )
+                status = "IN " if distance <= config.target_match_tolerance else "OUT"
+                remaining = max(0.0, deadline - time.monotonic())
+                print(
+                    f"[{remaining:4.1f}s] head_yaw={observation.head_yaw_deg:+6.1f} "
+                    f"area=x{distance:4.2f} {status}",
+                    flush=True,
+                )
+    except KeyboardInterrupt:
+        print("캡처를 중단하고 지금까지의 프레임으로 판정합니다.")
+
+    if len(samples) < args.minimum_frames:
+        raise RuntimeError(f"Only {len(samples)} valid frames captured; need {args.minimum_frames}.")
+
+    summary = verify_target_samples(classifier, record.target_id, samples, config)
+    payload = {
+        "target_id": record.target_id,
+        "target_name": record.name,
+        "label": args.label,
+        "captured_at": _datetime.datetime.now().isoformat(timespec="seconds"),
+        "profiles_path": str(args.profiles),
+        "summary": asdict(summary),
+    }
+    rendered = json.dumps(payload, indent=2, ensure_ascii=False)
+    print(rendered)
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(rendered + "\n", encoding="utf-8")
+        print(f"saved to {output_path}")
+
+    if args.compare:
+        earlier_payload = json.loads(Path(args.compare).read_text(encoding="utf-8"))
+        earlier_bins = earlier_payload.get("summary", {}).get("bins", [])
+        print(f"\n-- {earlier_payload.get('label', args.compare)} 실행과 비교 --")
+        for line in compare_verifications(earlier_bins, [dict(b) for b in payload["summary"]["bins"]]):
+            print(f"- {line}")
+    return 0
+
+
+def _run_ab_residual(args: argparse.Namespace) -> int:
+    """등록 시 저장된 1단계 원시 샘플로 Ridge residual A/B를 오프라인 평가한다.
+
+    leave-one-yaw-bin-out으로 raw / 현재 bin 보정표 / Ridge의 held-out 오차를
+    비교한다. 한 파일(한 target) 데이터는 그 물체 주변에서만 유효하다 —
+    전역 보정 판단은 여러 방향의 target 파일을 각각 평가해서 종합한다.
+    """
+    import numpy as np
+
+    from jarvis.gaze.config import GazeConfig
+    from jarvis.gaze.feature_profile import TargetFeatureSample
+    from jarvis.gaze.ridge_residual import evaluate_leave_one_bin_out
+
+    payload = json.loads(Path(args.samples).read_text(encoding="utf-8"))
+    samples = [
+        TargetFeatureSample.from_array(np.asarray(row, dtype=np.float64))
+        for row in payload["samples"]
+    ]
+    center = (float(payload["center_yaw_pitch"][0]), float(payload["center_yaw_pitch"][1]))
+    report = evaluate_leave_one_bin_out(
+        samples,
+        center,
+        GazeConfig(),
+        ridge_lambda=args.ridge_lambda,
+    )
+    print(f"target={payload.get('target_id')} samples={len(samples)} lambda={args.ridge_lambda}")
+    print("bin         n    raw      bin-table  ridge   (held-out median error, deg)")
+    for item in report.bins:
+        table = f"{item.bin_table_error_deg:6.2f}" if item.bin_table_error_deg is not None else "  n/a "
+        print(
+            f"{item.label:11s} {item.frame_count:4d} {item.raw_error_deg:6.2f}   "
+            f"{table}   {item.ridge_error_deg:6.2f}"
+        )
+    for line in report.verdict_lines:
+        print(f"- {line}")
+    return 0
+
+
 def _run_evaluate(args: argparse.Namespace) -> int:
     frames = _load_labeled_csv(Path(args.input))
     result = compute_target_selection_accuracy(frames, args.dataset_id, args.conditions)
@@ -135,6 +404,16 @@ def _run_evaluate(args: argparse.Namespace) -> int:
     if args.output:
         Path(args.output).write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
+    return 0
+
+
+def _run_report(args: argparse.Namespace) -> int:
+    from jarvis.gaze.session_report import build_report, format_report, load_session
+
+    path = Path(args.session)
+    session = load_session(path)
+    report = build_report(session, path=path, bin_width_deg=args.bin_width)
+    print(format_report(report))
     return 0
 
 
@@ -157,16 +436,64 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--interval-ms", type=int, default=250)
     inspect.set_defaults(handler=_run_inspect)
 
+    diagnose = subparsers.add_parser(
+        "diagnose-composition",
+        help="fixation sweep: estimate per-user head weights and iris clamp saturation",
+    )
+    diagnose.add_argument("--model", default="models/face_landmarker.task")
+    diagnose.add_argument("--camera-index", type=int, default=0)
+    diagnose.add_argument("--duration-seconds", type=float, default=20.0)
+    diagnose.add_argument("--minimum-frames", type=int, default=60)
+    diagnose.add_argument("--interval-ms", type=int, default=500)
+    diagnose.add_argument("--csv-output", help="optional per-frame CSV dump path")
+    diagnose.set_defaults(handler=_run_diagnose_composition)
+
+    verify = subparsers.add_parser(
+        "verify-target",
+        help="fixation sweep against a registered target; --compare splits collection bug vs session drift",
+    )
+    verify.add_argument("target_id", nargs="?", help="registry target id (optional if only one)")
+    verify.add_argument("--profiles", default="data/calibration/profiles.json")
+    verify.add_argument("--model", default="models/face_landmarker.task")
+    verify.add_argument("--camera-index", type=int, default=0)
+    verify.add_argument("--duration-seconds", type=float, default=20.0)
+    verify.add_argument("--minimum-frames", type=int, default=60)
+    verify.add_argument("--interval-ms", type=int, default=500)
+    verify.add_argument("--label", default="verify", help="run label stored in the JSON output")
+    verify.add_argument("--output", help="save this run's JSON here (for a later --compare)")
+    verify.add_argument("--compare", help="earlier run's JSON to diff against (collection bug vs drift)")
+    verify.set_defaults(handler=_run_verify_target)
+
+    ab_residual = subparsers.add_parser(
+        "ab-residual",
+        help="offline leave-one-bin-out A/B: raw vs bin table vs Ridge residual",
+    )
+    ab_residual.add_argument("samples", help="phase-1 raw sample JSON exported at registration")
+    ab_residual.add_argument("--ridge-lambda", type=float, default=1.0)
+    ab_residual.set_defaults(handler=_run_ab_residual)
+
     evaluate = subparsers.add_parser("evaluate", help="measure Target Selection Accuracy")
     evaluate.add_argument("--input", required=True)
     evaluate.add_argument("--dataset-id", required=True)
     evaluate.add_argument("--conditions", required=True)
     evaluate.add_argument("--output")
     evaluate.set_defaults(handler=_run_evaluate)
+
+    report = subparsers.add_parser(
+        "report",
+        help="aggregate a labeled monitoring session (JSONL) into an accuracy/bias report",
+    )
+    report.add_argument("session", help="session .jsonl recorded by the monitoring app")
+    report.add_argument("--bin-width", type=float, default=10.0, help="head-yaw bin width (deg)")
+    report.set_defaults(handler=_run_report)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Windows 콘솔(cp949)이 표현 못 하는 문자가 리포트에 섞여도 크래시 대신
+    # 대체 문자로 출력한다.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     args = _build_parser().parse_args(argv)
     try:
         return int(args.handler(args))

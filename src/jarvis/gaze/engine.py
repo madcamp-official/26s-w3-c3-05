@@ -21,7 +21,7 @@ from jarvis.gaze.classifier import (
     TargetGeometry3D,
 )
 from jarvis.gaze.config import GazeConfig
-from jarvis.gaze.features import FaceObservation, compose_gaze_vector
+from jarvis.gaze.features import FaceObservation, compose_gaze_vector, compose_head_vector
 from jarvis.gaze.lock import GazeLockState, GazeLockStateMachine
 from jarvis.gaze.smoothing import GazeSmoother, SmoothedGaze
 
@@ -74,13 +74,21 @@ class GazeTargetingEngine:
         """
         blink_hold = observation.face_detected and not observation.eyes_open
         gaze_vector = None if blink_hold else compose_gaze_vector(observation, self._config)
-        smoothed = (
-            self._smoother.update(gaze_vector)
-            if gaze_vector is not None
-            else self._smoother.hold(observation.timestamp_ms, observation.frame_id)
-            if blink_hold
-            else self._smoother.hold_tracking_loss(observation.timestamp_ms, observation.frame_id)
-        )
+        if gaze_vector is not None:
+            smoothed = self._smoother.update(gaze_vector)
+        elif blink_hold:
+            if self._smoother.last_source == "head-only":
+                fallback = compose_head_vector(observation, self._config)
+                smoothed = self._smoother.update(fallback) if fallback is not None else None
+            else:
+                smoothed = self._smoother.hold(observation.timestamp_ms, observation.frame_id)
+                if smoothed is None:
+                    fallback = compose_head_vector(observation, self._config)
+                    smoothed = self._smoother.update(fallback) if fallback is not None else None
+        else:
+            smoothed = self._smoother.hold_tracking_loss(
+                observation.timestamp_ms, observation.frame_id
+            )
         self._last_smoothed_gaze = smoothed
 
         if smoothed is None:

@@ -70,6 +70,16 @@ def test_short_blink_holds_last_smoothed_gaze() -> None:
     assert held.stability == first.stability
 
 
+def test_long_eye_unavailable_interval_switches_to_head_only() -> None:
+    engine = GazeTargetingEngine(GazeConfig(blink_hold_ms=200))
+    engine.process(_observation(0, 1_000, head_yaw_deg=0.0))
+    engine.process(_observation(1, 1_100, head_yaw_deg=20.0, eyes_open=False))
+    engine.process(_observation(2, 1_250, head_yaw_deg=30.0, eyes_open=False))
+
+    assert engine.last_smoothed_gaze is not None
+    assert engine.last_smoothed_gaze.source == "head-only"
+
+
 def test_dwell_leads_to_target_locked_and_estimate_matches() -> None:
     config = GazeConfig(dwell_time_ms=200, unknown_probability_threshold=0.5)
     engine = GazeTargetingEngine(config)

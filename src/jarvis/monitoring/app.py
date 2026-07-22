@@ -36,7 +36,7 @@ from typing import Any, Protocol, cast
 import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QPixmap
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPixmap, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QInputDialog,
     QMessageBox,
+    QPlainTextEdit,
     QScrollArea,
     QSplitter,
     QTabWidget,
@@ -62,14 +63,9 @@ from PySide6.QtWidgets import (
 from jarvis.calibration.registry import TargetRecord, TargetRegistry
 from jarvis.calibration.target_registration import RegistrationPhase, TargetRegistrationSession
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
-from jarvis.gaze.calibration_model import (
-    GazeCalibrationCorrector,
-    GazeCalibrationSample,
-    GazeCalibrationStore,
-)
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.lock import GazeLockState
-from jarvis.gaze.personal_classifier import PersonalTargetStore
+from jarvis.gaze.session_report import build_report, format_report, load_session
 from jarvis.gaze.smoothing import SmoothedGaze
 from jarvis.gesture_fusion.landmarks import HandObservation
 from jarvis.gesture_fusion.model_protocol import (
@@ -89,6 +85,7 @@ from jarvis.monitoring.gesture_probe import (
     load_gesture_model_from,
     load_trained_gesture_model,
 )
+from jarvis.monitoring.session_recorder import GazeSessionRecorder, NO_TARGET_LABEL
 from jarvis.monitoring.gesture_source import GestureSource, UntrainedGestureSource
 from jarvis.monitoring.hand_probe import HandProbe, HandSnapshot
 from jarvis.monitoring.messages import MessageLevel, MessageLog
@@ -127,12 +124,16 @@ _LOCK_COLOR = {
     GazeLockState.EXPIRED: "#f85149",
     GazeLockState.COMMITTED: "#2ea043",
 }
+# 1단계는 "중앙 한 점 응시 + 고개 스윕"이다. 테두리를 훑으며 고개를 돌리면
+# 사람은 보는 방향으로 고개를 돌리므로 head-yaw bin이 센서 편향이 아니라
+# "그 자세에서 보던 테두리 위치"를 학습해 pose 보정의 부호가 뒤집힌다
+# (2026-07-22 실측, documents/gaze.md).
 _CENTER_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
-    (4_000, "중앙점을 보면서 얼굴·몸을 왼쪽 위로 천천히 이동", "EYES CENTER - FACE LEFT-UP"),
-    (8_000, "중앙점을 보면서 얼굴·몸을 오른쪽 아래로 천천히 이동", "EYES CENTER - FACE RIGHT-DOWN"),
-    (12_000, "중앙점을 보면서 얼굴·몸을 왼쪽 아래로 천천히 이동", "EYES CENTER - FACE LEFT-DOWN"),
-    (16_000, "중앙점을 보면서 얼굴·몸을 오른쪽 위로 천천히 이동", "EYES CENTER - FACE RIGHT-UP"),
-    (20_000, "중앙점을 보면서 카메라에 조금 가까이·멀리 이동", "EYES CENTER - MOVE NEAR / FAR"),
+    (5_000, "물체 중앙 한 점을 응시한 채 고개를 왼쪽으로 천천히 끝까지", "FIX CENTER - TURN HEAD LEFT"),
+    (10_000, "중앙 응시 유지, 고개를 오른쪽으로 천천히 끝까지", "FIX CENTER - TURN HEAD RIGHT"),
+    (14_000, "중앙 응시 유지, 고개를 정면으로 되돌리고 위·아래로 천천히", "FIX CENTER - HEAD UP / DOWN"),
+    (17_000, "중앙 응시 유지, 카메라에 조금 가까이·멀리 이동", "FIX CENTER - MOVE NEAR / FAR"),
+    (20_000, "중앙 응시 유지, 편한 자세로 되돌아오기", "FIX CENTER - RETURN NEUTRAL"),
 )
 _BOUNDARY_GUIDANCE_PHASES: tuple[tuple[int, str, str], ...] = (
     (2_000, "고개를 고정하고 시선을 물체의 왼쪽 위 모서리로 이동", "HEAD STILL - LOOK TOP-LEFT"),
@@ -275,11 +276,24 @@ class GazePanel(QScrollArea):
         self.setWidget(body)
 
     def update_snapshot(self, s: GazeSnapshot) -> None:
+        if s.tracking_lost:
+            source_status = "  ·  얼굴 추적 손실"
+            status_color = "#f85149"
+        elif s.gaze_source == "head-only":
+            reason = f": {s.gaze_source_reason}" if s.gaze_source_reason else ""
+            source_status = f"  ·  HEAD ONLY{reason}"
+            status_color = "#d29922"
+        elif s.gaze_source in {"held", "tracking-hold"}:
+            source_status = "  ·  이전 gaze 유지"
+            status_color = "#d29922"
+        else:
+            source_status = ""
+            status_color = "#3fb950"
         self._status.setText(
             f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame"
-            + ("  ·  얼굴 추적 손실" if s.tracking_lost else "")
+            + source_status
         )
-        self._status.setStyleSheet("color:#f85149;" if s.tracking_lost else "color:#3fb950;")
+        self._status.setStyleSheet(f"color:{status_color};")
 
         self._lock_strip.set_state(s.lock_state)
         self._engine_target.setText(
@@ -357,7 +371,7 @@ class GazePanel(QScrollArea):
         direction = (
             "  ".join(f"{v:+.3f}" for v in s.gaze_direction)
             if s.gaze_direction is not None
-            else "추적 손실 (None)"
+            else "사용 불가 (None)"
         )
         feature = (
             "  ".join(
@@ -368,6 +382,8 @@ class GazePanel(QScrollArea):
                     f"hp={s.feature_sample.head_pitch:+.1f}",
                     f"hr={s.feature_sample.head_roll:+.1f}",
                     f"scale={s.feature_sample.face_scale:.3f}",
+                    f"face=({s.feature_sample.face_center_x:.3f},"
+                    f"{s.feature_sample.face_center_y:.3f})",
                 )
             )
             if s.feature_sample is not None
@@ -390,41 +406,44 @@ class GazePanel(QScrollArea):
             if s.gaze_motion_acceleration_deg_s2 is not None
             else "None"
         )
-        feature_weights = (
-            f"gaze x{s.personal_feature_weights[0]:.2f}  "
-            f"head x{s.personal_feature_weights[2]:.2f}  "
-            f"scale x{s.personal_feature_weights[5]:.2f}  head-cap 20%"
-            if s.personal_feature_weights is not None
-            else "None"
-        )
-        ml = (
-            f"{s.personal_prediction.target_id}  p={s.personal_prediction.confidence:.3f}  "
-            f"p2={s.personal_prediction.second_best_confidence:.3f}  "
-            f"{'USED' if s.personal_prediction.confidence >= s.personal_confidence_threshold else 'fallback'} "
-            f"(thr={s.personal_confidence_threshold:.2f})"
-            if s.personal_prediction is not None
-            else (
-                "None (needs 2+ trained current targets inside the spatial gate, "
-                f"thr={s.personal_confidence_threshold:.2f})"
-            )
+        settle = (
+            f"yaw={s.gaze_settle_velocity_deg_s[0]:+.1f}  "
+            f"pitch={s.gaze_settle_velocity_deg_s[1]:+.1f} deg/s  "
+            f"age={s.gaze_settle_age_ms}ms"
+            if s.gaze_settle_velocity_deg_s is not None
+            else "None (no completed eye movement)"
         )
         est = s.target_estimate
+        eye_opening = (
+            f"L {s.left_eye_open_ratio:.3f}/{s.left_eye_open_baseline:.3f}  "
+            f"R {s.right_eye_open_ratio:.3f}/{s.right_eye_open_baseline:.3f}  "
+            f"{'OPEN' if s.eyes_open else 'CLOSED'}"
+            if (
+                s.left_eye_open_ratio is not None
+                and s.right_eye_open_ratio is not None
+                and s.left_eye_open_baseline is not None
+                and s.right_eye_open_baseline is not None
+            )
+            else "unavailable"
+        )
         self._numeric.setText(
             f"face_detected : {s.face_detected}\n"
             f"head (deg)    : yaw {s.head_yaw_deg:+7.2f}  pitch {s.head_pitch_deg:+7.2f}  "
             f"roll {s.head_roll_deg:+7.2f}\n"
             f"pose warning  : {s.camera_pose_warning or 'None'}\n"
             f"iris L / R    : {s.left_iris_relative}  /  {s.right_iris_relative}\n"
+            f"eye ratio/base: {eye_opening}\n"
             f"face_scale    : {s.face_scale if s.face_scale is not None else 'None'}\n"
             f"gaze vector   : {direction}\n"
-            f"vector model  : {s.calibration_model_kind or 'geometric'} "
-            f"({'APPLIED' if s.calibration_applied else 'raw'})\n"
+            f"gaze source   : {s.gaze_source}\n"
+            f"source reason : {s.gaze_source_reason or 'None'}\n"
+            "vector model  : geometric head + iris, head-only fallback\n"
             f"feature       : {feature}\n"
             f"gaze delta    : {motion}\n"
             f"gaze velocity : {velocity}\n"
             f"gaze accel    : {acceleration}\n"
-            f"ML priority   : {feature_weights}\n"
-            f"ml score      : {ml}\n"
+            f"settle intent : {settle}\n"
+            "profile model : deterministic area + Mahalanobis\n"
             f"smoothing buf : {s.buffer_fill}/{s.buffer_capacity} frames\n"
             "── TargetEstimate (contract) ──────────────\n"
             f"target={est.target}  p={est.probability:.3f}  "
@@ -1249,8 +1268,7 @@ class MainWindow(QMainWindow):
         hand_model_path: Path | None = None,
         samples_path: Path | None = None,
         gesture_models_dir: Path | None = None,
-        calibration_model_path: Path | None = None,
-        personal_classifier_path: Path | None = None,
+        diagnostics_dir: Path | None = None,
         start_camera: bool = True,
         gaze_enabled: bool = True,
     ) -> None:
@@ -1280,32 +1298,14 @@ class MainWindow(QMainWindow):
         self._sample_store = GazeSampleStore(
             samples_path or Path("data/evaluation/gaze_samples.json")
         )
+        self._session_recorder = GazeSessionRecorder()
+        self._session_label: str | None = None
+        self._diagnostics_dir = diagnostics_dir or Path("data/diagnostics")
         self._gaze_config = GazeConfig(
             enable_3d_target_matching=False,
             require_3d_target_registration=False,
         )
-        self._calibration_store = GazeCalibrationStore(
-            calibration_model_path or _default_calibration_model_path()
-        )
         self._target_registry = TargetRegistry(self._profiles_path)
-        self._personal_target_store = PersonalTargetStore(
-            personal_classifier_path or _default_personal_classifier_path(),
-            feature_weights=self._gaze_config.personal_feature_weights,
-        )
-        self._invalidated_personal_targets = (
-            self._personal_target_store.synchronize_targets(
-                {
-                    record.target_id: record.registration_signature
-                    for record in self._target_registry.records
-                }
-            )
-        )
-        # Prefer the validated residual MLP; Ridge remains a fallback when the
-        # personal dataset is still too small for an MLP.
-        self._active_calibration_model: GazeCalibrationCorrector | None = (
-            self._calibration_store.preferred_model
-        )
-        self._gaze_regression_user_disabled = False
         self._registration: TargetRegistrationSession | None = None
         self._registration_phase_marker: tuple[RegistrationPhase, int] | None = None
         self._last_camera_pose_warning: str | None = None
@@ -1315,17 +1315,12 @@ class MainWindow(QMainWindow):
             model_path=self._model_path,
             profiles_path=self._profiles_path,
             config=self._gaze_config,
-            calibration_model=self._active_calibration_model,
         )
         self._hand_probe = HandProbe(
             model_path=self._hand_model_path, pose_model_path=_default_pose_model_path()
         )
         # 판정과 실행의 분리: 상태기계는 순수 로직이고, 실제 OS 입력은 이 브리지만 한다.
         self._pose_control = PoseControlBridge(sink=default_input_sink(), enabled=True)
-        self._probe.set_personal_classifier(
-            self._personal_target_store.model,
-            confidence_threshold=self._personal_target_store.confidence_threshold,
-        )
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
@@ -1341,11 +1336,6 @@ class MainWindow(QMainWindow):
         self._tabs = tabs
 
         self._log.info("모니터 시작")
-        if self._invalidated_personal_targets:
-            removed = ", ".join(sorted(self._invalidated_personal_targets))
-            self._log.warn(
-                "현재 등록 위치와 맞지 않는 개인 ML 샘플을 제거했습니다: " + removed
-            )
         if self._gesture_source.available:
             self._log.info(f"제스처 인식: {self._gesture_source.status_text}")
         else:
@@ -1489,18 +1479,10 @@ class MainWindow(QMainWindow):
         self._clear_samples_button.clicked.connect(self._clear_gaze_samples)
         self._target_heatmap_toggle = QCheckBox("Target heatmap / 물체 영역 표시")
         self._target_heatmap_toggle.toggled.connect(self._gaze_video.set_target_heatmap_visible)
-        self._gaze_regression_toggle = QCheckBox("Use MLP gaze-vector calibration")
-        self._gaze_regression_toggle.setToolTip(
-            "등록 데이터로 학습된 residual MLP를 final yaw/pitch에 적용합니다. "
-            "MLP 데이터가 부족하면 Ridge를 사용합니다."
-        )
-        self._gaze_regression_toggle.setChecked(self._active_calibration_model is not None)
-        self._gaze_regression_toggle.toggled.connect(self._set_gaze_regression_enabled)
         sample_controls = QHBoxLayout()
         sample_controls.addWidget(self._sample_button, 1)
         sample_controls.addWidget(self._clear_samples_button)
         sample_controls.addWidget(self._target_heatmap_toggle)
-        sample_controls.addWidget(self._gaze_regression_toggle)
         layout.addLayout(sample_controls)
         self._sample_list = QListWidget()
         self._sample_list.setMaximumHeight(130)
@@ -1509,6 +1491,42 @@ class MainWindow(QMainWindow):
             self._sample_list.addItem(format_gaze_sample(sample))
         layout.addWidget(self._sample_list)
         self._refresh_sample_button()
+
+        # 라벨된 디버깅 세션 녹화: F9 시작/종료, 숫자키 0=아무것도 안 봄,
+        # 1..9=등록 target n번을 정답 라벨로 표시. jarvis-gaze report가 집계한다.
+        session_controls = QHBoxLayout()
+        self._session_record_button = QPushButton("세션 녹화 시작 (F9)")
+        self._session_record_button.clicked.connect(self._toggle_session_recording)
+        self._session_label_combo = QComboBox()
+        self._session_label_combo.currentIndexChanged.connect(self._on_session_label_changed)
+        self._session_status = QLabel("세션 녹화 대기")
+        self._session_status.setStyleSheet(_MONO)
+        self._session_report_button = QPushButton("최근 세션 분석")
+        self._session_report_button.clicked.connect(self._analyze_latest_session)
+        self._session_report_button.setEnabled(self._latest_session_path() is not None)
+        session_controls.addWidget(self._session_record_button)
+        session_controls.addWidget(self._session_label_combo, 1)
+        session_controls.addWidget(self._session_status, 1)
+        session_controls.addWidget(self._session_report_button)
+        layout.addLayout(session_controls)
+        self._session_report_view = QPlainTextEdit()
+        self._session_report_view.setReadOnly(True)
+        self._session_report_view.setMaximumHeight(240)
+        self._session_report_view.setPlaceholderText(
+            "세션을 녹화하면 target별 정확도, 자세·거리·얼굴 위치 구간과 "
+            "대표 실패 프레임이 여기에 표시됩니다."
+        )
+        self._session_report_view.setStyleSheet(
+            "font-family:Consolas,monospace; font-size:11px;"
+        )
+        layout.addWidget(self._session_report_view)
+        QShortcut(QKeySequence("F9"), self, self._toggle_session_recording)
+        for digit in range(10):
+            QShortcut(
+                QKeySequence(str(digit)),
+                self,
+                lambda index=digit: self._select_session_label_by_digit(index),
+            )
         self._registration_step = QLabel("2단계 물체 등록: 대기")
         self._registration_step.setStyleSheet("font-weight:700; color:#8b949e;")
         layout.addWidget(self._registration_step)
@@ -1518,8 +1536,8 @@ class MainWindow(QMainWindow):
         self._registration_progress.setFormat("등록 대기")
         layout.addWidget(self._registration_progress)
         self._registration_status = QLabel(
-            "1단계에서는 중앙점만 보며 자세를 바꾸고, "
-            "2단계에서는 고개를 고정한 채 눈으로 물체 테두리를 따라갑니다."
+            "1단계에서는 물체 중앙 한 점을 응시한 채 고개·거리만 바꾸고, "
+            "2단계에서는 고개를 고정한 채 눈으로 테두리를 정밀하게 따라갑니다."
         )
         self._registration_status.setWordWrap(True)
         self._registration_status.setStyleSheet(
@@ -1554,36 +1572,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._target_list)
         self._refresh_targets()
         return container
-
-    def _set_gaze_regression_enabled(self, enabled: bool) -> None:
-        self._gaze_regression_user_disabled = not enabled
-        preferred = getattr(self._calibration_store, "preferred_model", None)
-        if preferred is None:
-            fallback = getattr(self._calibration_store, "model", None)
-            preferred = fallback if fallback is not None and fallback.fitted else None
-        if enabled and preferred is not None:
-            self._active_calibration_model = preferred
-            self._probe.set_calibration_model(self._active_calibration_model)
-            self._log.info(
-                f"gaze {preferred.kind} 벡터 보정 ON "
-                f"(samples={preferred.sample_count}, "
-                f"targets={preferred.target_count})"
-            )
-            return
-        self._active_calibration_model = None
-        self._probe.set_calibration_model(None)
-        if enabled:
-            # The user asked to enable correction, but no model exists yet.
-            # Auto-enable it after enough target registrations have trained one.
-            self._gaze_regression_user_disabled = False
-            self._gaze_regression_toggle.blockSignals(True)
-            self._gaze_regression_toggle.setChecked(False)
-            self._gaze_regression_toggle.blockSignals(False)
-            self._log.warn(
-                "gaze 벡터 보정 사용 불가: 최소 2개 target의 calibration sample이 필요합니다"
-            )
-        else:
-            self._log.info("gaze 벡터 보정 OFF")
 
     def _build_gaze_tab(self) -> QWidget:
         self._gaze_panel = GazePanel(self._probe.status_text)
@@ -1717,6 +1705,8 @@ class MainWindow(QMainWindow):
             self._gaze_history.popleft()
         self._gaze_video.set_gaze(snapshot)
         self._gaze_panel.update_snapshot(snapshot)
+        if self._session_recorder.recording:
+            self._session_recorder.record(snapshot, self._session_label)
         if (
             snapshot.camera_pose_warning
             and snapshot.camera_pose_warning != self._last_camera_pose_warning
@@ -1728,14 +1718,28 @@ class MainWindow(QMainWindow):
         self._latency.record(LatencyStage.CAPTURE_TO_INFERENCE, snapshot.inference_ms)
         if self._registration is not None:
             smoothed = self._smoothed_from_snapshot(snapshot)
-            self._registration.add(
+            accepted = self._registration.add(
                 smoothed,
                 snapshot.tracking_confidence,
                 eyes_open=snapshot.eyes_open,
                 face_scale=snapshot.face_scale,
                 feature_sample=snapshot.feature_sample,
-                calibration_features=snapshot.calibration_features,
             )
+            if (
+                not accepted
+                and not snapshot.eyes_open
+                and snapshot.left_eye_open_ratio is not None
+                and snapshot.right_eye_open_ratio is not None
+                and snapshot.left_eye_open_baseline is not None
+                and snapshot.right_eye_open_baseline is not None
+            ):
+                self._registration.last_rejection_reason = (
+                    "eyes classified closed "
+                    f"(L {snapshot.left_eye_open_ratio:.3f}/"
+                    f"{snapshot.left_eye_open_baseline:.3f}, "
+                    f"R {snapshot.right_eye_open_ratio:.3f}/"
+                    f"{snapshot.right_eye_open_baseline:.3f})"
+                )
             self._update_registration_guidance(snapshot.timestamp_ms)
             if self._registration.is_elapsed(snapshot.timestamp_ms):
                 self._finish_target_registration()
@@ -1785,35 +1789,48 @@ class MainWindow(QMainWindow):
             self._log.warn("이미 기기 등록이 진행 중입니다")
             return
         self._registration = TargetRegistrationSession(
-            target_id, name, device_type, device_id, config=self._gaze_config
+            target_id, name, device_type, device_id, config=self._gaze_config,
+            coverage_min_frames=self._gaze_config.registration_coverage_min_frames,
+            raw_sample_dir=Path("data/calibration/raw_samples"),
         )
         self._registration_phase_marker = None
         self._set_registration_controls(active=True)
-        self._registration_step.setText("1/2 중앙점 MLP 보정 · 20초")
+        self._registration_step.setText("1/2 중앙 응시 + 고개 스윕 · 조건 충족까지")
         self._registration_progress.setValue(0)
-        self._registration_progress.setFormat("1/2 중앙점 보정  %p%")
+        self._registration_progress.setFormat("1/2 중앙 응시 + 고개 스윕  %p%")
         self._registration_status.setText(
-            f"'{name}' 중앙의 한 점을 계속 바라보세요. 눈은 그 점에 고정하고, "
-            "안내에 따라 얼굴·몸의 위치와 거리를 바꿉니다. 물체 테두리는 아직 보지 마세요."
+            f"'{name}' 중앙 한 점에서 눈을 떼지 마세요. 안내에 따라 고개를 "
+            "좌우 끝까지·위아래로 돌리고 카메라 거리를 바꿔 자세별 편향을 수집합니다."
         )
         self._registration_status.setStyleSheet(
             "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
             " border-radius:6px; padding:8px; font-weight:700;"
         )
         self._log.info(
-            f"'{name}' 2단계 등록 시작 — 1/2 중앙점 MLP 보정: "
-            "물체 중앙의 한 점만 보면서 얼굴/몸을 좌상·우하·좌하·우상·근거리/원거리로 이동"
+            f"'{name}' 2단계 등록 시작 — 1/2 중앙 응시 + 고개 스윕: "
+            "물체 중앙 한 점을 계속 응시하면서 고개를 좌우 끝까지·위아래로 돌리고 거리 변경"
         )
         self._gaze_video.set_registration_guidance(
-            "REGISTRATION 1/2 - CENTER CALIBRATION",
-            "KEEP EYES ON ONE CENTER POINT",
+            "REGISTRATION 1/2 - POSE SWEEP",
+            "FIX CENTER, TURN HEAD",
             0.0,
         )
 
     def _update_registration_guidance(self, timestamp_ms: int) -> None:
         assert self._registration is not None
         if self._registration.started_at_ms is None:
-            self._registration_status.setText("등록 대기: 얼굴과 시선이 안정적으로 잡히길 기다리는 중")
+            reason = self._registration.last_rejection_reason
+            reason_text = reason or "waiting for the first valid face + iris frame"
+            self._registration_status.setText(
+                "등록 대기: 첫 유효 시선 프레임을 기다리는 중 · "
+                f"현재 차단 원인: {reason_text} · "
+                f"{self._registration.diagnostic_summary()}"
+            )
+            self._gaze_video.set_registration_guidance(
+                "REGISTRATION WAITING",
+                f"BLOCKED: {reason_text.upper()}",
+                0.0,
+            )
             return
         phase = self._registration.phase
         if phase == RegistrationPhase.COMPLETE:
@@ -1841,23 +1858,42 @@ class MainWindow(QMainWindow):
         remaining_s = max(0.0, (phase_end_ms - elapsed_ms) / 1000.0)
         progress = self._registration.phase_progress(timestamp_ms)
         if phase == RegistrationPhase.CENTER:
-            step = "1/2 중앙점 MLP 보정"
+            step = "1/2 중앙 응시 + 고개 스윕"
             count = self._registration.center_valid_frame_count
             required = self._registration.minimum_valid_frames
-            title = "REGISTRATION 1/2 - CENTER CALIBRATION"
+            title = "REGISTRATION 1/2 - POSE SWEEP"
         else:
             step = "2/2 물체 영역 확정"
             count = self._registration.boundary_valid_frame_count
             required = self._registration.minimum_boundary_frames
             title = "REGISTRATION 2/2 - TRACE BOUNDARY"
-        if elapsed_ms >= self._registration.phase_duration_ms() and count < required:
+        coverage = self._registration.coverage
+        coverage_active = phase == RegistrationPhase.CENTER and coverage is not None
+        if (
+            not coverage_active
+            and elapsed_ms >= self._registration.phase_duration_ms()
+            and count < required
+        ):
             label = "시간은 완료됐지만 유효 프레임이 부족합니다. 안내 자세를 유지해 주세요."
             video_label = "HOLD POSITION - NEED MORE VALID FRAMES"
-        status = (
-            f"{label}\n현재 구간 남은 시간 {remaining_s:0.1f}s · 유효 프레임 {count}/{required} · "
-            f"중앙 {self._registration.center_valid_frame_count} / 경계 "
-            f"{self._registration.boundary_valid_frame_count}"
-        )
+        if coverage_active:
+            assert coverage is not None
+            # 조건 충족식 1단계: 시간 대신 구간별 수집 현황을 안내한다.
+            rows = "  ".join(
+                f"{item.label} {item.count}/{item.required}{'✓' if item.met else ''}"
+                for item in coverage.report()
+            )
+            missing = coverage.missing_labels()
+            hint = f"다음 구간을 채워주세요: {', '.join(missing)}" if missing else "모든 구간 완료!"
+            status = f"물체 중앙을 계속 바라보세요 — {hint}\n{rows}"
+        else:
+            status = (
+                f"{label}\n현재 구간 남은 시간 {remaining_s:0.1f}s · 유효 프레임 {count}/{required} · "
+                f"자세별 {self._registration.center_valid_frame_count} / 정밀 "
+                f"{self._registration.boundary_valid_frame_count}"
+            )
+        if self._registration.last_rejection_reason is not None:
+            status += f" · 현재 제외: {self._registration.last_rejection_reason}"
         self._registration_step.setText(step)
         self._registration_progress.setValue(round(progress * 1000))
         self._registration_progress.setFormat(f"{step}  %p%")
@@ -1871,9 +1907,8 @@ class MainWindow(QMainWindow):
                 else None
             )
             if phase == RegistrationPhase.BOUNDARY and previous_phase != phase:
-                self._activate_registration_preview_calibration()
                 self._log.info(
-                    "1/2 중앙점 보정 완료 — 2/2 영역 확정 시작: "
+                    "1/2 자세·거리 문맥 수집 완료 — 2/2 정밀 영역 확정 시작: "
                     "이제 고개·몸을 고정하고 눈으로만 네 모서리와 테두리를 따라가세요"
                 )
             self._registration_phase_marker = marker
@@ -1899,119 +1934,20 @@ class MainWindow(QMainWindow):
                 geometry_3d=record.to_geometry_3d(),
                 feature_profile=record.feature_profile,
                 area_profile=record.area_profile,
+                pose_correction=record.pose_correction,
                 label=record.name,
-            )
-            calibration_samples = [
-                GazeCalibrationSample(
-                    features=features,
-                    target_yaw=record.direction.yaw,
-                    target_pitch=record.direction.pitch,
-                    target_id=record.target_id,
-                )
-                for features in self._registration.calibration_features
-            ]
-            if calibration_samples:
-                model = self._calibration_store.add_samples(
-                    calibration_samples,
-                    replace_target_id=record.target_id,
-                )
-            else:
-                model = self._calibration_store.model
-                self._log.warn(
-                    f"'{record.name}' 중앙점 calibration feature가 없어 MLP 재학습을 건너뜁니다"
-                )
-            preferred_model = self._calibration_store.preferred_model
-            auto_enable = (
-                preferred_model is not None and not self._gaze_regression_user_disabled
-            )
-            if auto_enable:
-                self._gaze_regression_toggle.blockSignals(True)
-                self._gaze_regression_toggle.setChecked(True)
-                self._gaze_regression_toggle.blockSignals(False)
-            self._active_calibration_model = (
-                preferred_model
-                if auto_enable
-                else None
-            )
-            self._probe.set_calibration_model(self._active_calibration_model)
-            personal_model = self._personal_target_store.add_samples(
-                record.target_id,
-                list(self._registration.feature_samples),
-                replace_target=True,
-                registration_signature=record.registration_signature,
-            )
-            self._probe.set_personal_classifier(
-                personal_model,
-                confidence_threshold=self._personal_target_store.confidence_threshold,
-            )
-            personal_label = (
-                f"personal classifier samples={personal_model.sample_count}"
-                if personal_model is not None
-                else "personal classifier waiting for 2+ targets"
-            )
-            mlp_model = self._calibration_store.mlp_model
-            mlp_label = (
-                f"MLP samples={mlp_model.sample_count}, "
-                f"validation={mlp_model.validation_raw_error_deg:.2f}→"
-                f"{mlp_model.validation_mlp_error_deg:.2f}deg"
-                if mlp_model.fitted
-                and mlp_model.validation_raw_error_deg is not None
-                and mlp_model.validation_mlp_error_deg is not None
-                else "MLP waiting for 3+ target directions / validation improvement"
             )
             self._log.info(
                 f"'{record.name}' 2단계 등록 완료 "
-                f"(중앙 {self._registration.center_valid_frame_count}, "
-                f"경계 {self._registration.boundary_valid_frame_count} frames) "
-                f"— {self._describe_triangulation_outcome(record)} | "
-                f"{self._registration.diagnostic_summary()} | "
-                f"gaze calibration samples={model.sample_count} | {mlp_label} | {personal_label}"
+                f"(중앙 응시 스윕 {self._registration.center_valid_frame_count}, "
+                f"정밀 테두리 {self._registration.boundary_valid_frame_count} frames) | "
+                f"{self._registration.diagnostic_summary()}"
             )
         except ValueError as exc:
             self._log.warn(f"기기 등록 실패: {exc} | {self._registration.diagnostic_summary()}")
         finally:
             self._clear_registration_state()
             self._refresh_targets()
-
-    def _activate_registration_preview_calibration(self) -> None:
-        """Apply phase-1 calibration to phase 2 without persisting partial data."""
-        assert self._registration is not None
-        center = self._registration.center_yaw_pitch
-        if center is None:
-            return
-        center_yaw, center_pitch = center
-        samples = [
-            GazeCalibrationSample(
-                features=features,
-                target_yaw=center_yaw,
-                target_pitch=center_pitch,
-                target_id=self._registration.target_id,
-            )
-            for features in self._registration.calibration_features
-        ]
-        preview = self._calibration_store.preview_model(
-            samples,
-            replace_target_id=self._registration.target_id,
-        )
-        if preview is None:
-            self._log.warn(
-                "1/2 중앙점 데이터는 수집됐지만 아직 보정 모델에 필요한 target 수가 부족합니다"
-            )
-            return
-        if self._gaze_regression_user_disabled:
-            self._log.info(
-                f"1/2 중앙점 임시 {preview.kind} 학습 완료 — 사용자가 보정을 꺼서 2단계에는 미적용"
-            )
-            return
-        self._active_calibration_model = preview
-        self._probe.set_calibration_model(preview)
-        self._gaze_regression_toggle.blockSignals(True)
-        self._gaze_regression_toggle.setChecked(True)
-        self._gaze_regression_toggle.blockSignals(False)
-        self._log.info(
-            f"1/2 중앙점 임시 {preview.kind} 학습 완료·2단계 적용 "
-            f"(samples={preview.sample_count}, targets={preview.target_count}, 저장은 2단계 완료 후)"
-        )
 
     def _cancel_target_registration(self) -> None:
         if self._registration is None:
@@ -2033,43 +1969,19 @@ class MainWindow(QMainWindow):
     def _clear_registration_state(self) -> None:
         self._registration = None
         self._registration_phase_marker = None
-        persistent_model = self._calibration_store.preferred_model
-        self._active_calibration_model = (
-            persistent_model
-            if persistent_model is not None and not self._gaze_regression_user_disabled
-            else None
-        )
-        self._probe.set_calibration_model(self._active_calibration_model)
         self._set_registration_controls(active=False)
         self._registration_step.setText("2단계 물체 등록: 대기")
         self._registration_progress.setValue(0)
         self._registration_progress.setFormat("등록 대기")
         self._registration_status.setText(
-            "1단계에서는 중앙점만 보며 자세를 바꾸고, "
-            "2단계에서는 고개를 고정한 채 눈으로 물체 테두리를 따라갑니다."
+            "1단계에서는 물체 중앙 한 점을 응시한 채 고개·거리만 바꾸고, "
+            "2단계에서는 고개를 고정한 채 눈으로 테두리를 정밀하게 따라갑니다."
         )
         self._registration_status.setStyleSheet(
             "background:#161b22; color:#8b949e; border:1px solid #30363d;"
             " border-radius:6px; padding:8px; font-weight:600;"
         )
         self._gaze_video.clear_registration_guidance()
-
-    def _describe_triangulation_outcome(self, record: TargetRecord) -> str:
-        """3D 위치 추정이 성공했는지, 실패했다면 왜 각도 모드로 대체됐는지를
-        그대로 보여준다 — 성공을 지어내지 않는다(development-principles.md 1절)."""
-        assert self._registration is not None
-        triangulation = self._registration.triangulation_result
-        if record.position_3d is not None:
-            if triangulation is None:
-                return "3D 위치 추정 성공"
-            return f"3D 위치 추정 성공 (baseline {triangulation.baseline_mm:.0f}mm)"
-        if triangulation is None:
-            return "각도 모드로 대체 (머리 움직임 데이터 부족)"
-        return (
-            "각도 모드로 대체 (baseline "
-            f"{triangulation.baseline_mm:.0f}mm, 잔차 {triangulation.residual_rms_mm:.0f}mm, "
-            f"고유값 {triangulation.min_eigenvalue:.4f} — 머리를 더 크게 움직여 보세요)"
-        )
 
     def _reregister_selected_target(self) -> None:
         record = self._selected_target()
@@ -2092,6 +2004,7 @@ class MainWindow(QMainWindow):
                 geometry_3d=updated.to_geometry_3d(),
                 feature_profile=updated.feature_profile,
                 area_profile=updated.area_profile,
+                pose_correction=updated.pose_correction,
                 label=updated.name,
             )
             self._refresh_targets()
@@ -2107,11 +2020,6 @@ class MainWindow(QMainWindow):
             return
         self._target_registry.remove(record.target_id)
         self._probe.unregister_profile(record.target_id)
-        self._personal_target_store.remove_target(record.target_id)
-        self._probe.set_personal_classifier(
-            self._personal_target_store.model,
-            confidence_threshold=self._personal_target_store.confidence_threshold,
-        )
         self._refresh_targets()
 
     def _refresh_targets(self) -> None:
@@ -2129,6 +2037,7 @@ class MainWindow(QMainWindow):
             )
             area_label = (
                 f" area={record.area_profile.radius_yaw:.1f}/{record.area_profile.radius_pitch:.1f}"
+                f" hull={len(record.area_profile.boundary_polygon)}"
                 f" cap={self._gaze_config.registration_max_area_radius_deg:.1f}"
                 if record.area_profile is not None
                 else " area=none"
@@ -2139,6 +2048,106 @@ class MainWindow(QMainWindow):
                 f" spread={record.spread.yaw:.1f}/{record.spread.pitch:.1f}"
                 f"{scale_label}{feature_label}{area_label}"
             )
+        self._refresh_session_labels()
+
+    def _refresh_session_labels(self) -> None:
+        """세션 라벨 콤보를 등록 target 목록과 동기화한다(선택 유지)."""
+        current = self._session_label
+        combo = self._session_label_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("라벨 없음 (집계 제외)", None)
+        combo.addItem("0: 아무것도 안 봄", NO_TARGET_LABEL)
+        for index, record in enumerate(self._target_registry.records, start=1):
+            prefix = f"{index}: " if index <= 9 else ""
+            combo.addItem(f"{prefix}{record.name} [{record.target_id}]", record.target_id)
+        restored = combo.findData(current)
+        combo.setCurrentIndex(restored if restored >= 0 else 0)
+        combo.blockSignals(False)
+        self._session_label = combo.currentData()
+
+    def _on_session_label_changed(self) -> None:
+        self._session_label = self._session_label_combo.currentData()
+        self._update_session_status()
+
+    def _select_session_label_by_digit(self, digit: int) -> None:
+        """숫자키 라벨 선택: 0=아무것도 안 봄, 1..9=등록 target n번."""
+        target_value = (
+            NO_TARGET_LABEL
+            if digit == 0
+            else (
+                self._target_registry.records[digit - 1].target_id
+                if digit - 1 < len(self._target_registry.records)
+                else None
+            )
+        )
+        if target_value is None:
+            return
+        index = self._session_label_combo.findData(target_value)
+        if index >= 0:
+            self._session_label_combo.setCurrentIndex(index)
+
+    def _toggle_session_recording(self) -> None:
+        if self._session_recorder.recording:
+            summary = self._session_recorder.stop()
+            path = self._session_recorder.path
+            self._log.info(
+                f"세션 녹화 종료: {path} — {summary['frames']} frames, "
+                f"labels {summary['labels']}"
+            )
+            self._session_record_button.setText("세션 녹화 시작 (F9)")
+            self._update_session_status()
+            if path is not None:
+                self._show_session_report(path)
+            return
+        path = self._diagnostics_dir / time.strftime("session_%Y%m%d_%H%M%S.jsonl")
+        self._session_recorder.start(
+            path,
+            config=self._gaze_config,
+            targets=self._target_registry.records,
+        )
+        self._log.info(f"세션 녹화 시작: {path} (숫자키로 정답 라벨 표시)")
+        self._session_record_button.setText("세션 녹화 종료 (F9)")
+        self._update_session_status()
+
+    def _latest_session_path(self) -> Path | None:
+        if not self._diagnostics_dir.is_dir():
+            return None
+        paths = list(self._diagnostics_dir.glob("session_*.jsonl"))
+        return max(paths, key=lambda item: item.stat().st_mtime_ns) if paths else None
+
+    def _analyze_latest_session(self) -> None:
+        path = self._latest_session_path()
+        if path is None:
+            self._log.warn("분석할 gaze 세션 파일이 없습니다")
+            return
+        self._show_session_report(path)
+
+    def _show_session_report(self, path: Path) -> None:
+        try:
+            report = build_report(load_session(path), path=path)
+            rendered = format_report(report)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self._session_report_view.setPlainText(f"세션 분석 실패: {error}")
+            self._log.warn(f"gaze 세션 분석 실패: {error}")
+            return
+        self._session_report_view.setPlainText(rendered)
+        self._session_report_view.moveCursor(QTextCursor.MoveOperation.Start)
+        self._log.info(f"gaze 세션 분석 완료: {path}")
+
+    def _update_session_status(self) -> None:
+        label = self._session_label if self._session_label is not None else "(없음)"
+        if self._session_recorder.recording:
+            self._session_status.setText(
+                f"REC {self._session_recorder.frame_count} frames | label: {label}"
+            )
+            self._session_status.setStyleSheet(
+                "font-family:Consolas,monospace; font-size:12px; color:#f85149;"
+            )
+        else:
+            self._session_status.setText(f"세션 녹화 대기 | label: {label}")
+            self._session_status.setStyleSheet(_MONO)
+        self._session_report_button.setEnabled(self._latest_session_path() is not None)
 
     def _save_gaze_sample(self) -> None:
         if self._latest_gaze is None:
@@ -2210,6 +2219,7 @@ class MainWindow(QMainWindow):
         # 인식 스트림은 _on_hand에서 프레임마다(12fps로 솎아) 직접 찍는다 — 여기선 안 건드림.
         self._messages.refresh()
         self._latency_panel.refresh()
+        self._update_session_status()
 
     def keyPressEvent(self, event: object) -> None:  # noqa: N802 - Qt override name
         """ESC로 창을 닫고, 파인튜닝 탭이 보이는 동안엔 스페이스바로 녹화를 토글한다.
@@ -2235,6 +2245,8 @@ class MainWindow(QMainWindow):
         super().keyPressEvent(event)  # type: ignore[arg-type]
 
     def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt override name
+        if self._session_recorder.recording:
+            self._session_recorder.stop()
         if self._camera is not None:
             self._camera.stop()
         super().closeEvent(event)  # type: ignore[arg-type]
@@ -2269,14 +2281,6 @@ def _default_pose_model_path() -> Path:
 
 def _default_profiles_path() -> Path:
     return Path("data/calibration/profiles.json")
-
-
-def _default_calibration_model_path() -> Path:
-    return Path("data/calibration/gaze_regressor.json")
-
-
-def _default_personal_classifier_path() -> Path:
-    return Path("data/calibration/personal_target_classifier.json")
 
 
 def _load_env() -> dict[str, str]:
