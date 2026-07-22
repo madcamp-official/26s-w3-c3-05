@@ -46,7 +46,7 @@ from jarvis.gesture_fusion.pose_protocol import NullPoseClassifier, PoseClassifi
 from jarvis.gesture_fusion.pose_state import (
     PoseEvent,
     PoseStateMachine,
-    two_finger_extension,
+    two_finger_straightness,
 )
 from jarvis.gesture_fusion.smoothing import OneEuroFilter
 
@@ -169,9 +169,9 @@ class HandSnapshot:
     # 통과한 자세이고(순간적인 전이는 여기 오지 않는다), 이벤트는 실행 대상이다.
     pose_state: str = ""
     pose_events: tuple[PoseEvent, ...] = ()
-    # 검지·중지 폄 정도(palm_scale 정규화, MCP→끝 거리 평균). 스크롤 폄 게이트
-    # (MIN_FINGER_EXTENSION) 튜닝을 위해 표시한다. None = 손 없음/랜드마크 미준비.
-    finger_extension: float | None = None
+    # 검지·중지 중 덜 편 손가락의 직진도(1.0=곧음, min). 스크롤 폄 게이트
+    # (TWO_FINGER_STRAIGHTNESS_MIN) 튜닝을 위해 표시한다. None = 손 없음/랜드마크 미준비.
+    finger_straightness: float | None = None
     # 이번 프레임에 MediaPipe가 검출한 **모든 손**의 image-space bounding box
     # (x_min, y_min, x_max, y_max) [0,1]. 디버깅 뷰가 인식된 손 전부를 사각형으로
     # 그린다 — 제어권을 가진(가장 큰) 손만 landmark 스켈레톤까지 그려지는 것과 달리,
@@ -442,8 +442,8 @@ class HandProbe:
             pose=pose,
             pose_state=self._pose_state.state,
             pose_events=tuple(events),
-            finger_extension=(
-                two_finger_extension(np.asarray(model)) if model is not None else None
+            finger_straightness=(
+                two_finger_straightness(np.asarray(model)) if model is not None else None
             ),
             hand_boxes=hand_boxes,
             primary_box_index=best_index,

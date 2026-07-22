@@ -76,7 +76,7 @@ from jarvis.gesture_fusion.model_protocol import (
     EXPECTED_INPUT_FPS,
 )
 from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
-from jarvis.gesture_fusion.pose_state import MIN_FINGER_EXTENSION
+from jarvis.gesture_fusion.pose_state import TWO_FINGER_STRAIGHTNESS_MIN
 from jarvis.monitoring.camera_worker import CameraWorker
 from jarvis.monitoring.console import ConsoleLog, StderrCapture
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
@@ -775,13 +775,11 @@ class HandPanel(QScrollArea):
                 pose_line = f"거부 — {s.pose.reason}" + (
                     f"  [{s.pose.label} {s.pose.confidence:.0%}]" if s.pose.label else ""
                 )
-            if s.finger_extension is None:
+            if s.finger_straightness is None:
                 ext_line = "—"
             else:
-                gate = (
-                    "스크롤 가능" if s.finger_extension >= MIN_FINGER_EXTENSION else "게이트 차단"
-                )
-                ext_line = f"{s.finger_extension:.3f}  / {MIN_FINGER_EXTENSION:g} ({gate})"
+                gate = "스크롤 가능" if s.finger_straightness >= TWO_FINGER_STRAIGHTNESS_MIN else "게이트 차단"
+                ext_line = f"{s.finger_straightness:.3f}  / {TWO_FINGER_STRAIGHTNESS_MIN:g} ({gate})"
             self._numeric.setText(
                 f"모델 입력   : {mode}\n"
                 f"자세 판정   : {pose_line}\n"
@@ -2600,6 +2598,15 @@ class MainWindow(QMainWindow):
         # 손을 놓치면 드래그가 눌린 채 남지 않게 먼저 정리한다.
         if not snapshot.hand_detected:
             self._pose_control.release()
+        # 중지(middle_point) 포즈의 '창 닫기': **디버깅 툴 창이 활성일 때만** 이 툴을
+        # 닫는다(사용자 지시 2026-07-22) — 카메라 앞에서 손만으로 툴을 종료할 수 있게.
+        # 다른 창이 활성이면 가로채지 않고 아래 pose_control.apply가 평소대로 그 창에
+        # Cmd+W를 보낸다 — 모든 close_tab을 가로채면 배경 앱의 탭을 닫을 수 없게 된다.
+        if self.isActiveWindow() and any(
+            event.kind == "close_tab" for event in snapshot.pose_events
+        ):
+            self.close()
+            return
         # 시선 lock에 의한 경로 중재: 노트북이 아닌 기기(전구)를 보는 동안에는 pose
         # 제어를 멈춘다 — 전구를 보며 손을 움직일 때 커서까지 따라가면 안 된다. 사용자의
         # 제어 토글(`_pose_control.enabled`)은 건드리지 않고 억제만 얹으므로, 전구에서
