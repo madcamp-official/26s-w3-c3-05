@@ -322,7 +322,10 @@ class MacOSInputSink:
         return cached
 
     def switch_desktop(self, forward: bool, repeat: int) -> None:
-        """옆 Space(가상 데스크톱)로 전환한다. forward=오른쪽(→), else 왼쪽(←).
+        """옆 Space(가상 데스크톱)로 전환한다. forward=왼쪽(←), else 오른쪽(→).
+
+        방향은 제스처와 반대로 매핑한다(사용자 지시): 오른쪽 슬라이드(forward)는
+        왼쪽 Space로, 왼쪽 슬라이드는 오른쪽 Space로 간다.
 
         **System Events(osascript)로 Ctrl+←/→ 키 코드를 보낸다.** 실측 결론:
         우리 프로세스가 직접 만든 합성 키(CGEvent, HID·session·annotated tap,
@@ -341,7 +344,7 @@ class MacOSInputSink:
         """
         import subprocess
 
-        key_code = 124 if forward else 123  # →=124, ←=123 (Carbon Events.h)
+        key_code = 123 if forward else 124  # forward=←(123), backward=→(124), 제스처와 반대
         script = (
             f'tell application "System Events" to key code {key_code} using control down'
         )

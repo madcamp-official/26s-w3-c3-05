@@ -295,11 +295,12 @@ class Win32InputSink:
         user32.SetCursorPos(int(point.x + dx), int(point.y + dy))
 
     def switch_desktop(self, forward: bool, repeat: int) -> None:
-        # 가상 데스크톱 전환: Ctrl+Win+→ (forward) / Ctrl+Win+← (backward).
-        # Ctrl+Win을 시퀀스 전체 동안 누른 채로 화살표를 repeat번 눌러, 여러 칸을
-        # 이동해도 조합이 유지되게 한다(Alt+Tab 스위처의 Alt hold와 같은 구조).
+        # 가상 데스크톱 전환: Ctrl+Win+← (forward) / Ctrl+Win+→ (backward).
+        # 방향은 제스처와 반대로 매핑한다(사용자 지시): 오른쪽 슬라이드(forward)는
+        # 왼쪽 데스크톱으로 간다. Ctrl+Win을 시퀀스 전체 동안 누른 채로 화살표를
+        # repeat번 눌러, 여러 칸을 이동해도 조합이 유지되게 한다.
         user32 = self._user32()
-        arrow = _VK_RIGHT if forward else _VK_LEFT
+        arrow = _VK_LEFT if forward else _VK_RIGHT
         user32.keybd_event(_VK_CONTROL, 0, 0, 0)
         user32.keybd_event(_VK_LWIN, 0, 0, 0)
         for _ in range(repeat):
