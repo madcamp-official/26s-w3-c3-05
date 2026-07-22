@@ -439,7 +439,7 @@ def test_small_rotation_does_not_change_volume() -> None:
     일상 동작의 작은 검지 회전이 갑자기 볼륨을 한두 칸 바꾸던 것을 막는 게이트다.
     """
     machine = PoseStateMachine()
-    events, _ = _rotate(machine, sign=+1, frames=20, start=0, trusted=False)  # 300° < 360°
+    events, _ = _rotate(machine, sign=+1, frames=16, start=0, trusted=False)  # 240° < ROT_ACTIVATION_DEG
     assert not any(e.startswith("volume") for e in events)
 
 
