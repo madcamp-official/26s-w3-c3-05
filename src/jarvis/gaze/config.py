@@ -254,8 +254,13 @@ class GazeConfig:
     coverage_yaw_front_threshold_deg: float = 10.0
     """|head yaw|가 이 값 미만이면 '정면' coverage 구간으로 센다."""
 
-    coverage_yaw_side_threshold_deg: float = 20.0
-    """head yaw가 ±이 값을 넘으면 '좌/우' coverage 구간으로 센다."""
+    coverage_yaw_side_threshold_deg: float = 15.0
+    """head yaw가 ±이 값을 넘으면 '좌/우' coverage 구간으로 센다.
+
+    2026-07-22 2차 실측 조정: 20도는 물체가 카메라 중앙에서 떨어져 있을 때
+    반대쪽(물체와 먼 쪽) 방향의 눈 보상각이 40도 안팎까지 벌어져 채우기
+    어려웠다. 완료 판정 자체도 좌/우 중 한쪽만 요구하도록 바뀌었지만(같은
+    쪽 방향도 조금이라도 더 쉽게), 문턱값도 함께 낮췄다."""
 
     coverage_pitch_threshold_deg: float = 12.0
     """head pitch가 ±이 값을 넘으면 '상/하' coverage 구간으로 센다."""

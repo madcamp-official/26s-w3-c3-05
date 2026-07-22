@@ -37,10 +37,8 @@ _NX_KEYTYPE = {
 # 감각을 맞추는 정도로 충분 — 정밀 매핑은 실기기 튜닝 대상).
 _SCROLL_UNIT_LINE = 1
 
-# 표준 ANSI 키보드 keycode(Carbon HIToolbox/Events.h). Cmd+Tab 창 전환용.
-_KEYCODE_TAB = 0x30
+# 표준 ANSI 키보드 keycode(Carbon HIToolbox/Events.h).
 _KEYCODE_COMMAND = 0x37
-_KEYCODE_SHIFT = 0x38
 _KEYCODE_F11 = 0x67  # 바탕화면 표시
 _KEYCODE_W = 0x0D  # 탭 닫기(Cmd+W)용
 
@@ -183,7 +181,7 @@ class MacOSInputSink:
     def _tap_close_tab(self) -> None:
         """Cmd+W로 현재 탭(또는 창)을 닫는다.
 
-        `switch_window`의 Cmd+Tab과 같은 구조: Command 플래그를 실은 W 키를
+        `switch_desktop`의 Ctrl+화살표와 같은 구조: Command 플래그를 실은 W 키를
         누름→뗌으로 보낸다. 표준 keycode 경로라 미디어 키(NSEvent)와 달리
         Quartz 키보드 이벤트로 충분하다. 앱이 정의한 '탭 또는 창 닫기'로 동작한다.
         """
@@ -323,30 +321,36 @@ class MacOSInputSink:
         self._desktop_bounds_cache = cached
         return cached
 
-    def switch_window(self, forward: bool, repeat: int) -> None:
-        """Cmd+Tab (forward) / Cmd+Shift+Tab (backward)로 창을 전환한다.
+    def switch_desktop(self, forward: bool, repeat: int) -> None:
+        """옆 Space(가상 데스크톱)로 전환한다. forward=왼쪽(←), else 오른쪽(→).
 
-        Win32의 Alt+Tab hold와 같은 구조: Command를 누른 채로 Tab을 repeat번
-        누른다. Quartz 키 이벤트에 Command(+backward면 Shift) 플래그를 실어
-        보내며, 앱 스위처가 뜬 상태를 유지하도록 Command down/up으로 감싼다.
+        방향은 제스처와 반대로 매핑한다(사용자 지시): 오른쪽 슬라이드(forward)는
+        왼쪽 Space로, 왼쪽 슬라이드는 오른쪽 Space로 간다.
+
+        **System Events(osascript)로 Ctrl+←/→ 키 코드를 보낸다.** 실측 결론:
+        우리 프로세스가 직접 만든 합성 키(CGEvent, HID·session·annotated tap,
+        flag-only 등 전부)는 커서·물리 키는 되는데도 Space 전환만 WindowServer가
+        무시했다. SkyLight로 공간을 직접 바꾸면(`CGSManagedDisplaySetCurrentSpace`)
+        전환은 되지만 창↔Space 소속이 꼬여 미션 컨트롤에 창이 바탕으로 남는
+        아티팩트가 생긴다. 반면 Apple 자체 프로세스인 System Events가 보낸 키는
+        **진짜 Ctrl+화살표로 인정**돼 네이티브 그대로(애니메이션·창 관리 정상)
+        전환된다 — 물리 키를 누른 것과 동일하다.
+
+        "Mission Control > 이전/다음 Space로 이동" 단축키(기본 Ctrl+←/→)와, 이
+        프로세스가 System Events를 제어할 **자동화(Automation) 권한**에 의존한다
+        (첫 호출 시 권한 프롬프트가 뜰 수 있다). `_tap_mission_control`과 같은
+        규약으로, osascript 실패는 예외 없이 조용히 무시한다(제어 경로가 한 번의
+        실패로 멈추지 않게).
         """
-        import Quartz
+        import subprocess
 
-        flags = Quartz.kCGEventFlagMaskCommand
-        if not forward:
-            flags |= Quartz.kCGEventFlagMaskShift
-
-        def key(code: int, key_down: bool, event_flags: int) -> None:
-            event = Quartz.CGEventCreateKeyboardEvent(None, code, key_down)
-            Quartz.CGEventSetFlags(event, event_flags)
-            self._post(event)
-
-        key(_KEYCODE_COMMAND, True, Quartz.kCGEventFlagMaskCommand)
-        if not forward:
-            key(_KEYCODE_SHIFT, True, flags)
+        key_code = 123 if forward else 124  # forward=←(123), backward=→(124), 제스처와 반대
+        script = (
+            f'tell application "System Events" to key code {key_code} using control down'
+        )
         for _ in range(repeat):
-            key(_KEYCODE_TAB, True, flags)
-            key(_KEYCODE_TAB, False, flags)
-        if not forward:
-            key(_KEYCODE_SHIFT, False, Quartz.kCGEventFlagMaskCommand)
-        key(_KEYCODE_COMMAND, False, 0)
+            subprocess.run(
+                ["osascript", "-e", script],
+                check=False,
+                capture_output=True,
+            )

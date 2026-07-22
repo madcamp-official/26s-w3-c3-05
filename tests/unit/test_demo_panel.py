@@ -67,9 +67,14 @@ def test_status_labels_keep_a_readable_color_after_updates() -> None:
     try:
         panel.set_state(
             locked="room.bulb", candidate=None, phase="TARGET_LOCKED",
-            gesture="none", suppressed=True,
+            gesture="none", suppressed=True, raw_target="room.bulb",
         )
-        for label in (panel._target_label, panel._gesture_label, panel._phase_label):
+        for label in (
+            panel._raw_target_label,
+            panel._target_label,
+            panel._gesture_label,
+            panel._phase_label,
+        ):
             assert re.search(r"\bcolor\s*:", label.styleSheet()), label.text()
     finally:
         panel.deleteLater()
@@ -104,20 +109,108 @@ def test_state_text_reflects_lock_candidate_and_suppression() -> None:
         app.processEvents()
 
 
+def test_raw_target_is_shown_separately_from_locked_device() -> None:
+    """실시간 시선(원시 classifier 결과)과 바라보는 기기(Fusion dwell 확정)는
+    서로 다른 값을 동시에 보여줄 수 있어야 한다 — 예: 아직 확정 전이라 '바라보는
+    기기: 없음'이어도 지금 막 laptop을 보고 있다는 건 실시간 시선에 남는다."""
+    app = QApplication.instance() or QApplication([])
+    panel = _panel()
+    try:
+        panel.set_state(
+            locked=None, candidate=None, phase="IDLE", gesture="-",
+            suppressed=False, raw_target=None,
+        )
+        assert "없음" in panel._raw_target_label.text()
+        assert "없음" in panel._target_label.text()
+
+        panel.set_state(
+            locked=None, candidate=None, phase="IDLE", gesture="-",
+            suppressed=False, raw_target="laptop",
+        )
+        assert "laptop" in panel._raw_target_label.text()
+        assert "없음" in panel._target_label.text()  # 아직 dwell 확정 전
+
+        panel.set_state(
+            locked="room.bulb", candidate=None, phase="TARGET_LOCKED",
+            gesture="-", suppressed=False, raw_target="laptop",
+        )
+        # 확정된 기기(bulb)와 지금 실제로 보는 기기(laptop)가 달라도 둘 다
+        # 각자의 값을 그대로 보여준다 — 서로를 덮어쓰지 않는다.
+        assert "laptop" in panel._raw_target_label.text()
+        assert "room.bulb" in panel._target_label.text()
+
+        # raw_target을 생략하면(기존 호출부 호환) 조용히 '없음'으로 떨어진다.
+        panel.set_state(
+            locked=None, candidate=None, phase="IDLE", gesture="-", suppressed=False
+        )
+        assert "없음" in panel._raw_target_label.text()
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
 def test_mapping_table_rebuilds_without_leaking_rows() -> None:
     app = QApplication.instance() or QApplication([])
     panel = _panel()
     try:
         panel.set_targets([], {})
         panel.set_targets(
-            [TargetChoice("target_001", "전구"), TargetChoice("target_002", "노트북")],
+            [
+                TargetChoice("target_001", "전구", "electric bulb"),
+                TargetChoice("target_002", "노트북", "computer"),
+            ],
             {"target_001": "room.bulb"},
         )
-        assert panel._mapping_combos["target_001"].currentText() == "room.bulb"
+        assert panel._mapping_combos["target_001"].currentData() == "room.bulb"
         assert panel._mapping_combos["target_002"].currentText() == "(연결 안 함)"
 
         panel.set_targets([TargetChoice("target_003", "새 물체")], {})
         assert set(panel._mapping_combos) == {"target_003"}
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
+def test_execution_toggle_reports_armed_and_judgment_only_modes() -> None:
+    app = QApplication.instance() or QApplication([])
+    toggled: list[bool] = []
+    panel = DemoPanel(
+        on_mapping_changed=lambda target_id, device_id: None,
+        on_fallback_changed=lambda device_id: None,
+        on_preset_changed=lambda preset: None,
+        on_execution_toggled=toggled.append,
+    )
+    try:
+        # 기본 켜짐(사용자 지시, 2026-07-22) — 생성 중에는 connect 전이라 신호가
+        # 안 뜨지만 상태 라벨은 이미 "실행 활성"으로 맞춰져 있어야 한다.
+        assert panel._execution_toggle.isChecked() is True
+        assert "실행 활성" in panel._execution_status.text()
+
+        panel._execution_toggle.setChecked(False)
+        assert toggled[-1] is False
+        assert "판정 전용" in panel._execution_status.text()
+        panel._execution_toggle.setChecked(True)
+        assert toggled[-1] is True
+        assert "실행 활성" in panel._execution_status.text()
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
+def test_fallback_combo_emits_runtime_id_not_display_label() -> None:
+    app = QApplication.instance() or QApplication([])
+    selected: list[str | None] = []
+    panel = DemoPanel(
+        on_mapping_changed=lambda target_id, device_id: None,
+        on_fallback_changed=selected.append,
+        on_preset_changed=lambda preset: None,
+        on_execution_toggled=lambda enabled: None,
+    )
+    try:
+        panel._fallback_combo.setCurrentIndex(1)
+        panel._fallback_toggle.setChecked(True)
+        assert selected[-1] == "room.bulb"
+        assert "electric bulb" in panel._fallback_combo.currentText()
     finally:
         panel.deleteLater()
         app.processEvents()
@@ -128,6 +221,8 @@ def test_bulb_view_survives_every_state() -> None:
     app = QApplication.instance() or QApplication([])
     panel = _panel()
     try:
+        assert panel.bulb_view.width() == 56
+        assert panel.bulb_view.height() == 56
         for state in (
             VirtualBulbState(power=False),
             VirtualBulbState(power=True, brightness=10, color_temperature=2700),

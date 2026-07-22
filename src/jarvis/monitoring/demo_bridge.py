@@ -57,6 +57,18 @@ LAPTOP_DEVICE_ID = "laptop"
 BULB_DEVICE_ID = "room.bulb"
 RUNTIME_DEVICE_IDS: tuple[str, ...] = (LAPTOP_DEVICE_ID, BULB_DEVICE_ID)
 
+# 시선 등록 UI가 저장하는 사람 친화적인 기종명과 런타임 capability registry의 id는
+# 서로 다르다. 이 표가 없으면 등록 직후에도 사용자가 시연 탭에서 같은 의미를 다시
+# 골라야 하고, 놓치면 정상 gaze가 UNKNOWN으로 바뀌어 모든 명령이 막힌다.
+DEVICE_TYPE_TO_RUNTIME_ID: Mapping[str, str] = {
+    "computer": LAPTOP_DEVICE_ID,
+    "electric bulb": BULB_DEVICE_ID,
+}
+RUNTIME_DEVICE_LABELS: Mapping[str, str] = {
+    LAPTOP_DEVICE_ID: "computer (laptop)",
+    BULB_DEVICE_ID: "electric bulb (room.bulb)",
+}
+
 # 어떤 기기도 보고 있지 않다는 뜻(interface-contract.md 공통 규칙). `AlignmentConfig.
 # unknown_target` 기본값과 같아야 lock tracker가 후보로 인정하지 않는다.
 UNKNOWN_TARGET = DEFAULT_ALIGNMENT_CONFIG.unknown_target
@@ -76,6 +88,22 @@ class DemoPreset:
     alignment: AlignmentConfig
 
 
+# 조기 발사를 허용할 제스처 — **상대 연산(increment/decrement)에 매핑된 것만**.
+# 기준은 "틀렸을 때 되돌릴 수 있는가"다. 밝기·색상·스크롤·볼륨은 반대로 한 번 더 하면
+# 복구되지만, `stop_sign`(power toggle)은 멱등이 아니라 조기 발사가 틀리면 불이 꺼지고
+# 뒤이은 ENDING까지 겹치면 깜빡인다. 그래서 toggle 계열은 제외한다.
+# 이 목록이 capability map과 어긋나면 test_early_dispatch_allowlist가 잡는다.
+EARLY_DISPATCH_GESTURES: frozenset[str] = frozenset(
+    {
+        "rotate_clockwise",
+        "rotate_counter_clockwise",
+        "slide_two_fingers_up",
+        "slide_two_fingers_down",
+        "slide_two_fingers_left",
+        "slide_two_fingers_right",
+    }
+)
+
 # 시연 기본은 "느슨" — 위양성을 늘리더라도 진양성을 잡는 방향(이 프로젝트의 기존
 # 튜닝 방침)이고, 차단 사유 로그가 있어 오발이 나도 왜 났는지 그 자리에서 보인다.
 PRESET_LOOSE = DemoPreset(
@@ -89,6 +117,23 @@ PRESET_LOOSE = DemoPreset(
         # 확실히 높게 유지하면서 통과 폭을 넓힌다 — 느슨 프리셋의 취지(위양성을 늘리더라도
         # 진양성을 잡는다)에 맞고, 막힌 경우 사유가 화면에 그대로 뜬다.
         min_gesture_confidence=0.35,
+        # 기본 500ms는 연속 제스처(회전=색상, 슬라이드=밝기)에서 커밋 상한을 초당 2회로
+        # 묶어 "한 단계 바꾸는 데 1초 이상"으로 체감됐다(2026-07-22 실측: 제스처 시간 +
+        # 쿨다운 500ms + 어댑터 94~297ms). 쿨다운은 연속 오발 방지 장치지만, 같은 이벤트의
+        # 재생은 dedup이 따로 막고(fusion.py: 재생에는 쿨다운을 새로 걸지 않는다) 재커밋에는
+        # ONSET→ENDING을 다시 거쳐야 하므로, 시연 프리셋에서는 150ms로 줄여도 연타 오발이
+        # 아니라 의도한 반복이 통과한다.
+        cooldown_ms=150,
+        # 조기 발사: ENDING("더 이상 감지되지 않음")을 기다리지 않고 ACTIVE가 3프레임
+        # (12fps 기준 약 250ms) 같은 label로 지속되면 실행한다. 동작을 멈추고 분류기가
+        # 그것을 알아챌 때까지의 대기가 사라진다.
+        early_dispatch_frames=3,
+        # 일반 게이트(0.35)보다 높게 둔다 — 진행 중 판정은 근거가 적고, label이 ONSET
+        # 한 프레임에서 잠겨 방향이 갈리는 제스처의 오발 위험이 있다. 다만 실사용
+        # 확신도가 낮아 0.35까지 내린 상황이라 0.8 같은 값은 아예 발사되지 않으므로,
+        # "일반보다는 확실히 높되 도달 가능한" 값으로 잡았다(실기 튜닝 대상).
+        early_dispatch_min_confidence=0.50,
+        early_dispatch_gestures=EARLY_DISPATCH_GESTURES,
     ),
     alignment=AlignmentConfig(
         target_dwell_ms=800,
@@ -136,6 +181,11 @@ BLOCK_REASONS: Mapping[str, str] = {
     "fusion score below commit threshold": "결합 점수 미달",
     "duplicate event (frame already committed)": "중복 이벤트 차단",
     "committed": "커밋됨",
+    # 조기 발사(fusion.py `_try_early_dispatch`) — ENDING을 기다리지 않고 ACTIVE 중에
+    # 실행한 경우와, 그래서 뒤따르는 ENDING을 억제한 경우. 무대에서 "왜 두 번 안 나갔나"를
+    # 설명할 수 있어야 하므로 억제 쪽도 사유로 드러낸다.
+    "committed (early)": "커밋됨 (조기 발사)",
+    "already dispatched early": "조기 발사로 이미 실행됨 (중복 억제)",
 }
 
 _STAGE_LABELS: Mapping[ExecutionStage, str] = {
@@ -176,24 +226,38 @@ class DeviceMappingStore:
 
     def __init__(self, path: Path) -> None:
         self._path = path
-        self._mapping: dict[str, str] = {}
+        # None은 사용자가 UI에서 명시적으로 "연결 안 함"을 고른 상태다. 키 자체가
+        # 없는 신규 target과 구분해야 다음 시작 때 자동 매핑이 그 선택을 덮지 않는다.
+        self._mapping: dict[str, str | None] = {}
         self._load()
 
     @property
     def mapping(self) -> dict[str, str]:
-        return dict(self._mapping)
+        return {key: value for key, value in self._mapping.items() if value is not None}
 
     def get(self, target_id: str) -> str | None:
         return self._mapping.get(target_id)
 
+    def has_selection(self, target_id: str) -> bool:
+        """자동 연결 전, 사용자가 이미 연결/미연결을 선택했는지 반환한다."""
+        return target_id in self._mapping
+
     def set(self, target_id: str, device_id: str | None) -> None:
-        """`device_id`가 None이면 매핑을 지운다(그 물체는 다시 UNKNOWN 취급)."""
-        if device_id is None:
-            self._mapping.pop(target_id, None)
-        else:
-            if device_id not in RUNTIME_DEVICE_IDS:
-                raise ValueError(f"unknown runtime device id: {device_id!r}")
-            self._mapping[target_id] = device_id
+        """선택을 저장한다. None은 명시적 미연결이며 자동 매핑으로 덮지 않는다."""
+        if device_id is not None and device_id not in RUNTIME_DEVICE_IDS:
+            raise ValueError(f"unknown runtime device id: {device_id!r}")
+        self._mapping[target_id] = device_id
+        self._save()
+
+    def set_default(self, target_id: str, device_id: str) -> None:
+        """기종 기반 기본 연결을 메모리에만 채운다(명시적 선택은 건드리지 않음)."""
+        if device_id not in RUNTIME_DEVICE_IDS:
+            raise ValueError(f"unknown runtime device id: {device_id!r}")
+        self._mapping.setdefault(target_id, device_id)
+
+    def remove(self, target_id: str) -> None:
+        """삭제된 target의 연결 선택까지 제거한다."""
+        self._mapping.pop(target_id, None)
         self._save()
 
     def _load(self) -> None:
@@ -206,7 +270,9 @@ class DeviceMappingStore:
         if not isinstance(raw, dict):
             return
         self._mapping = {
-            str(k): str(v) for k, v in raw.items() if str(v) in RUNTIME_DEVICE_IDS
+            str(key): (None if value is None else str(value))
+            for key, value in raw.items()
+            if value is None or str(value) in RUNTIME_DEVICE_IDS
         }
 
     def _save(self) -> None:

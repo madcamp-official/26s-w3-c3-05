@@ -1,6 +1,6 @@
 {
-  "version": "finetune-epoch76",
+  "version": "finetune-epoch64",
   "trained": true,
-  "training_data_source": "webcam-finetune pooled (클립단위 무작위 split, val_fraction=0.1, n_train=734, n_val=81)",
-  "evaluation_notes": "val macro-F1=0.9537 (배경 클래스 합산 후 8클래스 기준 — 런타임 결정 규칙과 동일), 원본 10클래스 기준=0.8423, dataset_id='webcam-finetune pooled (클립단위 무작위 split, val_fraction=0.1, n_train=734, n_val=81)', epoch=76, feature_dim=102 (development-principles.md 1.4: dataset·조건·측정 시점 기록)"
+  "training_data_source": "webcam-finetune pooled (클립단위 무작위 split, val_fraction=0.1, n_train=742, n_val=82)",
+  "evaluation_notes": "val macro-F1=0.9786 (배경 클래스 합산 후 8클래스 기준 — 런타임 결정 규칙과 동일), 원본 10클래스 기준=0.8930, dataset_id='webcam-finetune pooled (클립단위 무작위 split, val_fraction=0.1, n_train=742, n_val=82)', epoch=64, feature_dim=102 (development-principles.md 1.4: dataset·조건·측정 시점 기록)"
 }

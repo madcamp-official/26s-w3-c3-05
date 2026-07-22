@@ -116,6 +116,22 @@ def test_mapping_store_clears_with_none(tmp_path: Path) -> None:
     store.set("target_001", LAPTOP_DEVICE_ID)
     store.set("target_001", None)
     assert DeviceMappingStore(path).get("target_001") is None
+    assert DeviceMappingStore(path).has_selection("target_001") is True
+
+
+def test_mapping_store_default_does_not_override_explicit_disconnect(tmp_path: Path) -> None:
+    path = tmp_path / "demo_device_map.json"
+    store = DeviceMappingStore(path)
+    store.set("target_001", None)
+    store.set_default("target_001", LAPTOP_DEVICE_ID)
+    assert store.get("target_001") is None
+
+
+def test_mapping_store_remove_forgets_deleted_target(tmp_path: Path) -> None:
+    store = DeviceMappingStore(tmp_path / "demo_device_map.json")
+    store.set("target_001", LAPTOP_DEVICE_ID)
+    store.remove("target_001")
+    assert store.has_selection("target_001") is False
 
 
 def test_mapping_store_rejects_unknown_device(tmp_path: Path) -> None:
