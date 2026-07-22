@@ -973,3 +973,29 @@ def test_demo_tab_runs_static_pose_control_for_laptop(tmp_path: Path) -> None:
         bridge_cls.should_suppress_pose = original_suppress  # type: ignore[assignment]
         window.close()
         app.processEvents()
+
+
+def test_static_swipe_routes_to_bulb_brightness() -> None:
+    """전구 lock 중 정적 좌우 스와이프가 전구 좌우 슬라이드(밝기)로 매핑된다(2026-07-22).
+
+    desktop_prev(왼쪽)=밝기 감소, desktop_next(오른쪽)=밝기 증가. 합성 CommitDecision의
+    gesture가 실제 capability map에서 room.bulb 밝기 명령으로 해석되는지(단일 진실원)까지
+    확인한다 — GUI 창 없이 클래스 속성·정적 메서드만 검증한다."""
+    from jarvis.runtime.devices import build_default_capability_map
+
+    cap = build_default_capability_map()
+
+    class _Snap:
+        timestamp_ms = 100
+        frame_id = 3
+
+    for kind, operation in (("desktop_prev", "decrement"), ("desktop_next", "increment")):
+        gesture = MainWindow._SWIPE_TO_SLIDE[kind]
+        decision = MainWindow._synthetic_swipe_decision("room.bulb", gesture, _Snap())
+        assert decision.committed is True
+        assert decision.target == "room.bulb"
+        assert decision.intent_id  # 고유 id가 있어야 실행기가 dedup으로 버리지 않는다
+        action = cap.lookup("room.bulb", gesture)
+        assert action is not None
+        assert action.capability == "brightness"
+        assert action.operation == operation

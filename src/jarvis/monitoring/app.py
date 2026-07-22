@@ -68,7 +68,7 @@ from jarvis.gaze.lock import GazeLockState
 from jarvis.gaze.registration_lint import lint_target_record
 from jarvis.gaze.session_report import build_report, format_report, load_session
 from jarvis.gaze.smoothing import SmoothedGaze
-from jarvis.gesture_fusion.fusion import CommitDecision
+from jarvis.gesture_fusion.fusion import CommitDecision, FusionScore
 from jarvis.gesture_fusion.landmarks import HandObservation
 from jarvis.gesture_fusion.model_protocol import (
     DEFAULT_BACKGROUND_LABELS,
@@ -2039,6 +2039,17 @@ class MainWindow(QMainWindow):
         self._demo_panel.append_line(describe_decision(decision), ok=decision.committed)
         if not decision.committed:
             return
+        # 전구 등 비노트북 기기의 좌우 슬라이드(밝기)는 이제 **정적 two_fingers 좌우 스와이프**가
+        # 담당한다(_route_bulb_swipe). 동적 slide_left/right가 같은 기기에 도달하면 이중 실행이므로
+        # 여기서 건너뛴다. 노트북 좌우는 애초에 capability map에서 빠져 여기 오지 않는다.
+        if decision.target != LAPTOP_DEVICE_ID and decision.gesture in (
+            "slide_two_fingers_left",
+            "slide_two_fingers_right",
+        ):
+            self._demo_panel.set_last_action(
+                f"{decision.gesture} → {decision.target} (좌우는 정적 스와이프가 처리)", ok=False
+            )
+            return
         # 노트북(내 PC) 대상 명령은 "손동작으로 컴퓨터 제어" 토글도 지켜야 한다. 이
         # 경로(TCN→Fusion→Intent)는 정적 pose 제어와 배선이 달라 예전에는 그 토글을
         # 통과하지 않았고, 체크를 꺼도 두 손가락 slide가 데스크톱을 전환했다(2026-07-22
@@ -2056,6 +2067,52 @@ class MainWindow(QMainWindow):
             self._demo_panel.set_last_action(
                 f"{decision.gesture} → {decision.target} (실행 안 함)", ok=False
             )
+
+    # 정적 좌우 스와이프 → gaze-lock된 기기(전구)의 좌우 슬라이드 명령. 노트북은 pose_control이
+    # OS 입력으로 직접 처리하지만, 전구는 capability→adapter(WiZ) 경로가 필요하므로 여기서
+    # (기기, slide_left/right) 결정을 합성해 동적 경로와 같은 실행 워커로 흘린다 — 밝기 델타는
+    # capability map(room.bulb의 slide_left/right)에서 그대로 읽혀 config가 단일 진실원으로 남는다.
+    _SWIPE_TO_SLIDE = {
+        "desktop_prev": "slide_two_fingers_left",   # 왼쪽 스와이프 → 밝기 감소
+        "desktop_next": "slide_two_fingers_right",  # 오른쪽 스와이프 → 밝기 증가
+    }
+
+    def _route_bulb_swipe(self, snapshot: object) -> None:
+        """전구 lock 중, 정적 좌우 스와이프 이벤트를 그 기기의 좌우 슬라이드 명령으로 실행한다."""
+        device = self._demo_bridge.locked_device
+        if device is None or self._execute_worker is None:
+            return
+        for event in getattr(snapshot, "pose_events", ()):
+            gesture = self._SWIPE_TO_SLIDE.get(event.kind)
+            if gesture is None:
+                continue
+            self._execute_worker.submit(
+                self._synthetic_swipe_decision(device, gesture, snapshot)
+            )
+
+    @staticmethod
+    def _synthetic_swipe_decision(
+        device: str, gesture: str, snapshot: object
+    ) -> CommitDecision:
+        """정적 스와이프 1회를 실행기가 받는 `CommitDecision`으로 만든다(확신도 만점, 고유 id)."""
+        ts = int(getattr(snapshot, "timestamp_ms", 0))
+        frame = int(getattr(snapshot, "frame_id", 0))
+        return CommitDecision(
+            committed=True,
+            reason="static swipe",
+            target=device,
+            gesture=gesture,
+            score=FusionScore(
+                target_confidence=1.0,
+                gesture_confidence=1.0,
+                gaze_stability=1.0,
+                uncertainty=0.0,
+                value=1.0,
+            ),
+            timestamp_ms=ts,
+            frame_id=frame,
+            intent_id=f"static-swipe-{device}-{gesture}-{frame}-{ts}",
+        )
 
     def _build_pipeline_tab(self) -> QWidget:
         body = QWidget()
@@ -2686,12 +2743,15 @@ class MainWindow(QMainWindow):
         if suppressed:
             if not self._pose_suppressed:
                 self._pose_control.release()
-            if (
-                self._demo_tab_active()
-                and not gaze_suppressed
-                and self._demo_bridge.execution_enabled
-            ):
-                self._pose_control.apply(list(snapshot.pose_events))
+            if self._demo_tab_active() and self._demo_bridge.execution_enabled:
+                if not gaze_suppressed:
+                    # 노트북 맥락: 정적 pose 전부 실행(스크롤·볼륨·데스크톱·커서·클릭).
+                    self._pose_control.apply(list(snapshot.pose_events))
+                else:
+                    # 전구 lock 중: 좌우 스와이프만 전구 밝기로 라우팅(정적 이식). 커서·스크롤
+                    # 등 나머지 정적 이벤트는 계속 억제 — 전구를 보며 손을 움직여도 커서가
+                    # 안 따라가게 한다.
+                    self._route_bulb_swipe(snapshot)
         else:
             self._pose_control.apply(list(snapshot.pose_events))
         self._pose_suppressed = suppressed
