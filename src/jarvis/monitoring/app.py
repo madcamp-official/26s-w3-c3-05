@@ -1768,6 +1768,12 @@ class MainWindow(QMainWindow):
         )
         self._refresh_demo_targets()
         self._refresh_bulb_badge()
+        # 패널의 초기 상태(실행 켜짐·타깃 고정 laptop)를 브릿지에 명시 동기화한다.
+        # 체크박스는 시그널 연결 전에 setChecked돼 생성 중 toggled를 발화하지 않으므로
+        # (발화하면 아직 대입 전인 self._demo_panel을 콜백이 참조해 깨진다), 대입이
+        # 끝난 지금 패널 값을 단일 소스로 삼아 브릿지에 반영한다.
+        self._on_demo_fallback_changed(self._demo_panel.fallback_device)
+        self._on_demo_execution_toggled(self._demo_panel.execution_enabled)
         if self._execute_worker is None:
             self._demo_panel.append_line(
                 "실행기 없음 — 이 플랫폼에 입력 어댑터가 없어 기기 명령을 실행할 수 없습니다",

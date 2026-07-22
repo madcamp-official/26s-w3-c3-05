@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from jarvis.monitoring.demo_bridge import (
     DEMO_PRESETS,
+    LAPTOP_DEVICE_ID,
     RUNTIME_DEVICE_IDS,
     DemoPreset,
 )
@@ -169,23 +170,31 @@ class DemoPanel(QWidget):
         layout.addLayout(bulb_row)
 
         # --- 실행 스위치 --------------------------------------------------
+        # 기본 켜짐: 동적 제스처로 노트북을 바로 제어할 수 있게 한다(사용자 지시,
+        # 2026-07-22). setChecked는 아래 connect보다 먼저라 생성 중 toggled를
+        # 발화하지 않는다 — 초기 상태는 MainWindow가 패널 값을 읽어 브릿지에 명시
+        # 동기화한다(app.py `_build_demo_tab`).
         self._execution_toggle = QCheckBox("기기 명령 실행 (끄면 판정만 하고 실행하지 않음)")
-        self._execution_toggle.setChecked(False)
+        self._execution_toggle.setChecked(True)
         self._execution_toggle.toggled.connect(on_execution_toggled)
         layout.addWidget(self._execution_toggle)
 
         # --- 폴백(타깃 고정) ----------------------------------------------
+        # 기본 켜짐 + laptop 고정: 시선 lock 없이도 동적 제스처가 노트북으로 간다
+        # (사용자 지시). 전구 시연 때는 이 토글을 끄거나 콤보를 room.bulb로 바꾼다.
         fallback_row = QHBoxLayout()
         self._fallback_toggle = QCheckBox("타깃 고정")
         self._fallback_toggle.setToolTip(
             "시선 판정을 우회하고 아래 기기에 항상 lock한다. 등록·조명 조건이 나빠 "
             "lock이 안 걸릴 때의 안전 폴백."
         )
+        self._fallback_toggle.setChecked(True)
         self._fallback_toggle.toggled.connect(self._emit_fallback)
         fallback_row.addWidget(self._fallback_toggle)
         self._fallback_combo = QComboBox()
         for device_id in RUNTIME_DEVICE_IDS:
             self._fallback_combo.addItem(device_id)
+        self._fallback_combo.setCurrentText(LAPTOP_DEVICE_ID)
         self._fallback_combo.currentIndexChanged.connect(lambda _: self._emit_fallback())
         fallback_row.addWidget(self._fallback_combo, 1)
         layout.addLayout(fallback_row)
