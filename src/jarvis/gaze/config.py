@@ -273,6 +273,17 @@ class GazeConfig:
     coverage_pitch_threshold_deg: float = 12.0
     """head pitch가 ±이 값을 넘으면 '상/하' coverage 구간으로 센다."""
 
+    registration_coverage_total_override_multiplier: float = 10.0
+    """정면·근/원 구간을 개별로 못 채워도, 전체 유효 프레임이 이 배수(×
+    `registration_coverage_min_frames`)를 넘으면 완료로 봐준다(사용자 지시
+    2026-07-22 — "너무 빡빡하다").
+
+    정면은 카메라를 거의 정확히 볼 때만 세지고, 근/원은 그 정면 기준 scale이
+    있어야만 세지는 연쇄 구조라(`PoseCoverageTracker` docstring 참고), 둘 다
+    구조적으로 못 채워지면 등록 자체가 영영 끝나지 않는다. 좌/우·상/하는 이미
+    한쪽만 요구해 완화돼 있으므로 이 총량 우회 대상에서 뺀다(사용자가 특정하지
+    않았고, 그 완화만으로 충분하다)."""
+
     coverage_scale_near_ratio: float = 1.15
     """정면 기준 face scale 대비 이 배율 이상이면 '가까이' 구간으로 센다.
 
@@ -342,6 +353,13 @@ class GazeConfig:
             raise ValueError("coverage_pitch_threshold_deg must be within (0, 90]")
         if not 0.0 < self.coverage_scale_far_ratio < 1.0 < self.coverage_scale_near_ratio:
             raise ValueError("coverage scale ratios must satisfy 0 < far < 1 < near")
+        if (
+            not math.isfinite(self.registration_coverage_total_override_multiplier)
+            or self.registration_coverage_total_override_multiplier < 1.0
+        ):
+            raise ValueError(
+                "registration_coverage_total_override_multiplier must be finite and >= 1.0"
+            )
         if self.blink_hold_ms < 0 or self.blink_recovery_hold_ms < 0:
             raise ValueError("blink hold thresholds must be non-negative")
         if self.blink_pose_recovery_frames <= 0:

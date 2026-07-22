@@ -49,14 +49,23 @@ class CoverageCondition:
 _YAW_SIDE_GROUP: tuple[str, ...] = ("left", "right")
 _PITCH_SIDE_GROUP: tuple[str, ...] = ("up", "down")
 _SCALE_SIDE_GROUP: tuple[str, ...] = ("near", "far")
+_FRONT_GROUP: tuple[str, ...] = ("front",)
 _COVERAGE_GROUPS: tuple[tuple[str, ...], ...] = (
-    ("front",),
+    _FRONT_GROUP,
     _YAW_SIDE_GROUP,
     _PITCH_SIDE_GROUP,
     _SCALE_SIDE_GROUP,
 )
 """완료 판정 단위. 좌/우, 상/하, 근/원은 짝 중 **한쪽만** 채우면 된다(아래
 클래스 docstring 참고) — 정면만 개별로 필요하다."""
+
+_TOTAL_FRAME_OVERRIDE_GROUPS: tuple[tuple[str, ...], ...] = (_FRONT_GROUP, _SCALE_SIDE_GROUP)
+"""전체 유효 프레임이 충분히 쌓이면(총량 우회) 개별로 못 채워도 완료로 보는 구간.
+
+정면은 카메라를 거의 정확히 볼 때만 세지고, 근/원은 그 정면 기준 scale이 있어야만
+세지는 연쇄 구조라(`PoseCoverageTracker` docstring) 두 조건이 겹치면 구조적으로
+못 끝나는 등록이 생긴다(사용자 지시 2026-07-22 — "너무 빡빡하다"). 좌/우·상/하는
+이미 한쪽만 요구해 완화돼 있어 대상에서 뺀다."""
 
 
 class PoseCoverageTracker:
@@ -97,6 +106,7 @@ class PoseCoverageTracker:
             key: 0 for key in ("front", "left", "right", "up", "down", "near", "far")
         }
         self._front_scales: list[float] = []
+        self._total_frames = 0
 
     @property
     def reference_face_scale(self) -> float | None:
@@ -106,6 +116,7 @@ class PoseCoverageTracker:
 
     def add(self, sample: TargetFeatureSample) -> None:
         config = self._config
+        self._total_frames += 1
         if abs(sample.head_yaw) < config.coverage_yaw_front_threshold_deg:
             self._counts["front"] += 1
             self._front_scales.append(sample.face_scale)
@@ -145,17 +156,29 @@ class PoseCoverageTracker:
             for key, count in self._counts.items()
         )
 
+    @property
+    def _total_override_active(self) -> bool:
+        """전체 유효 프레임이 충분히 쌓였는가(총량 우회 발동 여부).
+
+        `_TOTAL_FRAME_OVERRIDE_GROUPS`(정면·근/원)만 이 우회의 적용을 받는다.
+        """
+        threshold = self._minimum_frames * self._config.registration_coverage_total_override_multiplier
+        return self._total_frames >= threshold
+
+    def _group_met(self, conditions: dict[str, CoverageCondition], group: tuple[str, ...]) -> bool:
+        if any(conditions[key].met for key in group):
+            return True
+        return self._total_override_active and group in _TOTAL_FRAME_OVERRIDE_GROUPS
+
     def complete(self) -> bool:
         conditions = {condition.key: condition for condition in self.report()}
-        return all(
-            any(conditions[key].met for key in group) for group in _COVERAGE_GROUPS
-        )
+        return all(self._group_met(conditions, group) for group in _COVERAGE_GROUPS)
 
     def missing_labels(self) -> list[str]:
         conditions = {condition.key: condition for condition in self.report()}
         missing = []
         for group in _COVERAGE_GROUPS:
-            if any(conditions[key].met for key in group):
+            if self._group_met(conditions, group):
                 continue
             missing.append("/".join(conditions[key].label for key in group))
         return missing
@@ -164,7 +187,9 @@ class PoseCoverageTracker:
         """그룹별 충족률(짝은 더 앞선 쪽 기준) 평균(0..1) — UI 진행 막대에 그대로 쓴다."""
         conditions = {condition.key: condition for condition in self.report()}
         group_progress = [
-            max(min(1.0, conditions[key].count / conditions[key].required) for key in group)
+            1.0
+            if self._group_met(conditions, group)
+            else max(min(1.0, conditions[key].count / conditions[key].required) for key in group)
             for group in _COVERAGE_GROUPS
         ]
         return float(sum(group_progress) / len(group_progress))

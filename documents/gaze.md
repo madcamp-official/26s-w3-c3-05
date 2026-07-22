@@ -502,6 +502,7 @@ invalidates legacy/stale rows. Renaming does not change the fingerprint.
 | `coverage_yaw_front_threshold_deg` / `coverage_yaw_side_threshold_deg` | `10` / `20` | Head-yaw bounds for the front and left/right coverage buckets. |
 | `coverage_pitch_threshold_deg` | `12` | Head-pitch bound for the up/down coverage buckets. |
 | `coverage_scale_near_ratio` / `coverage_scale_far_ratio` | `1.15` / `0.87` | Near/far buckets relative to the front-bucket median face scale. |
+| `registration_coverage_total_override_multiplier` | `10.0` | If total valid frames seen reach this multiple of `registration_coverage_min_frames`, the front and near/far buckets count as met even at zero — added 2026-07-22 because front gates near/far (its reference scale) and the pair can jointly make phase 1 impossible to finish. Left/right and up/down are not covered by this override; their existing either-side relaxation is enough. |
 
 Profiles saved before `boundary_polygon` existed continue to use the legacy ellipse for compatibility. Re-register the target to collect a real hull. The debug heatmap fills and outlines the stored polygon and the target list shows its hull vertex count.
 

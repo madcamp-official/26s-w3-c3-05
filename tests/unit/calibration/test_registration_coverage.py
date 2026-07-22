@@ -106,6 +106,45 @@ def test_tracker_completes_with_only_far_when_object_is_far_from_camera() -> Non
     assert counts["far"] == 3
 
 
+def test_tracker_stays_incomplete_without_front_when_total_frames_are_low() -> None:
+    """정면을 한 번도 못 채우면(총 프레임도 적으면) 완료되지 않는다 — 총량 우회의 기준선."""
+    tracker = PoseCoverageTracker(GazeConfig(), minimum_frames=3)
+    for _ in range(10):  # 총량 우회 문턱(3 * 10.0 = 30)에 한참 못 미침
+        tracker.add(_feature(head_yaw=25.0))  # 전부 오른쪽만 — 정면은 0
+    assert not tracker.complete()
+    assert "정면" in tracker.missing_labels()
+
+
+def test_tracker_completes_without_front_when_total_frames_are_large_enough() -> None:
+    """정면·근/원을 한 번도 못 채워도 전체 유효 프레임이 충분히 쌓이면 완료로 본다
+    (사용자 지시 2026-07-22 — "너무 빡빡하다"). 정면이 없으면 근/원 기준 scale
+    자체가 안 생겨 두 조건이 함께 막히는 연쇄를 총량으로 우회한다."""
+    tracker = PoseCoverageTracker(GazeConfig(), minimum_frames=3)
+    for _ in range(3):
+        tracker.add(_feature(head_yaw=25.0))
+        tracker.add(_feature(head_yaw=25.0, head_pitch=-15.0))  # yaw도 커서 정면 아님
+    # 정면·근/원은 건드리지 않고, 총 프레임 수만 우회 문턱(3 * 10.0 = 30) 위로 쌓는다.
+    for _ in range(30):
+        tracker.add(_feature(head_yaw=25.0))
+    assert tracker.complete()
+    assert tracker.missing_labels() == []
+    counts = {c.key: c.count for c in tracker.report()}
+    assert counts["front"] == 0
+    assert counts["near"] == 0
+    assert counts["far"] == 0
+
+
+def test_total_frame_override_does_not_help_yaw_pitch_groups() -> None:
+    """좌/우·상/하는 총량 우회 대상이 아니다 — 한쪽만 요구하는 기존 완화로 충분하다고 보고 뺐다."""
+    tracker = PoseCoverageTracker(GazeConfig(), minimum_frames=3)
+    for _ in range(40):  # 총량은 우회 문턱을 넘지만 전부 정면(head_yaw=pitch=0)뿐
+        tracker.add(_feature())
+    assert not tracker.complete()
+    missing = tracker.missing_labels()
+    assert "고개 왼쪽/고개 오른쪽" in missing
+    assert "고개 위/고개 아래" in missing
+
+
 def _gaze(frame: int) -> SmoothedGaze:
     return SmoothedGaze(yaw_pitch_to_direction(0.0, 0.0), 1.0, frame * 50, frame)
 
