@@ -72,6 +72,19 @@ class InputSink(Protocol):
         """Scroll the wheel by ``ticks`` (positive up, negative down)."""
         ...
 
+    def center_cursor_on_foreground(self) -> None:
+        """Move the cursor to the center of the current foreground window.
+
+        A synthesized wheel event is a hardware-level signal delivered to
+        whatever window is under the cursor — not to the focused window. The
+        Intent-driven scroll path (unlike pose control, which already tracks
+        the cursor to the hand) never positions the cursor at all, so without
+        a physical mouse the cursor can sit anywhere (e.g. over this app's own
+        window), and scroll commands silently land nowhere useful. Call this
+        immediately before :meth:`scroll` to make the command actually visible.
+        """
+        ...
+
     def tap_key(self, key: InputKey) -> None:
         """Press and release a single system key."""
         ...
@@ -135,6 +148,11 @@ class WindowsAdapter:
         count = _as_count(command.value)
         if count is None:
             return AdapterResult(AdapterStatus.FAILED, f"invalid scroll amount {command.value!r}")
+        # 이 경로(제스처→Intent)는 pose 제어와 달리 손 움직임을 커서에 반영하지 않으므로,
+        # 물리 마우스가 없으면 커서가 어디 있는지 알 수 없다 — 휠 이벤트를 실제로 보이게
+        # 하려면 보내기 직전에 포그라운드 창으로 커서를 옮겨야 한다.
+        if command.operation in ("increment", "decrement"):
+            self._sink.center_cursor_on_foreground()
         if command.operation == "increment":
             self._sink.scroll(count)
         elif command.operation == "decrement":
@@ -260,6 +278,23 @@ class Win32InputSink:
 
     def scroll(self, ticks: int) -> None:
         self._user32().mouse_event(_MOUSEEVENTF_WHEEL, 0, 0, ticks * _WHEEL_DELTA, 0)
+
+    def center_cursor_on_foreground(self) -> None:
+        # 포그라운드 창이 없거나(바탕화면 등) 좌표를 못 얻으면 조용히 넘어간다 — 커서
+        # 위치 보정 하나가 실패했다고 스크롤 명령 자체를 막지 않는다.
+        import ctypes
+        import ctypes.wintypes
+
+        user32 = self._user32()
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return
+        rect = ctypes.wintypes.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return
+        center_x = (rect.left + rect.right) // 2
+        center_y = (rect.top + rect.bottom) // 2
+        user32.SetCursorPos(center_x, center_y)
 
     def tap_key(self, key: InputKey) -> None:
         user32 = self._user32()

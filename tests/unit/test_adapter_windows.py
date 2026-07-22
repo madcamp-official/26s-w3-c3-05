@@ -21,11 +21,15 @@ class RecordingSink:
         self.moves: list[tuple[int, int]] = []
         self.desktop_switches: list[tuple[bool, int]] = []
         self.raise_on_scroll = False
+        self.center_calls = 0
 
     def scroll(self, ticks: int) -> None:
         if self.raise_on_scroll:
             raise OSError("simulated user32 failure")
         self.scrolls.append(ticks)
+
+    def center_cursor_on_foreground(self) -> None:
+        self.center_calls += 1
 
     def tap_key(self, key: InputKey) -> None:
         self.keys.append(key)
@@ -54,6 +58,17 @@ def test_scroll_increment_scrolls_up() -> None:
     result = WindowsAdapter(sink).execute(_command("scroll", "increment", 3), _LAPTOP)
     assert result.status == AdapterStatus.ACKNOWLEDGED
     assert sink.scrolls == [3]
+
+
+def test_scroll_centers_cursor_on_foreground_before_scrolling() -> None:
+    # 물리 마우스가 없으면 커서가 아무 데나 있을 수 있다 — 휠 이벤트가 실제로 보이려면
+    # 스크롤 직전에 포그라운드 창으로 커서를 옮겨야 한다(2026-07-22 리포트: 노트북
+    # 대상 스크롤이 실행은 되지만(ACKNOWLEDGED) 화면에서 아무 효과가 없었다).
+    sink = RecordingSink()
+    WindowsAdapter(sink).execute(_command("scroll", "increment", 3), _LAPTOP)
+    assert sink.center_calls == 1
+    WindowsAdapter(sink).execute(_command("scroll", "decrement", 2), _LAPTOP)
+    assert sink.center_calls == 2
 
 
 def test_scroll_decrement_scrolls_down() -> None:
