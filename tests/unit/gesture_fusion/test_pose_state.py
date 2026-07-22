@@ -224,6 +224,79 @@ def test_pointing_direction_is_unit_and_none_when_degenerate() -> None:
     assert pointing_direction(np.zeros((21, 2))) is None
 
 
+# --- 좌우 스와이프: 데스크톱 전환(정적 two_fingers 전이) ---
+
+def _swipe_seq(machine: PoseStateMachine, dxs: list[float], *, start: int, step: int = 33) -> list:
+    """two_fingers 상태에서 매 프레임 수평 방향 dx를 바꿔 넣는다(수직 성분 0)."""
+    events = []
+    t = start
+    for dx in dxs:
+        events.extend(machine.update(_pose("two_fingers"), t, _hand(dx, 0.0)))
+        t += step
+    return events
+
+
+def _desktop_kinds(events: list) -> list[str]:
+    return [e.kind for e in events if e.kind.startswith("desktop_")]
+
+
+def test_right_to_left_transition_fires_one_desktop_swipe() -> None:
+    """오른쪽(dx<0)에 커밋했다가 왼쪽(dx>0)으로 전이하면 스와이프 한 번(desktop_prev)."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(-0.9, 0.0))  # 진입 + 오른쪽 커밋
+    assert machine.state == "two_fingers"
+    events = _swipe_seq(machine, [-0.9, 0.0, 0.9], start=300)  # 데드존 지나 왼쪽으로 전이
+    assert _desktop_kinds(events) == ["desktop_prev"]  # side=+1 → 이전 데스크톱
+
+
+def test_left_to_right_transition_fires_desktop_next() -> None:
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(0.9, 0.0))  # 왼쪽 커밋
+    events = _swipe_seq(machine, [0.9, 0.0, -0.9], start=300)
+    assert _desktop_kinds(events) == ["desktop_next"]  # side=−1 → 다음 데스크톱
+
+
+def test_swipe_does_not_also_emit_scroll() -> None:
+    """수평 커밋 프레임은 수직 게이트와 상보적이라 스크롤이 함께 나오지 않는다."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(-0.9, 0.0))
+    events = _swipe_seq(machine, [-0.9, 0.0, 0.9], start=300)
+    assert [e for e in events if e.kind == "scroll"] == []
+
+
+def test_return_stroke_does_not_refire_until_pose_released() -> None:
+    """한 번 스와이프하면 포즈를 놓기 전까지 되돌림 스트로크가 반대 스와이프로 새지 않는다."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(-0.9, 0.0))
+    first = _swipe_seq(machine, [0.0, 0.9], start=300)  # 오→왼 전이 = 발화
+    assert len(_desktop_kinds(first)) == 1
+    back = _swipe_seq(machine, [0.0, -0.9], start=400)  # 왼→오 되돌림 = 발화 안 함
+    assert _desktop_kinds(back) == []
+    # 포즈를 놓으면(none 지속) 재무장 → 다시 스와이프 가능
+    _feed(machine, NONE_POSE, ms=200, start=500)
+    assert machine.state == ""
+    _feed(machine, "two_fingers", ms=200, start=800, landmarks=_hand(-0.9, 0.0))
+    again = _swipe_seq(machine, [0.0, 0.9], start=1050)
+    assert len(_desktop_kinds(again)) == 1
+
+
+def test_slow_transition_beyond_window_does_not_fire() -> None:
+    """전이가 SWIPE_WINDOW_MS를 넘게 느리면 스와이프가 아니라 손 위치 이동으로 본다."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(-0.9, 0.0))
+    events = []
+    events += machine.update(_pose("two_fingers"), 300, _hand(-0.9, 0.0))  # 오른쪽 커밋 시각 300
+    events += machine.update(_pose("two_fingers"), 1100, _hand(0.9, 0.0))  # 간격 800 > 600
+    assert _desktop_kinds(events) == []
+
+
+def test_steady_horizontal_hold_does_not_fire() -> None:
+    """한쪽만 계속 향하고 있으면(전이 없음) 아무 스와이프도 안 난다."""
+    machine = PoseStateMachine()
+    events = _feed(machine, "two_fingers", ms=500, landmarks=_hand(0.9, 0.0))
+    assert _desktop_kinds(events) == []
+
+
 # --- 규칙: 신뢰 못 하는 판정은 무시 ---
 
 def test_untrusted_prediction_neither_enters_nor_breaks() -> None:

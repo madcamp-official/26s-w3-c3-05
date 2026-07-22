@@ -105,6 +105,9 @@ class PoseControlBridge:
             "close_tab": "탭 닫기",
             "volume_up": "볼륨 +",
             "volume_down": "볼륨 −",
+            # 두 손가락 좌↔우 전이 스와이프 → 가상 데스크톱 전환(정적 경로, 실험).
+            "desktop_prev": "데스크톱 이전",
+            "desktop_next": "데스크톱 다음",
         }.get(event.kind, "")
 
     def _execute(self, event: PoseEvent) -> None:
@@ -139,3 +142,7 @@ class PoseControlBridge:
             self.sink.tap_key(InputKey.VOLUME_DOWN)
         elif event.kind == "scroll":
             self.sink.scroll(SCROLL_TICKS if event.value > 0 else -SCROLL_TICKS)
+        elif event.kind == "desktop_prev":
+            self.sink.switch_desktop(forward=False, repeat=1)
+        elif event.kind == "desktop_next":
+            self.sink.switch_desktop(forward=True, repeat=1)

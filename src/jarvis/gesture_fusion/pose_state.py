@@ -91,6 +91,28 @@ INDEX_STRAIGHTNESS_MIN = 0.97
 # 스크롤을 즉시 끊는다(접힘 순간 끝이 아래로 스윙하는 역방향 튐 차단).
 TWO_FINGER_STRAIGHTNESS_MIN = 0.85
 
+# 좌우 스와이프 → 데스크톱 전환(정적 two_fingers 전이 기반, 실험 2026-07-22).
+# 동적 slide_two_fingers 제스처를 대체하는 실험 경로다. 두 손가락이 향하는 수평
+# 방향(dx 부호)이 한쪽에 확실히 커밋된 뒤, 반대쪽으로 창(window) 안에 전이하면
+# 스와이프 한 번으로 본다 — 스크롤이 위/아래를 방향의 수직성으로 가르는 것과 같은 방식.
+#
+# 실측 근거(2026-07-22 two_finger_direction_probe, 413샘플): 옆으로 향한 two_fingers는
+# 98~100% 신뢰 인식됐고, 좌/우는 dx 부호로 완벽히 갈렸다(left dx>0, right dx<0, 범위
+# 무겹침). 다만 정적 '각도'만으로는 스크롤(수직)과 겹쳐(좌우의 12%가 수직 ±30° 침범)
+# 단일 각도 게이트로는 분리 불가였다. 그래서 각도가 아니라 **부호 전이**로 감지한다.
+SWIPE_SIDE_MIN = 0.5
+# 수평 방향을 한쪽으로 '커밋'했다고 볼 |dx| 하한. MIN_VERTICALITY(cos30°)와 상보적이다:
+# 단위벡터에서 |dx|≥0.5면 |dy|≤0.866이라, 스크롤 수직 게이트(|dy|≥0.866)와 동시에
+# 성립하는 건 경계(|dx|=0.5, |dy|=0.866) 한 점뿐이다 — 방향을 커밋한 프레임은 사실상
+# 스크롤 영역이 될 수 없어, 좌우 스와이프와 위/아래 스크롤이 구조적으로 겹치지 않는다.
+SWIPE_WINDOW_MS = 600
+# 한쪽 커밋을 떠난 마지막 프레임에서 반대쪽 커밋까지(=데드존 통과 시간) 이 안에 들어야
+# '한 번의 스와이프'로 본다. 더 느린 전이는 스와이프가 아니라 손 위치를 옮긴 것으로 무시.
+DESKTOP_SWIPE_SIGN = 1.0
+# 스와이프가 끝난 방향(side)을 어느 데스크톱에 대응시킬지의 부호. side=+1(dx>0=실측상
+# 물리적 왼쪽)에 SIGN>0이면 이전(prev) 데스크톱. 실기기에서 뒤집히면 부호만 바꾼다
+# (ROT_SIGN과 같은 취지).
+
 # 검지 회전 → 볼륨. index_point 상태에서 검지(MCP→TIP) 방향이 도는 각도를 누적해,
 # ROT_STEP_DEG마다 볼륨 1스텝을 낸다(시계=증가/반시계=감소). 커서 포인팅은 손 **평행이동**
 # 이라 이 각도가 거의 안 변해 볼륨을 건드리지 않고, 회전만 각도를 누적시킨다 — 두 조작이
@@ -254,6 +276,13 @@ class PoseStateMachine:
     _rot_accum: float = 0.0
     _rot_missing: int = 0        # 연속으로 index_point 라벨이 아닌 프레임 수(관용 카운터)
     _rot_active_until: int = 0   # 이 시각까지는 볼륨 노브 모드(다른 동작 차단)
+    # 좌우 스와이프(데스크톱 전환) 추적. _swipe_side: 현재 커밋된 수평 방향(+1/−1),
+    # 0=중립(데드존). _swipe_side_ms: 마지막으로 nonzero side였던 프레임 시각(전이 창
+    # 계산용). _swipe_ready: 다음 전이를 스와이프로 인정할지 — 한 번 발화하면 False가
+    # 되고, two_fingers 포즈를 놓아야(_leave) 다시 True가 된다(되돌림 스트로크 억제).
+    _swipe_side: int = 0
+    _swipe_side_ms: int = 0
+    _swipe_ready: bool = True
 
     def reset(self) -> None:
         """추적 손실 등으로 이력을 신뢰할 수 없을 때 — 상태를 지어내지 않는다."""
@@ -268,6 +297,9 @@ class PoseStateMachine:
         self._rot_accum = 0.0
         self._rot_missing = 0
         self._rot_active_until = 0
+        self._swipe_side = 0
+        self._swipe_side_ms = 0
+        self._swipe_ready = True
         self._palm_smoother.reset()
 
     def update(
@@ -396,6 +428,36 @@ class PoseStateMachine:
         kind = "volume_up" if steps * ROT_SIGN > 0 else "volume_down"
         return [PoseEvent(kind, timestamp_ms) for _ in range(abs(steps))]
 
+    def _track_swipe(self, dx: float, timestamp_ms: int) -> PoseEvent | None:
+        """두 손가락 수평 방향의 좌↔우 전이를 데스크톱 전환 스와이프로 감지한다.
+
+        한쪽(|dx|≥`SWIPE_SIDE_MIN`)에 커밋한 뒤 `SWIPE_WINDOW_MS` 안에 반대쪽으로
+        넘어가면 스와이프 한 번. 데드존(|dx|<SWIPE_SIDE_MIN)에서는 마지막 side와 시각을
+        그대로 두므로, 전이 창은 '반대쪽 커밋을 떠난 마지막 프레임 → 이쪽 커밋'의 경과
+        (=데드존 통과 시간)로 측정된다 — 한쪽을 오래 들고 있어도 창을 소진하지 않는다.
+
+        한 번 발화하면 `_swipe_ready=False`가 되고, 포즈를 놓아 `_leave`가 재무장하기
+        전까지는 다시 발화하지 않는다. 정적 방향만으로는 '되돌림 스트로크'와 '반대 방향
+        새 스와이프'가 물리적으로 구분되지 않으므로(손가락을 떼지 않으니), 포즈 해제를
+        재무장 경계로 삼는다 — 데스크톱을 두 칸 넘기려면 스와이프·포즈 해제·스와이프.
+        """
+        if -SWIPE_SIDE_MIN < dx < SWIPE_SIDE_MIN:
+            return None  # 데드존: side/시각 유지(전이 창이 데드존 통과 시간을 담게)
+        side = 1 if dx > 0 else -1
+        prev_side, prev_ms = self._swipe_side, self._swipe_side_ms
+        self._swipe_side, self._swipe_side_ms = side, timestamp_ms
+        if (
+            self._swipe_ready
+            and prev_side != 0
+            and side != prev_side
+            and timestamp_ms - prev_ms <= SWIPE_WINDOW_MS
+        ):
+            self._swipe_ready = False
+            # side=+1(dx>0=실측상 물리적 왼쪽)에 SIGN>0이면 이전 데스크톱.
+            kind = "desktop_prev" if side * DESKTOP_SWIPE_SIGN > 0 else "desktop_next"
+            return PoseEvent(kind, timestamp_ms)
+        return None
+
     # --- 내부 ---
 
     def _present(
@@ -464,6 +526,9 @@ class PoseStateMachine:
             events.append(PoseEvent("right_click", timestamp_ms))
         if self.state:
             self._last_pose, self._last_pose_end = self.state, timestamp_ms
+        # 포즈를 놓으면 좌우 스와이프 추적을 초기화한다 — 재무장(_swipe_ready)의 경계이자,
+        # 다음에 다시 잡을 때 이전 세션의 side가 새 전이로 새지 않게 한다.
+        self._swipe_side, self._swipe_side_ms, self._swipe_ready = 0, 0, True
         self.state, self._dragging, self._missing = "", False, 0
         return events
 
@@ -502,15 +567,22 @@ class PoseStateMachine:
         elif self.state == "two_fingers" and landmarks is not None:
             direction = pointing_direction(landmarks)
             straightness = two_finger_straightness(landmarks)
-            # 두 손가락이 충분히 펴진 동안만 스크롤한다. 주먹을 쥐려 접히기 시작하면 끝이
-            # 잠깐 아래로 스윙해 역방향 스크롤이 튀는데, 그 순간 직진도가 임계 아래로
-            # 떨어져 여기서 걸러진다(B안 — 접힘을 물리적으로 감지).
+            # 두 손가락이 충분히 펴진 동안만 스크롤·스와이프한다. 주먹을 쥐려 접히기
+            # 시작하면 끝이 잠깐 아래로 스윙해 역방향으로 튀는데, 그 순간 직진도가 임계
+            # 아래로 떨어져 여기서 걸러진다(B안 — 접힘을 물리적으로 감지).
             if (
                 direction is not None
-                and abs(direction[1]) >= MIN_VERTICALITY
                 and straightness is not None
                 and straightness >= TWO_FINGER_STRAIGHTNESS_MIN
             ):
-                # 화면 y는 아래로 증가하므로 부호를 뒤집어 위쪽을 +로 만든다.
-                events.append(PoseEvent("scroll", timestamp_ms, -direction[1]))
+                dx, dy = direction
+                # 좌우 스와이프(데스크톱 전환)를 먼저 본다. 방향을 한쪽으로 커밋한
+                # 프레임(|dx|≥SWIPE_SIDE_MIN)은 수직 게이트와 상보적이라 스크롤과 겹치지
+                # 않는다 — 스와이프가 났으면 그 프레임엔 스크롤이 나올 수 없다.
+                swipe = self._track_swipe(dx, timestamp_ms)
+                if swipe is not None:
+                    events.append(swipe)
+                elif abs(dy) >= MIN_VERTICALITY:
+                    # 화면 y는 아래로 증가하므로 부호를 뒤집어 위쪽을 +로 만든다.
+                    events.append(PoseEvent("scroll", timestamp_ms, -dy))
         return events
