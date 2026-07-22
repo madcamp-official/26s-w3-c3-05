@@ -98,6 +98,10 @@ TWO_FINGER_STRAIGHTNESS_MIN = 0.85
 # 파라미터는 실측(2026-07-22 rotation_probe: 각속도 중앙 ~400deg/s, 회전 중 tilt 중앙 16°,
 # index_point 유지 88%) 기반이며 실기기 튜닝 대상이다.
 ROT_STEP_DEG = 60.0       # 누적 회전 이만큼마다 볼륨 1스텝(작을수록 민감)
+# 워밍업 게이트: 한 회전 세션에서 순(net) 회전이 이 값을 넘어야 볼륨을 내기 시작한다.
+# 일상 동작의 작은 회전이 갑자기 볼륨을 바꾸는 것을 막는다 — 좌우로 오가는 흔들림은
+# 부호가 상쇄돼 누적되지 않고, 의도적인 한 방향 큰 회전(약 한 바퀴)만 활성화한다.
+ROT_ACTIVATION_DEG = 360.0
 ROT_MIN_SPEED = 60.0      # deg/s. 이 미만 각속도는 누적하지 않는다(포인팅 지터·드리프트 차단)
 ROT_SIGN = -1.0           # 화면 시계방향을 볼륨 증가로(실기기 확인 결과 -1). 뒤집히면 부호 변경
 # 회전을 감지하면 이 시간 동안 "볼륨 노브 모드"를 유지해 다른 모든 동작(클릭·드래그·커서·
@@ -258,6 +262,8 @@ class PoseStateMachine:
     _rot_accum: float = 0.0
     _rot_missing: int = 0        # 연속으로 index_point 라벨이 아닌 프레임 수(관용 카운터)
     _rot_active_until: int = 0   # 이 시각까지는 볼륨 노브 모드(다른 동작 차단)
+    _rot_activated: bool = False  # 이 회전 세션이 워밍업(한 바퀴)을 통과했는지
+    _rot_warmup: float = 0.0      # 세션 시작 이후 순(net) 회전각 — 활성화 판정용(소비 안 함)
 
     def reset(self) -> None:
         """추적 손실 등으로 이력을 신뢰할 수 없을 때 — 상태를 지어내지 않는다."""
@@ -272,6 +278,8 @@ class PoseStateMachine:
         self._rot_accum = 0.0
         self._rot_missing = 0
         self._rot_active_until = 0
+        self._rot_activated = False
+        self._rot_warmup = 0.0
         self._palm_smoother.reset()
 
     def update(
@@ -374,6 +382,7 @@ class PoseStateMachine:
             self._rot_missing += 1
             if self._rot_missing > self.untrusted_grace_frames:
                 self._rot_prev_angle, self._rot_accum = None, 0.0
+                self._rot_activated, self._rot_warmup = False, 0.0
             return []
         self._rot_missing = 0
         points = np.asarray(landmarks, dtype=np.float64)
@@ -391,6 +400,16 @@ class PoseStateMachine:
         self._rot_prev_angle, self._rot_prev_ms = angle, timestamp_ms
         if abs(delta) / dt_s < ROT_MIN_SPEED:  # 회전으로 볼 만큼 빠르지 않으면 무시
             return []
+        # 워밍업 게이트: 활성화 전에는 순(net) 회전만 쌓고 볼륨은 내지 않는다. 순 회전이
+        # ROT_ACTIVATION_DEG(한 바퀴)를 넘어야 활성화되고, 그때부터 볼륨을 낸다. 활성화
+        # 전엔 볼륨 노브 모드도 걸지 않아 이 구간의 회전이 다른 동작을 막지 않는다 —
+        # 일상 동작의 작은 회전이 볼륨을 건드리지도, 클릭·커서를 막지도 않게 한다.
+        if not self._rot_activated:
+            self._rot_warmup += delta
+            if abs(self._rot_warmup) < ROT_ACTIVATION_DEG:
+                return []
+            self._rot_activated = True
+            self._rot_accum = 0.0  # 활성화 이후 회전만 볼륨에 반영(워밍업 회전은 소비 안 함)
         self._rot_active_until = timestamp_ms + ROT_HOLD_MS  # 볼륨 노브 모드 연장
         self._rot_accum += delta
         steps = int(self._rot_accum / ROT_STEP_DEG)  # 0을 향해 버림

@@ -412,11 +412,13 @@ def test_index_rotation_drives_volume() -> None:
     t = _enter_index(machine)
     assert machine.state == "index_point"
 
-    cw, t = _rotate(machine, sign=+1, frames=20, start=t)
+    # frames=30(450°): 앞 ~24프레임(360°)은 워밍업, 이후부터 볼륨 스텝이 나온다.
+    cw, t = _rotate(machine, sign=+1, frames=30, start=t)
     cw_vol = {e for e in cw if e.startswith("volume")}
     assert len(cw_vol) == 1, "한 방향 회전은 한 종류의 볼륨 스텝만"
     assert machine.state == "index_point"  # 회전 내내 상태 유지
 
+    # 세션이 이미 활성화됐으므로(연속 index_point) 반대 회전은 워밍업 없이 바로 볼륨.
     ccw, t = _rotate(machine, sign=-1, frames=20, start=t)
     ccw_vol = {e for e in ccw if e.startswith("volume")}
     assert len(ccw_vol) == 1
@@ -426,16 +428,27 @@ def test_index_rotation_drives_volume() -> None:
 def test_index_rotation_starts_at_high_tilt_without_entering_state() -> None:
     """상태 진입(낮은 tilt) 없이도, 고tilt(untrusted) 라벨만으로 회전 볼륨이 시작된다."""
     machine = PoseStateMachine()
-    events, _ = _rotate(machine, sign=+1, frames=20, start=0, trusted=False)
+    events, _ = _rotate(machine, sign=+1, frames=30, start=0, trusted=False)  # 워밍업 통과
     assert any(e.startswith("volume") for e in events)
     assert machine.state == ""  # 상태로 진입하지 않았어도 동작
+
+
+def test_small_rotation_does_not_change_volume() -> None:
+    """워밍업(한 바퀴 ROT_ACTIVATION_DEG) 미만의 회전은 볼륨을 바꾸지 않는다.
+
+    일상 동작의 작은 검지 회전이 갑자기 볼륨을 한두 칸 바꾸던 것을 막는 게이트다.
+    """
+    machine = PoseStateMachine()
+    events, _ = _rotate(machine, sign=+1, frames=20, start=0, trusted=False)  # 300° < 360°
+    assert not any(e.startswith("volume") for e in events)
 
 
 def test_volume_knob_mode_blocks_other_actions() -> None:
     """회전(볼륨 노브 모드) 중에는 순간 오인식(pinch 등)이 섞여도 클릭·드래그가 나오지 않는다."""
     machine = PoseStateMachine()
     events, t, theta = [], 0, 0.0
-    for i in range(15):
+    # 워밍업(360°)을 index_point 프레임(3중 2)만으로 넘기려면 넉넉히 돌려야 한다.
+    for i in range(48):
         theta += 15.0
         label = "pinch_index" if i % 3 == 0 else "index_point"  # 회전 중 오인식 섞기
         events += [e.kind for e in machine.update(_pose(label, trusted=False), t, _hand_pointing(theta))]
