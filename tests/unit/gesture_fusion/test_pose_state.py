@@ -129,64 +129,75 @@ def test_media_toggle_expires_after_window() -> None:
 
 # --- 클릭 / 드래그 ---
 
-def test_short_pinch_is_click() -> None:
+def _kv(events: list) -> list:
+    """(kind, click_state) 목록 — mouse_down/up의 clickState까지 검증한다."""
+    return [(e.kind, int(e.value)) for e in events]
+
+
+def test_short_pinch_emits_down_then_up() -> None:
+    """짧은 핀치: 진입에서 버튼 down, 릴리즈에서 up (둘 다 clickState=1)."""
     machine = PoseStateMachine()
-    _feed(machine, "pinch_index", ms=200)
-    events = [e for t in (300, 333, 366, 400)
-              for e in machine.update(_pose(NONE_POSE), t)]
-    assert [e.kind for e in events] == ["click"]
+    down = _feed(machine, "pinch_index", ms=200)
+    up = [e for t in (300, 333, 366, 400)
+          for e in machine.update(_pose(NONE_POSE), t)]
+    assert _kv(down) == [("mouse_down", 1)]
+    assert _kv(up) == [("mouse_up", 1)]
 
 
 def _pinch_click(machine: PoseStateMachine, *, start: int) -> list:
-    """핀치를 짧게 쥐었다 떼는 한 사이클 — click/double_click 이벤트를 낸다."""
-    events = _feed(machine, "pinch_index", ms=150, start=start)  # dwell(120ms) 통과
+    """핀치를 짧게 쥐었다 떼는 한 사이클 — mouse_down→mouse_up 한 쌍을 낸다."""
+    events = _feed(machine, "pinch_index", ms=150, start=start)  # dwell 통과 + 진입 down
     t = start + 150 + 33
-    for _ in range(4):  # RELEASE_FRAMES(3) 넘겨 확실히 이탈
+    for _ in range(4):  # RELEASE_FRAMES(3) 넘겨 확실히 이탈 → up
         events.extend(machine.update(_pose(NONE_POSE), t))
         t += 33
     return events
 
 
 def test_two_quick_pinches_are_double_click() -> None:
-    """두 클릭 간격이 double_click_ms 안이면 두 번째가 더블클릭으로 승격된다."""
+    """두 핀치 간격이 double_click_ms 안이면 두 번째 down/up이 clickState=2다."""
     machine = PoseStateMachine()
     first = _pinch_click(machine, start=0)
-    second = _pinch_click(machine, start=300)  # 첫 클릭에서 ~300ms 뒤
-    assert [e.kind for e in first] == ["click"]
-    assert [e.kind for e in second] == ["double_click"]
+    second = _pinch_click(machine, start=300)  # 첫 핀치 진입에서 ~300ms 뒤
+    assert _kv(first) == [("mouse_down", 1), ("mouse_up", 1)]
+    assert _kv(second) == [("mouse_down", 2), ("mouse_up", 2)]
 
 
 def test_slow_second_pinch_is_plain_click() -> None:
-    """간격이 double_click_ms를 넘으면 둘 다 그냥 클릭이다."""
+    """간격이 double_click_ms를 넘으면 둘 다 clickState=1이다."""
     machine = PoseStateMachine()
     first = _pinch_click(machine, start=0)
     second = _pinch_click(machine, start=1000)  # 충분히 늦음
-    assert [e.kind for e in first] == ["click"]
-    assert [e.kind for e in second] == ["click"]
+    assert _kv(first) == [("mouse_down", 1), ("mouse_up", 1)]
+    assert _kv(second) == [("mouse_down", 1), ("mouse_up", 1)]
 
 
 def test_triple_pinch_does_not_chain_double_clicks() -> None:
-    """세 번 연속 핀치는 (클릭, 더블클릭, 클릭) — 더블클릭이 연쇄되지 않는다."""
+    """세 번 연속 핀치: 두 번째 눌림만 clickState=2, 세 번째는 다시 1로 돌아간다."""
     machine = PoseStateMachine()
-    kinds = [
-        e.kind
+    states = [
+        int(e.value)
         for start in (0, 300, 600)
         for e in _pinch_click(machine, start=start)
+        if e.kind == "mouse_down"
     ]
-    assert kinds == ["click", "double_click", "click"]
+    assert states == [1, 2, 1]
 
 
-def test_long_pinch_becomes_drag() -> None:
-    """오래 쥐면 드래그다. 시작 시점은 핀치 진입 순간으로 소급된다."""
+def test_long_pinch_holds_button_then_releases() -> None:
+    """오래 쥐면 버튼이 눌린 채 유지(드래그)되고, 릴리즈에서 한 번만 up이 나간다.
+
+    down/up 모델에선 진입에서 이미 버튼이 down이라 별도 drag 이벤트가 없다 — 유지 중
+    커서 move가 곧 드래그이고, 릴리즈의 mouse_up이 끝낸다.
+    """
     machine = PoseStateMachine()
-    events = _feed(machine, "pinch_index", ms=700)
-    starts = [e for e in events if e.kind == "drag_start"]
-    assert len(starts) == 1
-    assert starts[0].timestamp_ms < 700  # 소급 적용
+    held = _feed(machine, "pinch_index", ms=700)
+    button = [e for e in held if e.kind in ("mouse_down", "mouse_up")]
+    assert _kv(button) == [("mouse_down", 1)]  # 유지 내내 down 한 번, up 없음
 
     release = [e for t in (800, 833, 866, 900)
                for e in machine.update(_pose(NONE_POSE), t)]
-    assert [e.kind for e in release] == ["drag_end"]
+    assert _kv(release) == [("mouse_up", 1)]
 
 
 def test_pinch_middle_is_right_click() -> None:
@@ -267,11 +278,11 @@ def test_index_point_moves_cursor() -> None:
 
 
 def test_pinch_drag_also_moves_cursor() -> None:
-    """드래그(핀치 유지) 중에도 커서가 따라 움직인다."""
+    """드래그(핀치 유지) 중에도 커서가 따라 움직인다 — 진입 down 뒤 move가 이어진다."""
     machine = PoseStateMachine()
     events = _feed_cursor(machine, "pinch_index", ((0.4, 0.4), (0.6, 0.6)), ms=700)
     assert any(e.kind == "move" for e in events)
-    assert any(e.kind == "drag_start" for e in events)
+    assert any(e.kind == "mouse_down" for e in events)  # 진입에서 버튼 down(=드래그 시작)
 
 
 def _index_hand(*, straight: bool) -> np.ndarray:
@@ -429,7 +440,7 @@ def test_volume_knob_mode_blocks_other_actions() -> None:
         label = "pinch_index" if i % 3 == 0 else "index_point"  # 회전 중 오인식 섞기
         events += [e.kind for e in machine.update(_pose(label, trusted=False), t, _hand_pointing(theta))]
         t += 33
-    assert not any(e in ("click", "drag_start", "right_click") for e in events)
+    assert not any(e in ("mouse_down", "mouse_up", "right_click") for e in events)
     assert any(e.startswith("volume") for e in events)
 
 

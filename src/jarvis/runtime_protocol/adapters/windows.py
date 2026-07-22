@@ -64,8 +64,12 @@ class InputSink(Protocol):
         """버튼을 두 번 빠르게 눌러 더블클릭을 전송한다(현재 커서 위치)."""
         ...
 
-    def press(self, button: MouseButton, *, down: bool) -> None:
-        """버튼을 누르거나 뗀다 — 드래그는 누른 채 커서를 옮겨야 하므로 분리한다."""
+    def press(self, button: MouseButton, *, down: bool, click_state: int = 1) -> None:
+        """버튼을 누르거나 뗀다 — 드래그는 누른 채 커서를 옮겨야 하므로 분리한다.
+
+        `click_state`(1=단일, 2=더블)는 macOS가 더블클릭을 합치는 데 쓰는 힌트다.
+        Windows는 두 클릭의 간격(GetDoubleClickTime)으로 OS가 알아서 합치므로 무시한다.
+        """
         ...
 
     def scroll(self, ticks: int) -> None:
@@ -232,8 +236,13 @@ class Win32InputSink:
         # host (a per-line ignore would flip to unused when checked on Windows).
         return getattr(ctypes, "windll").user32
 
-    def press(self, button: MouseButton, *, down: bool) -> None:
-        """버튼 상태를 바꾼다. 드래그는 누른 채 이동해야 해서 click과 분리돼 있다."""
+    def press(self, button: MouseButton, *, down: bool, click_state: int = 1) -> None:
+        """버튼 상태를 바꾼다. 드래그는 누른 채 이동해야 해서 click과 분리돼 있다.
+
+        `click_state`는 macOS 전용 힌트라 여기선 무시한다 — Windows는 두 down/up 쌍의
+        간격이 GetDoubleClickTime 이내면 OS가 알아서 더블클릭으로 합친다.
+        """
+        del click_state  # Windows에선 불필요(OS가 타이밍으로 판정)
         flags = {
             (MouseButton.LEFT, True): _MOUSEEVENTF_LEFTDOWN,
             (MouseButton.LEFT, False): _MOUSEEVENTF_LEFTUP,

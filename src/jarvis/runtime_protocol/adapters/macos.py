@@ -83,8 +83,14 @@ class MacOSInputSink:
 
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
-    def press(self, button: MouseButton, *, down: bool) -> None:
-        """버튼 상태를 바꾼다. 드래그는 누른 채 이동해야 해서 click과 분리돼 있다."""
+    def press(self, button: MouseButton, *, down: bool, click_state: int = 1) -> None:
+        """버튼 상태를 바꾼다. 드래그는 누른 채 이동해야 해서 click과 분리돼 있다.
+
+        `click_state`는 연속 클릭 횟수(1=단일, 2=더블)다. down/up 쌍에 같은 값을 실어
+        보내면, 두 번째 클릭 쌍(click_state=2)을 OS가 하나의 더블클릭으로 합친다 —
+        macOS는 단일 클릭을 두 번 보내는 것만으로는 더블클릭으로 인식하지 않는다
+        (`double_click`의 kCGMouseEventClickState 주석과 같은 이유).
+        """
         import Quartz
 
         if button is MouseButton.RIGHT:
@@ -94,7 +100,9 @@ class MacOSInputSink:
             event_type = Quartz.kCGEventLeftMouseDown if down else Quartz.kCGEventLeftMouseUp
             mouse_button = Quartz.kCGMouseButtonLeft
         location = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
-        self._post(Quartz.CGEventCreateMouseEvent(None, event_type, location, mouse_button))
+        event = Quartz.CGEventCreateMouseEvent(None, event_type, location, mouse_button)
+        Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventClickState, click_state)
+        self._post(event)
 
     def click(self, button: MouseButton) -> None:
         self.press(button, down=True)

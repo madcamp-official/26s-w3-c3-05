@@ -238,11 +238,15 @@ class PoseStateMachine:
     # `none`이 덮어쓰지 않는 "마지막 명령 자세" — 전이 판정이 빈 구간을 건너뛴다.
     _last_pose: str = ""
     _last_pose_end: int = 0
-    # 직전 클릭의 pinch **진입** 시각 — 다음 클릭의 진입이 double_click_ms 안이면
-    # 더블클릭으로 승격한다. 확정(_leave)이 아니라 진입 기준이라 dwell·release 지연이
-    # 예산에 들어가지 않는다. 첫 클릭이 오인되지 않도록 "아주 오래전"으로 시작한다.
+    # 직전 **짧은 단일 클릭**의 pinch 진입 시각 — 다음 핀치의 진입이 double_click_ms
+    # 안이면 그 눌림을 더블클릭(clickState=2)으로 실어 보낸다. 확정(_leave)이 아니라
+    # 진입 기준이라 dwell·release 지연이 예산에 들어가지 않는다. 드래그·이미 더블인
+    # 눌림은 여기서 제외해 트리플 승격을 막는다. 첫 클릭 오인 방지로 "아주 오래전" 시작.
     _last_click_ms: int = -1_000_000
-    _dragging: bool = False
+    # 현재 눌려 있는 pinch_index 클릭의 clickState(1=단일, 2=더블). _enter에서 정하고
+    # _leave의 mouse_up이 같은 값을 실어, down/up 쌍이 짝을 이뤄 macOS가 더블클릭으로
+    # 합치게 한다(macOS는 두 단일 클릭만으로는 더블클릭을 인식하지 않는다).
+    _press_click_state: int = 1
     # 커서 이동 참조점(이미지 좌표)과 시각 — 델타 계산용. 상태 진입 때 초기화한다.
     _cursor_ref: tuple[float, float] | None = None
     _cursor_ref_ms: int = 0
@@ -263,7 +267,7 @@ class PoseStateMachine:
         self._untrusted = 0
         self._last_pose = ""
         self._last_click_ms = -1_000_000
-        self._dragging = False
+        self._press_click_state = 1
         self._rot_prev_angle = None
         self._rot_accum = 0.0
         self._rot_missing = 0
@@ -440,6 +444,16 @@ class PoseStateMachine:
         # label==state라 _continuous로 빠져 재발화하지 않는다).
         elif label == "middle_point":
             events.append(PoseEvent("close_tab", timestamp_ms))
+        # 핀치(집게) 진입 → 마우스 버튼 down(릴리즈에서 up). 짧게 쥐었다 떼면 클릭,
+        # 길게 쥐고 이동하면 드래그가 자연히 갈린다 — 누른 시간·이동을 OS가 판정하므로
+        # click/drag를 상태기계가 미리 가를 필요가 없다. 직전 짧은 클릭이 double_click_ms
+        # 이내면 이 눌림에 clickState=2를 실어 OS가 더블클릭으로 합치게 한다.
+        elif label == "pinch_index":
+            is_double = timestamp_ms - self._last_click_ms <= self.double_click_ms
+            self._press_click_state = 2 if is_double else 1
+            events.append(
+                PoseEvent("mouse_down", timestamp_ms, value=float(self._press_click_state))
+            )
         self.state, self._state_since = label, timestamp_ms
         self._pending, self._missing = "", 0
         return events
@@ -448,31 +462,27 @@ class PoseStateMachine:
         events: list[PoseEvent] = []
         held = timestamp_ms - self._state_since
         if self.state == "pinch_index":
-            if self._dragging:
-                events.append(PoseEvent("drag_end", timestamp_ms))
-            elif held <= self.click_max_ms:
-                # 더블클릭 간격은 두 핀치의 **진입** 시각(_state_since)으로 잰다 —
-                # dwell·release 확정 지연을 예산에서 빼야 체감 간격과 맞는다. 첫 클릭은
-                # 이미 나갔지만(마우스와 동일) 두 번째를 double_click으로 낸다.
-                if self._state_since - self._last_click_ms <= self.double_click_ms:
-                    events.append(PoseEvent("double_click", timestamp_ms))
-                    self._last_click_ms = -1_000_000  # 3연속 핀치가 또 더블클릭 되지 않게 초기화
-                else:
-                    events.append(PoseEvent("click", timestamp_ms))
-                    self._last_click_ms = self._state_since  # 이번 클릭의 진입 시각 기록
+            # 핀치 릴리즈 → 마우스 버튼 up. down에서 실은 clickState를 그대로 실어
+            # down/up 쌍이 짝을 이루게 한다(더블클릭이면 두 번째 쌍이 clickState=2).
+            events.append(PoseEvent("mouse_up", timestamp_ms, value=float(self._press_click_state)))
+            # 짧은 단일 클릭만 다음 핀치의 더블클릭 후보로 남긴다. 길게 쥔 드래그나 이미
+            # 더블인 눌림은 후보에서 빼 다음 핀치가 트리플로 승격되지 않게 한다.
+            if held <= self.click_max_ms and self._press_click_state == 1:
+                self._last_click_ms = self._state_since
+            else:
+                self._last_click_ms = -1_000_000
         elif self.state == "pinch_middle" and held <= self.click_max_ms:
             events.append(PoseEvent("right_click", timestamp_ms))
         if self.state:
             self._last_pose, self._last_pose_end = self.state, timestamp_ms
-        self.state, self._dragging, self._missing = "", False, 0
+        self.state, self._missing = "", 0
         return events
 
     def _continuous(
         self, timestamp_ms: int, landmarks: FloatArray | None
     ) -> list[PoseEvent]:
-        """상태를 유지하는 동안 계속 나가는 이벤트(스크롤·드래그 승격)."""
+        """상태를 유지하는 동안 계속 나가는 이벤트(스크롤·핀치 드래그)."""
         events: list[PoseEvent] = []
-        held = timestamp_ms - self._state_since
         # 커서 이동: index_point(이동)·pinch_index(드래그) 상태에서 손 이동을 옮긴다.
         # 드래그도 여기서 커서가 따라 움직인다 — pinch_index가 CURSOR_POSES에 있다.
         # 검지 폄 게이트: index_point로 분류돼도 검지가 충분히 펴지지 않았으면(애매하게
@@ -495,11 +505,9 @@ class PoseStateMachine:
                     events.append(move)
         else:
             self._cursor_ref = None  # 이동 자세를 벗어나면 참조점을 버린다
-        if self.state == "pinch_index" and not self._dragging and held > self.click_max_ms:
-            # 오래 쥐고 있으면 클릭이 아니라 드래그다. 진입 시점으로 소급해 알린다.
-            self._dragging = True
-            events.append(PoseEvent("drag_start", self._state_since))
-        elif self.state == "two_fingers" and landmarks is not None:
+        # 핀치 드래그는 별도 승격이 필요 없다 — 진입에서 이미 버튼이 down이라, 위의
+        # 커서 이동이 곧 드래그다(버튼을 누른 채 커서가 따라간다). 릴리즈의 up이 끝낸다.
+        if self.state == "two_fingers" and landmarks is not None:
             direction = pointing_direction(landmarks)
             straightness = two_finger_straightness(landmarks)
             # 두 손가락이 충분히 펴진 동안만 스크롤한다. 주먹을 쥐려 접히기 시작하면 끝이
