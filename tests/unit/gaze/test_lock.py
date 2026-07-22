@@ -21,7 +21,7 @@ def _unknown() -> ClassificationResult:
 def test_starts_in_searching() -> None:
     lock = GazeLockStateMachine()
     assert lock.state == GazeLockState.SEARCHING
-    assert GazeConfig().dwell_time_ms == 3000
+    assert GazeConfig().dwell_time_ms == 1500
     assert lock.dwell_progress == 0.0
 
 

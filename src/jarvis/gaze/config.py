@@ -18,8 +18,12 @@ class GazeConfig:
     """
 
     # Gaze Lock state machine (README 7장 "초기 기준")
-    dwell_time_ms: int = 3000
-    """CANDIDATE 상태를 TARGET_LOCKED로 승격하기 전 유지해야 하는 최소 시간."""
+    dwell_time_ms: int = 1500
+    """CANDIDATE 상태를 TARGET_LOCKED로 승격하기 전 유지해야 하는 최소 시간.
+
+    2026-07-22 실사용 조정: 3000ms는 데모 체감이 느려 1500ms로 단축. 깜빡임
+    유예(candidate_grace_ms 600ms)가 있어 짧아진 dwell에서도 오탐 승격은 확률
+    0.80 + 마진 0.20 게이트가 막는다."""
 
     candidate_grace_ms: int = 600
     """dwell 적립 중 순간 UNKNOWN/저신뢰를 허용하는 유예 시간.
@@ -38,8 +42,11 @@ class GazeConfig:
     target_lock_ttl_ms: int = 1500
     """TARGET_LOCKED/GESTURE_WAIT 상태가 만료되기까지의 유예 시간."""
 
-    confirmed_unknown_timeout_ms: int = 2000
-    """Release the confirmed target after this much continuous UNKNOWN time."""
+    confirmed_unknown_timeout_ms: int = 3000
+    """Release the confirmed target after this much continuous UNKNOWN time.
+
+    2026-07-22 실사용 조정: dwell을 1500ms로 줄이면서 해제는 3000ms로 늘려
+    확정이 빨리 잡히고 천천히 풀리는 비대칭을 유지한다."""
 
     # Target classifier (README 7장 "Target 추정")
     unknown_probability_threshold: float = 0.80

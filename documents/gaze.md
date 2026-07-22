@@ -413,10 +413,10 @@ export 또는 `verify-target --save-samples <파일>`(등록 없이 스윕 한 �
 | `target_match_tolerance` | `1.10` | Radial convex-hull boundary tolerance; up to 10% beyond the traced edge is accepted. |
 | `minimum_probability` | `0.80` | Minimum probability for Gaze Lock candidate/hold. |
 | `minimum_margin` | `0.20` | Minimum top-1 vs top-2 margin for confident lock. |
-| `dwell_time_ms` | `3000` | Same target must remain the confident engine result for three continuous seconds before confirmation. |
+| `dwell_time_ms` | `1500` | Same target must remain the confident engine result this long before confirmation (2026-07-22: 3000→1500, demo feel). |
 | `candidate_grace_ms` | `600` | Momentary UNKNOWN/low-confidence gaps (blinks) shorter than this do not reset the dwell timer; the gap still counts toward elapsed dwell. |
 | `target_lock_ttl_ms` | `1500` | Gesture-wait/input-stream validity window; replacement candidates do not clear the confirmed target. |
-| `confirmed_unknown_timeout_ms` | `2000` | Release the Gaze confirmed target after two continuous seconds of classifier `UNKNOWN`. |
+| `confirmed_unknown_timeout_ms` | `3000` | Release the Gaze confirmed target after three continuous seconds of classifier `UNKNOWN` (2026-07-22: 2000→3000). |
 | `target_context_tolerance` | `1.35` | Soft scale for normalized 8D Mahalanobis overlap ranking. |
 | `target_settle_alignment_weight` | `0.55` | Maximum overlap bonus in the final iris landing direction. |
 | `gaze_settle_start_speed_deg_s` | `12.0` | Speed that arms eye-movement landing detection. |
