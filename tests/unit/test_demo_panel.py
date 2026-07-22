@@ -110,14 +110,57 @@ def test_mapping_table_rebuilds_without_leaking_rows() -> None:
     try:
         panel.set_targets([], {})
         panel.set_targets(
-            [TargetChoice("target_001", "전구"), TargetChoice("target_002", "노트북")],
+            [
+                TargetChoice("target_001", "전구", "electric bulb"),
+                TargetChoice("target_002", "노트북", "computer"),
+            ],
             {"target_001": "room.bulb"},
         )
-        assert panel._mapping_combos["target_001"].currentText() == "room.bulb"
+        assert panel._mapping_combos["target_001"].currentData() == "room.bulb"
         assert panel._mapping_combos["target_002"].currentText() == "(연결 안 함)"
 
         panel.set_targets([TargetChoice("target_003", "새 물체")], {})
         assert set(panel._mapping_combos) == {"target_003"}
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
+def test_execution_toggle_reports_armed_and_judgment_only_modes() -> None:
+    app = QApplication.instance() or QApplication([])
+    toggled: list[bool] = []
+    panel = DemoPanel(
+        on_mapping_changed=lambda target_id, device_id: None,
+        on_fallback_changed=lambda device_id: None,
+        on_preset_changed=lambda preset: None,
+        on_execution_toggled=toggled.append,
+    )
+    try:
+        panel._execution_toggle.setChecked(True)
+        assert toggled[-1] is True
+        assert "실행 활성" in panel._execution_status.text()
+        panel._execution_toggle.setChecked(False)
+        assert toggled[-1] is False
+        assert "판정 전용" in panel._execution_status.text()
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
+def test_fallback_combo_emits_runtime_id_not_display_label() -> None:
+    app = QApplication.instance() or QApplication([])
+    selected: list[str | None] = []
+    panel = DemoPanel(
+        on_mapping_changed=lambda target_id, device_id: None,
+        on_fallback_changed=selected.append,
+        on_preset_changed=lambda preset: None,
+        on_execution_toggled=lambda enabled: None,
+    )
+    try:
+        panel._fallback_combo.setCurrentIndex(1)
+        panel._fallback_toggle.setChecked(True)
+        assert selected[-1] == "room.bulb"
+        assert "electric bulb" in panel._fallback_combo.currentText()
     finally:
         panel.deleteLater()
         app.processEvents()

@@ -106,6 +106,7 @@ from jarvis.monitoring.overlay import (
 )
 from jarvis.monitoring.demo_bridge import (
     BULB_DEVICE_ID,
+    DEVICE_TYPE_TO_RUNTIME_ID,
     DemoBridge,
     DemoPreset,
     DeviceMappingStore,
@@ -927,19 +928,23 @@ def _target_names(raw: str) -> list[str]:
 class VideoView(QLabel):
     """Displays webcam frames scaled to the widget, with a HUD and gaze overlay.
 
-    `show_overlay=False`는 관객이 보는 화면(시연 탭)용이다 — HUD·gaze 벡터·손
-    스켈레톤 같은 디버그 표시를 전부 끄고 거울상 웹캠 프레임만 보여준다.
-    `set_gaze`/`set_hand`는 그대로 받아 상태는 유지하되(나중에 필요하면 켤 수
-    있게) 그리지 않는다. 실시간·손 추적 탭은 계속 `show_overlay=True`(기본값)로
-    디버그 정보를 다 보여준다.
+    `show_overlay=False`는 관객이 보는 화면(시연 탭)용이다 — HUD·gaze 벡터·등록
+    가이드를 끈다. 다만 시연에서 손 검출과 제스처 입력을 확인해야 하므로
+    `show_hand_overlay=True`를 별도로 줄 수 있다. 실시간·손 추적 탭은 기본값으로
+    모든 디버그 정보를 계속 보여준다.
     """
 
-    def __init__(self, *, show_overlay: bool = True) -> None:
+    def __init__(
+        self, *, show_overlay: bool = True, show_hand_overlay: bool | None = None
+    ) -> None:
         super().__init__()
         self.setMinimumSize(480, 360)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background:#0b0e13;")
         self._show_overlay = show_overlay
+        self._show_hand_overlay = (
+            show_overlay if show_hand_overlay is None else show_hand_overlay
+        )
         self._fps_times: deque[float] = deque(maxlen=30)
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
@@ -991,14 +996,6 @@ class VideoView(QLabel):
                 if self._show_target_heatmap:
                     draw_target_heatmap(display, self._gaze, mirror=True)
                 draw_gaze_overlay(display, self._gaze, mirror=True)
-            if self._hand is not None:
-                draw_hand_overlay(
-                    display,
-                    self._hand,
-                    mirror=True,
-                    control_action=self._control_action,
-                    control_enabled=self._control_enabled,
-                )
             if self._registration_guide is not None:
                 title, instruction, progress = self._registration_guide
                 draw_registration_guidance(
@@ -1007,6 +1004,14 @@ class VideoView(QLabel):
                     instruction=instruction,
                     progress=progress,
                 )
+        if self._show_hand_overlay and self._hand is not None:
+            draw_hand_overlay(
+                display,
+                self._hand,
+                mirror=True,
+                control_action=self._control_action,
+                control_enabled=self._control_enabled,
+            )
         self._render(display)
 
     def _current_fps(self) -> float:
@@ -1419,7 +1424,9 @@ class MainWindow(QMainWindow):
         self._device_mapping = DeviceMappingStore(
             self._profiles_path.with_name("demo_device_map.json")
         )
+        self._ensure_demo_mappings()
         self._demo_bridge = DemoBridge(mapping_store=self._device_mapping)
+        self._last_demo_gesture = "-"
         # 억제 전이를 기억한다 — release()를 매 프레임이 아니라 진입할 때 한 번만 부르려고.
         self._pose_suppressed = False
         self._virtual_bulb = VirtualBulbState()
@@ -1759,12 +1766,15 @@ class MainWindow(QMainWindow):
         """웹캠 뷰 + 시연 패널. `VideoView`는 app.py에 있어 패널이 직접 못 만든다
         (순환 import) — `_build_live_tab`이 인식 패널을 붙이는 방식과 같이 여기서 잇는다.
         """
-        self._demo_video = VideoView(show_overlay=False)
+        # 관객용 화면에서는 gaze/HUD 디버그는 숨기되, 실제 MediaPipe 손 입력과
+        # 제스처 판정을 사용자가 확인할 수 있도록 손 스켈레톤만 남긴다.
+        self._demo_video = VideoView(show_overlay=False, show_hand_overlay=True)
         self._demo_panel = DemoPanel(
             on_mapping_changed=self._on_demo_mapping_changed,
             on_fallback_changed=self._on_demo_fallback_changed,
             on_preset_changed=self._on_demo_preset_changed,
             on_execution_toggled=self._on_demo_execution_toggled,
+            on_open_registration=self._open_gaze_registration_tab,
         )
         self._refresh_demo_targets()
         self._refresh_bulb_badge()
@@ -1788,10 +1798,36 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_demo_panel"):
             return  # 시연 탭이 아직 만들어지기 전(등록 탭이 먼저 빌드된다)
         choices = [
-            TargetChoice(target_id=record.target_id, name=record.name)
+            TargetChoice(
+                target_id=record.target_id,
+                name=record.name,
+                device_type=record.device_type,
+            )
             for record in self._target_registry.records
         ]
         self._demo_panel.set_targets(choices, self._device_mapping.mapping)
+
+    def _ensure_demo_mappings(self) -> None:
+        """등록 시 선택한 기종을 실제 런타임 기기에 한 번만 자동 연결한다.
+
+        사용자가 시연 탭에서 명시적으로 "연결 안 함"을 선택한 경우에는 None 선택이
+        저장돼 있으므로 다시 덮지 않는다. 기존 프로필처럼 매핑 파일이 아예 없는 경우만
+        device_type을 기준으로 안전하게 마이그레이션한다.
+        """
+        for record in self._target_registry.records:
+            if self._device_mapping.has_selection(record.target_id):
+                continue
+            device_id = DEVICE_TYPE_TO_RUNTIME_ID.get(record.device_type)
+            if device_id is not None:
+                self._device_mapping.set_default(record.target_id, device_id)
+
+    def _open_gaze_registration_tab(self) -> None:
+        """시연 탭에서 복잡한 등록 UI를 복제하지 않고 원본 탭으로 이동한다."""
+        for index in range(self._tabs.count()):
+            if self._tabs.tabText(index) == "시선 인식":
+                self._tabs.setCurrentIndex(index)
+                self._register_target_button.setFocus()
+                return
 
     def _refresh_bulb_badge(self) -> None:
         configured = WizConfig.from_env(self._env) is not None
@@ -1815,6 +1851,7 @@ class MainWindow(QMainWindow):
         else:
             self._log.warn(f"시연 타깃 고정: {device_id} (시선 판정을 우회합니다)")
             self._demo_panel.append_line(f"타깃 고정 → {device_id}", ok=True)
+        self._update_demo_state(self._last_demo_gesture)
 
     def _on_demo_preset_changed(self, preset: DemoPreset) -> None:
         self._demo_bridge.reconfigure(preset)
@@ -1826,12 +1863,18 @@ class MainWindow(QMainWindow):
         )
 
     def _on_demo_execution_toggled(self, enabled: bool) -> None:
-        self._demo_bridge.execution_enabled = enabled
         if enabled and self._execute_worker is None:
+            self._demo_bridge.execution_enabled = False
             self._log.warn("실행기가 없어 기기 명령을 실행할 수 없습니다")
             self._demo_panel.append_line("실행기 없음 — 켜도 실행되지 않습니다", ok=False)
+            self._demo_panel.set_execution_enabled(False)
             return
+        self._demo_bridge.execution_enabled = enabled
         self._log.info(f"시연 기기 명령 실행 {'켜짐' if enabled else '꺼짐'}")
+        self._demo_panel.append_line(
+            "실제 기기 명령 실행 켜짐" if enabled else "판정 전용 모드 — 명령 실행 꺼짐",
+            ok=enabled,
+        )
 
     def _on_execution_outcome(self, outcome: object) -> None:
         """워커 스레드가 돌려준 실행 결과(GUI 스레드에서 수신)."""
@@ -1859,6 +1902,7 @@ class MainWindow(QMainWindow):
         self._demo_panel.append_line(message, ok=False)
 
     def _update_demo_state(self, gesture: str) -> None:
+        self._last_demo_gesture = gesture
         self._demo_panel.set_state(
             locked=self._demo_bridge.locked_device,
             candidate=self._demo_bridge.candidate_device,
@@ -1890,6 +1934,10 @@ class MainWindow(QMainWindow):
             self._log.warn("이 플랫폼에는 입력 어댑터가 없어 제어를 실행할 수 없습니다")
         else:
             self._log.info(f"손동작 제어 {'켜짐' if enabled else '꺼짐'}")
+
+    def _demo_tab_active(self) -> bool:
+        """시연 탭에서는 정적 pose 제어 대신 TCN→Fusion 명령 경로만 사용한다."""
+        return self._tabs.tabText(self._tabs.currentIndex()) == "시연"
 
     def _build_pipeline_tab(self) -> QWidget:
         body = QWidget()
@@ -1951,6 +1999,7 @@ class MainWindow(QMainWindow):
         # Gaze→Fusion 스트림(계약 §1). 브리지가 등록 물체 id를 런타임 기기 id로
         # 치환하고(매핑 없으면 UNKNOWN), 타깃 고정이 켜져 있으면 합성 추정치로 대체한다.
         self._demo_bridge.push_target(snapshot.target_estimate)
+        self._update_demo_state(self._last_demo_gesture)
         self._demo_video.set_gaze(snapshot)
         self._gaze_history.append(snapshot)
         cutoff_ms = snapshot.timestamp_ms - 500
@@ -2216,6 +2265,10 @@ class MainWindow(QMainWindow):
                 names = ", ".join(item.name for item in nearby)
                 self._log.warn(f"등록 방향이 기존 기기와 가깝습니다: {names}")
             self._target_registry.upsert(record)
+            if not self._device_mapping.has_selection(record.target_id):
+                device_id = DEVICE_TYPE_TO_RUNTIME_ID.get(record.device_type)
+                if device_id is not None:
+                    self._device_mapping.set(record.target_id, device_id)
             self._probe.register_profile(
                 record.to_profile(),
                 geometry_3d=record.to_geometry_3d(),
@@ -2316,6 +2369,7 @@ class MainWindow(QMainWindow):
         ):
             return
         self._target_registry.remove(record.target_id)
+        self._device_mapping.remove(record.target_id)
         self._probe.unregister_profile(record.target_id)
         self._refresh_targets()
 
@@ -2492,7 +2546,10 @@ class MainWindow(QMainWindow):
         # release()는 **억제로 들어가는 전이에서 한 번만** 부른다. 매 프레임 부르면
         # macOS sink의 restore_dock()이 초당 30번 호출된다(Windows sink엔 없어 무해하지만
         # 플랫폼에 기대지 않는다).
-        suppressed = self._demo_bridge.should_suppress_pose
+        # 시연 탭은 동적 TCN 명령 하나만 실제 실행 경로로 쓴다. 여기서 정적 pose
+        # 제어까지 함께 실행하면 노트북 대상 slide가 pose scroll + Intent scroll로
+        # 중복 작동한다. 손 스켈레톤·pose 판정은 계속 그리되 OS 입력만 막는다.
+        suppressed = self._demo_tab_active() or self._demo_bridge.should_suppress_pose
         if suppressed:
             if not self._pose_suppressed:
                 self._pose_control.release()
@@ -2500,6 +2557,10 @@ class MainWindow(QMainWindow):
             self._pose_control.apply(list(snapshot.pose_events))
         self._pose_suppressed = suppressed
         self._video.set_control(self._pose_control.last_action, self._pose_control.enabled)
+        self._demo_video.set_control(
+            "TCN 판정 대기",
+            self._demo_bridge.execution_enabled,
+        )
         self._hand_panel.update_snapshot(snapshot, self._pose_control.last_action)
         self._sidebar.set_hand_status(snapshot)
         self._finetune_panel.video.set_hand(snapshot)

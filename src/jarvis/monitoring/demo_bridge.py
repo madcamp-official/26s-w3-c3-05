@@ -57,6 +57,18 @@ LAPTOP_DEVICE_ID = "laptop"
 BULB_DEVICE_ID = "room.bulb"
 RUNTIME_DEVICE_IDS: tuple[str, ...] = (LAPTOP_DEVICE_ID, BULB_DEVICE_ID)
 
+# 시선 등록 UI가 저장하는 사람 친화적인 기종명과 런타임 capability registry의 id는
+# 서로 다르다. 이 표가 없으면 등록 직후에도 사용자가 시연 탭에서 같은 의미를 다시
+# 골라야 하고, 놓치면 정상 gaze가 UNKNOWN으로 바뀌어 모든 명령이 막힌다.
+DEVICE_TYPE_TO_RUNTIME_ID: Mapping[str, str] = {
+    "computer": LAPTOP_DEVICE_ID,
+    "electric bulb": BULB_DEVICE_ID,
+}
+RUNTIME_DEVICE_LABELS: Mapping[str, str] = {
+    LAPTOP_DEVICE_ID: "computer (laptop)",
+    BULB_DEVICE_ID: "electric bulb (room.bulb)",
+}
+
 # 어떤 기기도 보고 있지 않다는 뜻(interface-contract.md 공통 규칙). `AlignmentConfig.
 # unknown_target` 기본값과 같아야 lock tracker가 후보로 인정하지 않는다.
 UNKNOWN_TARGET = DEFAULT_ALIGNMENT_CONFIG.unknown_target
@@ -214,24 +226,38 @@ class DeviceMappingStore:
 
     def __init__(self, path: Path) -> None:
         self._path = path
-        self._mapping: dict[str, str] = {}
+        # None은 사용자가 UI에서 명시적으로 "연결 안 함"을 고른 상태다. 키 자체가
+        # 없는 신규 target과 구분해야 다음 시작 때 자동 매핑이 그 선택을 덮지 않는다.
+        self._mapping: dict[str, str | None] = {}
         self._load()
 
     @property
     def mapping(self) -> dict[str, str]:
-        return dict(self._mapping)
+        return {key: value for key, value in self._mapping.items() if value is not None}
 
     def get(self, target_id: str) -> str | None:
         return self._mapping.get(target_id)
 
+    def has_selection(self, target_id: str) -> bool:
+        """자동 연결 전, 사용자가 이미 연결/미연결을 선택했는지 반환한다."""
+        return target_id in self._mapping
+
     def set(self, target_id: str, device_id: str | None) -> None:
-        """`device_id`가 None이면 매핑을 지운다(그 물체는 다시 UNKNOWN 취급)."""
-        if device_id is None:
-            self._mapping.pop(target_id, None)
-        else:
-            if device_id not in RUNTIME_DEVICE_IDS:
-                raise ValueError(f"unknown runtime device id: {device_id!r}")
-            self._mapping[target_id] = device_id
+        """선택을 저장한다. None은 명시적 미연결이며 자동 매핑으로 덮지 않는다."""
+        if device_id is not None and device_id not in RUNTIME_DEVICE_IDS:
+            raise ValueError(f"unknown runtime device id: {device_id!r}")
+        self._mapping[target_id] = device_id
+        self._save()
+
+    def set_default(self, target_id: str, device_id: str) -> None:
+        """기종 기반 기본 연결을 메모리에만 채운다(명시적 선택은 건드리지 않음)."""
+        if device_id not in RUNTIME_DEVICE_IDS:
+            raise ValueError(f"unknown runtime device id: {device_id!r}")
+        self._mapping.setdefault(target_id, device_id)
+
+    def remove(self, target_id: str) -> None:
+        """삭제된 target의 연결 선택까지 제거한다."""
+        self._mapping.pop(target_id, None)
         self._save()
 
     def _load(self) -> None:
@@ -244,7 +270,9 @@ class DeviceMappingStore:
         if not isinstance(raw, dict):
             return
         self._mapping = {
-            str(k): str(v) for k, v in raw.items() if str(v) in RUNTIME_DEVICE_IDS
+            str(key): (None if value is None else str(value))
+            for key, value in raw.items()
+            if value is None or str(value) in RUNTIME_DEVICE_IDS
         }
 
     def _save(self) -> None:

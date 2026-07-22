@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
 from jarvis.monitoring.demo_bridge import (
     DEMO_PRESETS,
     RUNTIME_DEVICE_IDS,
+    RUNTIME_DEVICE_LABELS,
     DemoPreset,
 )
 from jarvis.monitoring.virtual_bulb import (
@@ -66,6 +68,7 @@ class TargetChoice:
 
     target_id: str
     name: str
+    device_type: str = ""
 
 
 class BulbView(QWidget):
@@ -126,11 +129,13 @@ class DemoPanel(QWidget):
         on_fallback_changed: Callable[[str | None], None],
         on_preset_changed: Callable[[DemoPreset], None],
         on_execution_toggled: Callable[[bool], None],
+        on_open_registration: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self._on_mapping_changed = on_mapping_changed
         self._on_fallback_changed = on_fallback_changed
         self._on_preset_changed = on_preset_changed
+        self._on_execution_toggled = on_execution_toggled
         self._mapping_combos: dict[str, QComboBox] = {}
 
         layout = QVBoxLayout(self)
@@ -169,10 +174,17 @@ class DemoPanel(QWidget):
         layout.addLayout(bulb_row)
 
         # --- 실행 스위치 --------------------------------------------------
-        self._execution_toggle = QCheckBox("기기 명령 실행 (끄면 판정만 하고 실행하지 않음)")
+        self._execution_toggle = QCheckBox(
+            "기기 명령 실행 (TCN 동적 제스처 · 끄면 판정만 하고 실행하지 않음)"
+        )
         self._execution_toggle.setChecked(False)
-        self._execution_toggle.toggled.connect(on_execution_toggled)
+        self._execution_toggle.toggled.connect(self._emit_execution)
         layout.addWidget(self._execution_toggle)
+        self._execution_status = QLabel(
+            "판정 전용 · 실제 컴퓨터/전구 명령은 실행하지 않음"
+        )
+        self._execution_status.setStyleSheet("color:#8b949e; font-weight:600;")
+        layout.addWidget(self._execution_status)
 
         # --- 폴백(타깃 고정) ----------------------------------------------
         fallback_row = QHBoxLayout()
@@ -185,7 +197,7 @@ class DemoPanel(QWidget):
         fallback_row.addWidget(self._fallback_toggle)
         self._fallback_combo = QComboBox()
         for device_id in RUNTIME_DEVICE_IDS:
-            self._fallback_combo.addItem(device_id)
+            self._fallback_combo.addItem(RUNTIME_DEVICE_LABELS[device_id], userData=device_id)
         self._fallback_combo.currentIndexChanged.connect(lambda _: self._emit_fallback())
         fallback_row.addWidget(self._fallback_combo, 1)
         layout.addLayout(fallback_row)
@@ -206,13 +218,17 @@ class DemoPanel(QWidget):
         # --- 물체 → 기기 매핑 ----------------------------------------------
         layout.addWidget(_section("등록 물체 → 런타임 기기"))
         mapping_note = QLabel(
-            "물체 등록은 target_001 같은 자체 id를 발급하지만 명령 매핑은 laptop·"
-            "room.bulb를 키로 쓴다. 여기서 이어 주지 않으면 모든 커밋이 "
-            "'이 기기엔 없는 제스처'로 막힌다."
+            "물체 등록은 '시선 인식' 탭에서 진행합니다. 등록할 때 고른 computer / "
+            "electric bulb 기종은 아래 laptop / room.bulb 실행 대상으로 자동 연결되며, "
+            "필요할 때 여기서 바꿀 수 있습니다."
         )
         mapping_note.setWordWrap(True)
         mapping_note.setStyleSheet("color:#6e7681; font-size:11px;")
         layout.addWidget(mapping_note)
+        self._registration_button = QPushButton("기기 등록·관리 → 시선 인식 탭")
+        if on_open_registration is not None:
+            self._registration_button.clicked.connect(on_open_registration)
+        layout.addWidget(self._registration_button)
         self._mapping_container = QWidget()
         self._mapping_layout = QGridLayout(self._mapping_container)
         self._mapping_layout.setContentsMargins(0, 0, 0, 0)
@@ -230,8 +246,19 @@ class DemoPanel(QWidget):
     # --- 조작 → 콜백 -------------------------------------------------------
 
     def _emit_fallback(self) -> None:
-        device = self._fallback_combo.currentText() if self._fallback_toggle.isChecked() else None
+        device = self._fallback_combo.currentData() if self._fallback_toggle.isChecked() else None
         self._on_fallback_changed(device)
+
+    def _emit_execution(self, enabled: bool) -> None:
+        self._execution_status.setText(
+            "실행 활성 · 확정된 제스처를 실제 컴퓨터/전구에 전달"
+            if enabled
+            else "판정 전용 · 실제 컴퓨터/전구 명령은 실행하지 않음"
+        )
+        self._execution_status.setStyleSheet(
+            ("color:#3fb950;" if enabled else "color:#8b949e;") + " font-weight:600;"
+        )
+        self._on_execution_toggled(enabled)
 
     def _emit_preset(self, index: int) -> None:
         if 0 <= index < len(DEMO_PRESETS):
@@ -257,17 +284,22 @@ class DemoPanel(QWidget):
             return
 
         for row, choice in enumerate(choices):
-            self._mapping_layout.addWidget(QLabel(f"{choice.name} ({choice.target_id})"), row, 0)
+            kind = f" · {choice.device_type}" if choice.device_type else ""
+            self._mapping_layout.addWidget(
+                QLabel(f"{choice.name} ({choice.target_id}{kind})"), row, 0
+            )
             combo = QComboBox()
-            combo.addItem(_NO_DEVICE)
+            combo.addItem(_NO_DEVICE, userData=None)
             for device_id in RUNTIME_DEVICE_IDS:
-                combo.addItem(device_id)
+                combo.addItem(RUNTIME_DEVICE_LABELS[device_id], userData=device_id)
             current = mapping.get(choice.target_id)
             if current is not None:
-                combo.setCurrentText(current)
-            combo.currentTextChanged.connect(
-                lambda text, target_id=choice.target_id: self._on_mapping_changed(
-                    target_id, None if text == _NO_DEVICE else text
+                index = combo.findData(current)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            combo.currentIndexChanged.connect(
+                lambda _index, target_id=choice.target_id, source=combo: self._on_mapping_changed(
+                    target_id, source.currentData()
                 )
             )
             self._mapping_combos[choice.target_id] = combo
@@ -327,9 +359,15 @@ class DemoPanel(QWidget):
     def execution_enabled(self) -> bool:
         return self._execution_toggle.isChecked()
 
+    def set_execution_enabled(self, enabled: bool) -> None:
+        """실행기를 쓸 수 없을 때 MainWindow가 스위치를 안전하게 되돌린다."""
+        if self._execution_toggle.isChecked() == enabled:
+            return
+        self._execution_toggle.setChecked(enabled)
+
     @property
     def fallback_device(self) -> str | None:
-        return self._fallback_combo.currentText() if self._fallback_toggle.isChecked() else None
+        return self._fallback_combo.currentData() if self._fallback_toggle.isChecked() else None
 
 
 def _section(title: str) -> QLabel:

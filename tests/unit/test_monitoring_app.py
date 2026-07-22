@@ -670,11 +670,10 @@ def test_pose_release_called_once_on_suppression_entry(tmp_path: Path) -> None:
         app.processEvents()
 
 
-def test_video_view_with_overlay_disabled_skips_debug_drawing(
+def test_video_view_can_show_only_hand_tracking_without_other_debug_overlays(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """시연 탭 웹캠(show_overlay=False)은 HUD·gaze·hand 오버레이를 그리지 않는다 —
-    관객이 보는 화면에는 디버그 표시 없이 거울상 프레임만 남아야 한다."""
+    """시연 탭은 HUD·gaze를 숨기면서 MediaPipe 손 입력만 선택적으로 남긴다."""
     import jarvis.monitoring.app as app_module
 
     calls: list[str] = []
@@ -700,15 +699,23 @@ def test_video_view_with_overlay_disabled_skips_debug_drawing(
     clean.show_frame(frame)
     assert calls == []
 
+    hand_only = VideoView(show_overlay=False, show_hand_overlay=True)
+    hand_only.set_gaze(object())
+    hand_only.set_hand(object())
+    hand_only.set_registration_guidance("t", "i", 0.5)
+    hand_only.show_frame(frame)
+    assert calls == ["hand"]
+    calls.clear()
+
     debug = VideoView()  # 기본값 True — 다른 탭은 여전히 다 그려야 한다.
     debug.set_gaze(object())
     debug.set_hand(object())
     debug.set_registration_guidance("t", "i", 0.5)
     debug.show_frame(frame)
-    assert calls == ["hud", "gaze", "hand", "registration"]
+    assert calls == ["hud", "gaze", "registration", "hand"]
 
 
-def test_demo_tab_video_has_overlay_disabled(tmp_path: Path) -> None:
+def test_demo_tab_video_keeps_only_hand_overlay(tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(
         env={},
@@ -718,7 +725,106 @@ def test_demo_tab_video_has_overlay_disabled(tmp_path: Path) -> None:
     )
     try:
         assert window._demo_video._show_overlay is False
+        assert window._demo_video._show_hand_overlay is True
         assert window._video._show_overlay is True
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_demo_registration_button_opens_gaze_registration_tab(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        samples_path=tmp_path / "samples.json",
+        gesture_models_dir=tmp_path,
+        profiles_path=tmp_path / "profiles.json",
+        start_tab="시연",
+    )
+    try:
+        window._demo_panel._registration_button.click()
+        tabs = window.centralWidget()
+        assert tabs is not None
+        assert tabs.tabText(tabs.currentIndex()) == "시선 인식"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+@pytest.mark.parametrize(
+    ("device_type", "runtime_device"),
+    [("computer", "laptop"), ("electric bulb", "room.bulb")],
+)
+def test_registered_device_type_is_automatically_mapped_for_demo(
+    tmp_path: Path, device_type: str, runtime_device: str
+) -> None:
+    profiles = tmp_path / "profiles.json"
+    profiles.write_text(
+        json.dumps(
+            [
+                {
+                    "target_id": "target_001",
+                    "name": "demo device",
+                    "device_type": device_type,
+                    "direction": {"yaw": 0.0, "pitch": 0.0},
+                    "spread": {"yaw": 4.0, "pitch": 4.0},
+                    "device_id": "target_001",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        samples_path=tmp_path / "samples.json",
+        gesture_models_dir=tmp_path,
+        profiles_path=profiles,
+    )
+    try:
+        assert window._device_mapping.get("target_001") == runtime_device
+        assert (
+            window._demo_panel._mapping_combos["target_001"].currentData()
+            == runtime_device
+        )
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_demo_execution_toggle_arms_and_disarms_command_dispatch(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = _demo_window(tmp_path)
+    try:
+        window._demo_panel._execution_toggle.setChecked(True)
+        assert window._demo_bridge.execution_enabled is True
+        window._demo_panel._execution_toggle.setChecked(False)
+        assert window._demo_bridge.execution_enabled is False
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_demo_tab_never_double_executes_static_pose_control(tmp_path: Path) -> None:
+    """시연은 TCN→Fusion만 실행하며 정적 pose 이벤트를 OS에 중복 전달하지 않는다."""
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        samples_path=tmp_path / "samples.json",
+        gesture_models_dir=tmp_path,
+        profiles_path=tmp_path / "profiles.json",
+        start_tab="시연",
+    )
+    applied: list[int] = []
+    window._pose_control.apply = lambda events: applied.append(len(events))  # type: ignore[method-assign]
+    try:
+        window._demo_panel._execution_toggle.setChecked(True)
+        window._on_hand(_lost_hand_snapshot(1))
+        assert applied == []
+        assert window._demo_bridge.execution_enabled is True
     finally:
         window.close()
         app.processEvents()
