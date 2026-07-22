@@ -150,6 +150,7 @@ class TargetRegistrationSession:
         config: GazeConfig = GazeConfig(),
         coverage_min_frames: int = 0,
         raw_sample_dir: str | Path | None = None,
+        requires_nod_gate: bool = False,
     ) -> None:
         if center_duration_ms <= 0 or boundary_duration_ms <= 0 or minimum_valid_frames <= 0:
             raise ValueError("duration and frame count must be positive")
@@ -185,6 +186,7 @@ class TargetRegistrationSession:
             PoseCoverageTracker(config, coverage_min_frames) if coverage_min_frames > 0 else None
         )
         self._raw_sample_dir = Path(raw_sample_dir) if raw_sample_dir is not None else None
+        self.requires_nod_gate = requires_nod_gate
 
     @property
     def valid_frame_count(self) -> int:
@@ -436,7 +438,9 @@ class TargetRegistrationSession:
             feature_profile=feature_profile,
             area_profile=area_profile,
             pose_correction=pose_correction,
+            requires_nod_gate=self.requires_nod_gate,
         )
+
     def _export_raw_samples(
         self, center_yaw_pitch: tuple[float, float], reference_head_yaw: float | None
     ) -> None:

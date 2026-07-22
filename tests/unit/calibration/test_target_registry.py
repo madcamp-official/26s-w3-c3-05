@@ -176,6 +176,27 @@ def test_registration_rejects_closed_eyes() -> None:
         session.finalize()
 
 
+def test_registration_session_propagates_requires_nod_gate_to_record() -> None:
+    session = TargetRegistrationSession(
+        "laptop", "노트북", "DISPLAY", "device-1",
+        minimum_valid_frames=3,
+        requires_nod_gate=True,
+    )
+    for frame, yaw in enumerate((9.8, 10.0, 10.2)):
+        assert session.add(_gaze(frame, yaw), 1.0)
+    _add_boundary_samples(session, 12, center_yaw=10.0)
+    record = session.finalize()
+    assert record.requires_nod_gate is True
+
+    default_session = TargetRegistrationSession(
+        "bulb", "전구", "LIGHT", "device-2", minimum_valid_frames=3
+    )
+    for frame, yaw in enumerate((-19.8, -20.0, -20.2)):
+        assert default_session.add(_gaze(frame, yaw), 1.0)
+    _add_boundary_samples(default_session, 12, center_yaw=-20.0)
+    assert default_session.finalize().requires_nod_gate is False
+
+
 def test_registry_round_trip_and_nearby_warning_data(tmp_path: Path) -> None:
     path = tmp_path / "targets.json"
     registry = TargetRegistry(path)
@@ -211,6 +232,50 @@ def test_registry_round_trip_and_nearby_warning_data(tmp_path: Path) -> None:
     assert loaded.nearby(12.0, 4.0) == [record]
     profile = record.to_profile()
     assert profile.variance == pytest.approx(np_radians_squared(5.0))
+
+
+def test_requires_nod_gate_round_trips_and_defaults_false_for_legacy_json(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "targets.json"
+    registry = TargetRegistry(path)
+    gated = TargetRecord(
+        "laptop",
+        "노트북",
+        "DISPLAY",
+        TargetDirection(0.0, 0.0),
+        TargetSpread(5.0, 5.0),
+        "laptop-1",
+        requires_nod_gate=True,
+    )
+    ungated = TargetRecord(
+        "bulb",
+        "전구",
+        "LIGHT",
+        TargetDirection(-30.0, 0.0),
+        TargetSpread(5.0, 5.0),
+        "bulb-1",
+    )
+    registry.upsert(gated)
+    registry.upsert(ungated)
+
+    reloaded = TargetRegistry(path)
+    assert reloaded.get("laptop").requires_nod_gate is True
+    assert reloaded.get("bulb").requires_nod_gate is False
+
+    renamed = reloaded.rename("laptop", "내 노트북")
+    assert renamed.requires_nod_gate is True
+
+    # 필드가 아예 없는 예전 JSON도 그냥 False로 로드된다(하위 호환).
+    legacy_path = tmp_path / "legacy.json"
+    legacy_path.write_text(
+        '[{"target_id": "lamp", "name": "lamp", "device_type": "LIGHT", '
+        '"direction": {"yaw": 0.0, "pitch": 0.0}, '
+        '"spread": {"yaw": 4.0, "pitch": 4.0}, "device_id": "lamp"}]',
+        encoding="utf-8",
+    )
+    legacy = TargetRegistry(legacy_path)
+    assert legacy.get("lamp").requires_nod_gate is False
 
 
 def test_registry_migrates_legacy_gaze_profile(tmp_path: Path) -> None:

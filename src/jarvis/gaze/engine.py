@@ -23,6 +23,7 @@ from jarvis.gaze.classifier import (
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.features import FaceObservation, compose_gaze_vector, compose_head_vector
 from jarvis.gaze.lock import GazeLockState, GazeLockStateMachine
+from jarvis.gaze.nod import NodDetector
 from jarvis.gaze.smoothing import GazeSmoother, SmoothedGaze
 
 
@@ -34,6 +35,8 @@ class GazeTargetingEngine:
         self._smoother = GazeSmoother(config)
         self._classifier = TargetClassifier(config)
         self._lock = GazeLockStateMachine(config)
+        self._nod_detector = NodDetector(config)
+        self._nod_gated_devices: set[str] = set()
         self._last_smoothed_gaze: SmoothedGaze | None = None
 
     @property
@@ -50,12 +53,26 @@ class GazeTargetingEngine:
         return self._lock.is_locked_to(device_id)
 
     def register_device(
-        self, profile: DeviceGazeProfile, geometry_3d: TargetGeometry3D | None = None
+        self,
+        profile: DeviceGazeProfile,
+        geometry_3d: TargetGeometry3D | None = None,
+        *,
+        requires_nod_gate: bool = False,
     ) -> None:
+        """`requires_nod_gate=True`면 다른 target이 확정된 뒤 이 target으로
+        돌아올 때만 끄덕임 확인을 요구한다(lock.py의 게이트, 2026-07-22:
+        카메라 정면 방향에 놓인 target이 "가만히 있을 때의 기본 시선 방향"과
+        겹쳐 생기는 오확정을 막기 위함). 같은 target을 계속 보던 중이거나
+        세션 최초 확정에는 적용되지 않는다."""
         self._classifier.register_profile(profile, geometry_3d=geometry_3d)
+        if requires_nod_gate:
+            self._nod_gated_devices.add(profile.device_id)
+        else:
+            self._nod_gated_devices.discard(profile.device_id)
 
     def unregister_device(self, device_id: str) -> None:
         self._classifier.unregister_profile(device_id)
+        self._nod_gated_devices.discard(device_id)
 
     def notify_gesture_started(self, timestamp_ms: int) -> GazeLockState:
         """Fusion이 Target Lock 상태에서 gesture 시작을 감지했을 때 호출한다."""
@@ -72,6 +89,11 @@ class GazeTargetingEngine:
         반환한다 — 이때 target은 `config.UNKNOWN_TARGET`이고 probability·
         stability는 0.0이다(성공을 지어내지 않는다, development-principles.md 1절).
         """
+        nod_detected = (
+            self._nod_detector.update(observation.head_pitch_deg, observation.timestamp_ms)
+            if observation.face_detected
+            else False
+        )
         blink_hold = observation.face_detected and not observation.eyes_open
         gaze_vector = None if blink_hold else compose_gaze_vector(observation, self._config)
         if gaze_vector is not None:
@@ -97,7 +119,12 @@ class GazeTargetingEngine:
                 probability=0.0,
                 second_best_probability=0.0,
             )
-            self._lock.update(observation.timestamp_ms, classification)
+            self._lock.update(
+                observation.timestamp_ms,
+                classification,
+                candidate_requires_nod_gate=classification.target in self._nod_gated_devices,
+                nod_detected=nod_detected,
+            )
             return TargetEstimate(
                 timestamp_ms=observation.timestamp_ms,
                 frame_id=observation.frame_id,
@@ -108,7 +135,12 @@ class GazeTargetingEngine:
             )
 
         classification = self._classifier.classify(smoothed.direction, origin=smoothed.origin)
-        self._lock.update(smoothed.timestamp_ms, classification)
+        self._lock.update(
+            smoothed.timestamp_ms,
+            classification,
+            candidate_requires_nod_gate=classification.target in self._nod_gated_devices,
+            nod_detected=nod_detected,
+        )
 
         return TargetEstimate(
             timestamp_ms=smoothed.timestamp_ms,

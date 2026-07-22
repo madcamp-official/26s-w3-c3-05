@@ -16,9 +16,10 @@ import pytest
 from jarvis.gaze.classifier import DeviceGazeProfile, TargetClassifier
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.engine import GazeTargetingEngine
-from jarvis.gaze.features import FaceObservation
+from jarvis.gaze.features import FaceObservation, compose_gaze_vector
 from jarvis.gaze.feature_profile import TargetAreaProfile, TargetFeatureSample
 from jarvis.gaze.lock import GazeLockState, GazeLockStateMachine
+from jarvis.gaze.nod import NodDetector
 from jarvis.gaze.smoothing import GazeSmoother
 from jarvis.monitoring.gaze_probe import GazeProbe, evaluate
 
@@ -523,6 +524,62 @@ def test_lock_reaches_target_locked_after_dwell() -> None:
     assert last.unknown_required_ms == 3000
 
 
+def test_nod_gate_blocks_then_unblocks_return_to_gated_target() -> None:
+    """전구(bulb) 확정 후 끄덕임 게이트가 걸린 노트북(laptop)으로 dwell만 채워
+    돌아오면 이전 확정이 유지되고, 실제 고개 dip→recovery 프레임을 거쳐야
+    승격된다(2026-07-22: 카메라 정면=노트북 방향인 데모 배치의 오확정 방지)."""
+    config = GazeConfig(dwell_time_ms=100, smoothing_window_frames=1)
+    smoother = GazeSmoother(config)
+    classifier = TargetClassifier(config)
+    lock = GazeLockStateMachine(config)
+    nod_detector = NodDetector(config)
+
+    bulb_vector = compose_gaze_vector(_observation(yaw=-80.0, pitch=0.0), config)
+    assert bulb_vector is not None
+    classifier.register_profile(
+        DeviceGazeProfile(
+            device_id="bulb", mean_direction=bulb_vector.direction, variance=math.radians(5.0) ** 2
+        )
+    )
+    classifier.register_profile(
+        DeviceGazeProfile(
+            device_id="laptop",
+            mean_direction=np.array([0.0, 0.0, 1.0]),
+            variance=math.radians(5.0) ** 2,
+        )
+    )
+    gated = frozenset({"laptop"})
+
+    def step(frame_id: int, timestamp_ms: int, yaw: float, pitch: float):
+        return evaluate(
+            _observation(frame_id=frame_id, timestamp_ms=timestamp_ms, yaw=yaw, pitch=pitch),
+            smoother=smoother,
+            classifier=classifier,
+            lock=lock,
+            config=config,
+            nod_detector=nod_detector,
+            nod_gated_devices=gated,
+        )
+
+    step(0, 0, -80.0, 0.0)
+    snap = step(1, 200, -80.0, 0.0)
+    assert snap.locked_device == "bulb"
+
+    # laptop으로 시선만 돌아옴 — dwell은 채우지만 끄덕임이 없어 승격 안 됨.
+    step(2, 400, 0.0, 0.0)
+    snap = step(3, 600, 0.0, 0.0)
+    assert snap.locked_device == "bulb"
+    assert snap.nod_gate_required is True
+    assert snap.nod_gate_pending is True
+
+    # 고개를 숙였다가(dip) 다시 든다(recovery) — 같은 nod_detector가 프레임에
+    # 걸쳐 상태를 들고 있으므로 두 번째 호출에서 끄덕임이 완료된다.
+    step(4, 620, 0.0, -10.0)
+    snap = step(5, 700, 0.0, 0.0)
+    assert snap.locked_device == "laptop"
+    assert snap.nod_gate_pending is False
+
+
 def test_snapshot_separates_instant_engine_target_from_three_second_confirmation() -> None:
     smoother, classifier, lock, config = _fresh()
     classifier.register_profile(
@@ -573,6 +630,59 @@ def test_target_estimate_matches_engine() -> None:
 
 
 # --- probe liveness degrades honestly without a model -------------------------
+
+def test_probe_register_profile_wires_nod_gate_end_to_end() -> None:
+    """GazeProbe.register_profile(requires_nod_gate=True)가 process_observation()의
+    끄덕임 게이트까지 실제로 이어지는지 — private 상태가 아니라 관측 가능한
+    snapshot 동작으로 검증한다."""
+    config = GazeConfig(dwell_time_ms=100, smoothing_window_frames=1)
+    probe = GazeProbe(model_path=None, config=config)
+
+    bulb_vector = compose_gaze_vector(_observation(yaw=-80.0, pitch=0.0), config)
+    assert bulb_vector is not None
+    probe.register_profile(
+        DeviceGazeProfile(
+            device_id="bulb", mean_direction=bulb_vector.direction, variance=math.radians(5.0) ** 2
+        ),
+        requires_nod_gate=False,
+    )
+    probe.register_profile(
+        DeviceGazeProfile(
+            device_id="laptop",
+            mean_direction=np.array([0.0, 0.0, 1.0]),
+            variance=math.radians(5.0) ** 2,
+        ),
+        requires_nod_gate=True,
+    )
+
+    probe.process_observation(_observation(frame_id=0, timestamp_ms=0, yaw=-80.0, pitch=0.0))
+    snap = probe.process_observation(_observation(frame_id=1, timestamp_ms=200, yaw=-80.0, pitch=0.0))
+    assert snap.locked_device == "bulb"
+
+    probe.process_observation(_observation(frame_id=2, timestamp_ms=400, yaw=0.0, pitch=0.0))
+    snap = probe.process_observation(_observation(frame_id=3, timestamp_ms=600, yaw=0.0, pitch=0.0))
+    assert snap.locked_device == "bulb"
+    assert snap.nod_gate_pending is True
+
+    probe.process_observation(_observation(frame_id=4, timestamp_ms=620, yaw=0.0, pitch=-10.0))
+    snap = probe.process_observation(_observation(frame_id=5, timestamp_ms=700, yaw=0.0, pitch=0.0))
+    assert snap.locked_device == "laptop"
+
+
+def test_probe_unregister_profile_clears_nod_gate() -> None:
+    config = GazeConfig(dwell_time_ms=0)
+    probe = GazeProbe(model_path=None, config=config)
+    profile = DeviceGazeProfile(
+        device_id="laptop", mean_direction=np.array([0.0, 0.0, 1.0]), variance=0.05
+    )
+    probe.register_profile(profile, requires_nod_gate=True)
+    probe.unregister_profile("laptop")
+    probe.register_profile(profile, requires_nod_gate=False)
+
+    snap = probe.process_observation(_observation(frame_id=0, timestamp_ms=0))
+    assert snap.locked_device == "laptop"
+    assert snap.nod_gate_pending is False
+
 
 def test_probe_without_model_is_unavailable() -> None:
     probe = GazeProbe(model_path=None)

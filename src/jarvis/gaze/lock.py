@@ -51,6 +51,11 @@ class GazeLockStateMachine:
         self._unknown_started_at_ms: int | None = None
         self._unknown_elapsed_ms = 0
         self._candidate_gap_started_at_ms: int | None = None
+        # 세션 리셋(reset())으로도 지워지지 않는다 — "다른 target에서 확정된
+        # 뒤 돌아오는지"는 SEARCHING을 한 번 거쳤어도 여전히 사실이어야 한다.
+        self._last_confirmed_device: str | None = None
+        self._last_nod_at_ms: int | None = None
+        self._nod_gate_pending = False
 
     @property
     def state(self) -> GazeLockState:
@@ -94,12 +99,23 @@ class GazeLockStateMachine:
         """Continuous UNKNOWN time while retaining a previously confirmed target."""
         return self._unknown_elapsed_ms
 
+    @property
+    def nod_gate_pending(self) -> bool:
+        """dwell은 채웠지만 끄덕임 확인 게이트가 아직 안 열려 승격이 막혀 있는지.
+
+        모니터링 UI가 "dwell 완료, 끄덕임 대기 중"을 보여줄 때 쓴다."""
+        return self._nod_gate_pending
+
     def is_locked_to(self, device_id: str) -> bool:
         """Cursor Control Mapper 게이트(README 6장) 등에서 쓰는 편의 함수."""
         return self.locked_device == device_id
 
     def reset(self) -> None:
-        """추적 손실 등으로 처음부터 다시 탐색해야 할 때."""
+        """추적 손실 등으로 처음부터 다시 탐색해야 할 때.
+
+        `_last_confirmed_device`/`_last_nod_at_ms`는 지우지 않는다 — UNKNOWN
+        타임아웃으로 SEARCHING을 거쳐도 "직전까지 다른 target이 확정돼
+        있었다"는 사실은 끄덕임 게이트 판단에 그대로 유효해야 한다."""
         self._state = GazeLockState.SEARCHING
         self._locked_device = None
         self._candidate_device = None
@@ -107,15 +123,50 @@ class GazeLockStateMachine:
         self._candidate_elapsed_ms = 0
         self._lock_expires_at_ms = None
         self._candidate_gap_started_at_ms = None
+        self._nod_gate_pending = False
         self._clear_unknown_timer()
 
-    def update(self, timestamp_ms: int, classification: ClassificationResult) -> GazeLockState:
+    def _nod_gate_satisfied(self, candidate_requires_nod_gate: bool, timestamp_ms: int) -> bool:
+        """dwell을 채운 candidate를 승격시켜도 되는지(끄덕임 게이트까지 포함)."""
+        del timestamp_ms  # 현재는 pre-roll 계산에 candidate_started_at_ms만 쓴다.
+        if not candidate_requires_nod_gate:
+            return True
+        if (
+            self._last_confirmed_device is None
+            or self._last_confirmed_device == self._candidate_device
+        ):
+            # 처음 확정되는 target이거나 원래 그 target을 계속 보던 중이면
+            # "돌아오는" 상황이 아니므로 게이트를 걸지 않는다.
+            return True
+        if self._last_nod_at_ms is None or self._candidate_started_at_ms is None:
+            return False
+        return (
+            self._last_nod_at_ms
+            >= self._candidate_started_at_ms - self._config.nod_confirmation_pre_roll_ms
+        )
+
+    def update(
+        self,
+        timestamp_ms: int,
+        classification: ClassificationResult,
+        *,
+        candidate_requires_nod_gate: bool = False,
+        nod_detected: bool = False,
+    ) -> GazeLockState:
         """한 프레임의 분류 결과를 반영해 상태를 전이시키고 새 상태를 반환한다.
 
         SEARCHING→CANDIDATE 승격과 CANDIDATE→TARGET_LOCKED 승격(dwell 만족 시)은
         같은 호출 안에서 이어질 수 있다 — 그래야 `dwell_time_ms=0`처럼 즉시 잠기는
         경계값도 별도 프레임 없이 올바르게 동작한다.
+
+        `candidate_requires_nod_gate`는 호출자가 "지금 candidate/분류된 target이
+        끄덕임 확인이 필요한 target인지"를 매 프레임 알려준다(어떤 target인지는
+        호출자만 안다 — 이 상태 머신은 device_type을 모른다). 직전까지 다른
+        target이 확정돼 있었을 때만 실제로 게이트가 걸리며, `nod_detected`가
+        True인 프레임의 시각을 끄덕임 확인 시각으로 기록한다.
         """
+        if nod_detected:
+            self._last_nod_at_ms = timestamp_ms
         confident = _is_confident(classification, self._config)
 
         if self._state in (GazeLockState.EXPIRED, GazeLockState.COMMITTED):
@@ -155,14 +206,21 @@ class GazeLockStateMachine:
                 self._candidate_device = classification.target
                 self._candidate_started_at_ms = timestamp_ms
                 self._candidate_elapsed_ms = 0
+                self._nod_gate_pending = False
                 return self._state
             assert self._candidate_started_at_ms is not None
             dwell_elapsed_ms = timestamp_ms - self._candidate_started_at_ms
             self._candidate_elapsed_ms = max(0, dwell_elapsed_ms)
             if dwell_elapsed_ms < self._config.dwell_time_ms:
+                self._nod_gate_pending = False
                 return self._state
+            if not self._nod_gate_satisfied(candidate_requires_nod_gate, timestamp_ms):
+                self._nod_gate_pending = True
+                return self._state
+            self._nod_gate_pending = False
             self._state = GazeLockState.TARGET_LOCKED
             self._locked_device = self._candidate_device
+            self._last_confirmed_device = self._candidate_device
             self._clear_candidate()
             self._clear_unknown_timer()
             self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
@@ -185,11 +243,13 @@ class GazeLockStateMachine:
             self._clear_unknown_timer()
             if confident and classification.target == self._locked_device:
                 self._clear_candidate()
+                self._nod_gate_pending = False
                 self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
                 return self._state
             if not confident:
                 # Cancel only the replacement attempt; retain the last confirmed target.
                 self._clear_candidate()
+                self._nod_gate_pending = False
                 self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
                 return self._state
             if classification.target != self._candidate_device:
@@ -198,8 +258,15 @@ class GazeLockStateMachine:
             self._candidate_elapsed_ms = max(0, timestamp_ms - self._candidate_started_at_ms)
             self._lock_expires_at_ms = timestamp_ms + self._config.target_lock_ttl_ms
             if self._candidate_elapsed_ms >= self._config.dwell_time_ms:
-                self._locked_device = classification.target
-                self._clear_candidate()
+                if self._nod_gate_satisfied(candidate_requires_nod_gate, timestamp_ms):
+                    self._nod_gate_pending = False
+                    self._locked_device = classification.target
+                    self._last_confirmed_device = classification.target
+                    self._clear_candidate()
+                else:
+                    self._nod_gate_pending = True
+            else:
+                self._nod_gate_pending = False
             return self._state
 
         if self._state == GazeLockState.GESTURE_WAIT:
