@@ -925,13 +925,21 @@ def _target_names(raw: str) -> list[str]:
 
 
 class VideoView(QLabel):
-    """Displays webcam frames scaled to the widget, with a HUD and gaze overlay."""
+    """Displays webcam frames scaled to the widget, with a HUD and gaze overlay.
 
-    def __init__(self) -> None:
+    `show_overlay=False`는 관객이 보는 화면(시연 탭)용이다 — HUD·gaze 벡터·손
+    스켈레톤 같은 디버그 표시를 전부 끄고 거울상 웹캠 프레임만 보여준다.
+    `set_gaze`/`set_hand`는 그대로 받아 상태는 유지하되(나중에 필요하면 켤 수
+    있게) 그리지 않는다. 실시간·손 추적 탭은 계속 `show_overlay=True`(기본값)로
+    디버그 정보를 다 보여준다.
+    """
+
+    def __init__(self, *, show_overlay: bool = True) -> None:
         super().__init__()
         self.setMinimumSize(480, 360)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background:#0b0e13;")
+        self._show_overlay = show_overlay
         self._fps_times: deque[float] = deque(maxlen=30)
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
@@ -977,27 +985,28 @@ class VideoView(QLabel):
         # it is drawn onto the already-flipped frame at un-mirrored positions.
         display = cast("Frame", cv2.flip(frame, 1))
         h, w = display.shape[:2]
-        draw_hud(display, [f"{w}x{h}  {fps:4.1f} FPS", f"frame #{self._frame_count}"])
-        if self._gaze is not None:
-            if self._show_target_heatmap:
-                draw_target_heatmap(display, self._gaze, mirror=True)
-            draw_gaze_overlay(display, self._gaze, mirror=True)
-        if self._hand is not None:
-            draw_hand_overlay(
-                display,
-                self._hand,
-                mirror=True,
-                control_action=self._control_action,
-                control_enabled=self._control_enabled,
-            )
-        if self._registration_guide is not None:
-            title, instruction, progress = self._registration_guide
-            draw_registration_guidance(
-                display,
-                title=title,
-                instruction=instruction,
-                progress=progress,
-            )
+        if self._show_overlay:
+            draw_hud(display, [f"{w}x{h}  {fps:4.1f} FPS", f"frame #{self._frame_count}"])
+            if self._gaze is not None:
+                if self._show_target_heatmap:
+                    draw_target_heatmap(display, self._gaze, mirror=True)
+                draw_gaze_overlay(display, self._gaze, mirror=True)
+            if self._hand is not None:
+                draw_hand_overlay(
+                    display,
+                    self._hand,
+                    mirror=True,
+                    control_action=self._control_action,
+                    control_enabled=self._control_enabled,
+                )
+            if self._registration_guide is not None:
+                title, instruction, progress = self._registration_guide
+                draw_registration_guidance(
+                    display,
+                    title=title,
+                    instruction=instruction,
+                    progress=progress,
+                )
         self._render(display)
 
     def _current_fps(self) -> float:
@@ -1750,7 +1759,7 @@ class MainWindow(QMainWindow):
         """웹캠 뷰 + 시연 패널. `VideoView`는 app.py에 있어 패널이 직접 못 만든다
         (순환 import) — `_build_live_tab`이 인식 패널을 붙이는 방식과 같이 여기서 잇는다.
         """
-        self._demo_video = VideoView()
+        self._demo_video = VideoView(show_overlay=False)
         self._demo_panel = DemoPanel(
             on_mapping_changed=self._on_demo_mapping_changed,
             on_fallback_changed=self._on_demo_fallback_changed,

@@ -13,6 +13,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 pytest.importorskip("PySide6")
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox  # noqa: E
 
 from jarvis.monitoring.app import (  # noqa: E402
     MainWindow,
+    VideoView,
     _BOUNDARY_GUIDANCE_PHASES,
     _CENTER_GUIDANCE_PHASES,
 )
@@ -663,6 +665,60 @@ def test_pose_release_called_once_on_suppression_entry(tmp_path: Path) -> None:
         for frame_id in range(1, 6):
             window._on_hand(_lost_hand_snapshot(frame_id))
         assert released == [1]  # 5프레임 억제 동안 딱 한 번
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_video_view_with_overlay_disabled_skips_debug_drawing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """시연 탭 웹캠(show_overlay=False)은 HUD·gaze·hand 오버레이를 그리지 않는다 —
+    관객이 보는 화면에는 디버그 표시 없이 거울상 프레임만 남아야 한다."""
+    import jarvis.monitoring.app as app_module
+
+    calls: list[str] = []
+    monkeypatch.setattr(app_module, "draw_hud", lambda *a, **k: calls.append("hud"))
+    monkeypatch.setattr(
+        app_module, "draw_gaze_overlay", lambda *a, **k: calls.append("gaze")
+    )
+    monkeypatch.setattr(
+        app_module, "draw_hand_overlay", lambda *a, **k: calls.append("hand")
+    )
+    monkeypatch.setattr(
+        app_module,
+        "draw_registration_guidance",
+        lambda *a, **k: calls.append("registration"),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    clean = VideoView(show_overlay=False)
+    clean.set_gaze(object())
+    clean.set_hand(object())
+    clean.set_registration_guidance("t", "i", 0.5)
+    clean.show_frame(frame)
+    assert calls == []
+
+    debug = VideoView()  # 기본값 True — 다른 탭은 여전히 다 그려야 한다.
+    debug.set_gaze(object())
+    debug.set_hand(object())
+    debug.set_registration_guidance("t", "i", 0.5)
+    debug.show_frame(frame)
+    assert calls == ["hud", "gaze", "hand", "registration"]
+
+
+def test_demo_tab_video_has_overlay_disabled(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        profiles_path=tmp_path / "profiles.json",
+        samples_path=tmp_path / "samples.json",
+    )
+    try:
+        assert window._demo_video._show_overlay is False
+        assert window._video._show_overlay is True
     finally:
         window.close()
         app.processEvents()
