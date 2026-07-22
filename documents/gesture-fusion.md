@@ -30,7 +30,7 @@ README [8장 핵심 기능 2](../README.md), [9장 핵심 기능 3](../README.md
 
 동적 제스처(위 Task 1~9, swipe/rotate, 서버 이관 대상)와 **다른 관심사**다. 커서 이동·클릭·드래그·우클릭·스크롤·바탕화면 토글은 **단일 프레임의 손 모양**으로 판정한다. `pose_protocol.py`(순수)↔`pose_classifier.py`(torch)는 `model_protocol.py`↔`model.py`와 같은 격리 구조이며, 두 모델은 서로를 import하지 않고 입력 차원·산출물이 다르다.
 
-흐름: `PoseClassifier`(8-class MLP) → 기울기 신뢰 판정 → `PoseStateMachine`(시간축) → `PoseControlBridge`(실제 OS 입력). 앞 두 단계는 프레임별, 뒤 두 단계가 시간 구조와 부수효과를 담당한다.
+흐름: `PoseClassifier`(9-class MLP) → 기울기 신뢰 판정 → `PoseStateMachine`(시간축) → `PoseControlBridge`(실제 OS 입력). 앞 두 단계는 프레임별, 뒤 두 단계가 시간 구조와 부수효과를 담당한다.
 
 ### 자세 분류기 (`pose_protocol.py`, `pose_classifier.py`, `training/train_pose.py`)
 
