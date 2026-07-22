@@ -1,16 +1,12 @@
 """두 손가락 좌↔우 전이 스와이프 감지를 라이브로 관찰하는 툴(실행 없음).
 
-정적 two_fingers 전이로 데스크톱 전환을 인식하는 프로토타입(`pose_state._track_swipe`)이
-실제로 자연스러운 손동작에서 **한 번의 스와이프를 정확히 한 번** 잡는지, 스크롤과 섞이지
-않는지, 오발동이 없는지를 눈으로 확인하기 위한 관찰 전용 툴이다.
+정적 two_fingers 방향 전이로 데스크톱 전환을 인식하는 규칙(`pose_state._track_swipe`:
+수평 방향 부호가 한쪽에서 반대쪽으로 넘어가면 즉시 스와이프)이 실제 손동작에서 잘 잡히는지
+눈으로 확인하기 위한 관찰 전용 툴이다.
 
 `HandProbe`가 내부에 이미 `PoseStateMachine`을 돌려 `snapshot.pose_events`로 이벤트를
 내보내므로(스크롤·볼륨·좌우 스와이프 포함), 이 툴은 그 이벤트를 **읽어서 표시만** 한다 —
 `PoseControlBridge`를 붙이지 않으므로 실제 데스크톱은 전환되지 않는다(안전하게 튜닝 가능).
-
-화면 표시:
-  pose/state, dx(수평 방향, |dx|≥SWIPE_SIDE_MIN이면 커밋), 최근 스와이프 방향·누적 횟수,
-  스크롤 이벤트도 함께 표시해 좌우 스와이프와 위/아래 스크롤이 섞이지 않는지 본다.
 
 실행:
   python tools/two_finger_swipe_live.py \
@@ -28,10 +24,11 @@ from pathlib import Path
 
 import numpy as np
 
-from jarvis.gesture_fusion.pose_state import SWIPE_SIDE_MIN, pointing_direction
+from jarvis.gesture_fusion.pose_state import MIN_VERTICALITY, pointing_direction
 
 
-def _draw(frame: np.ndarray, *, pose: str, trusted: bool, dx: float | None,
+def _draw(frame: np.ndarray, *, pose: str, trusted: bool,
+          direction: tuple[float, float] | None,
           counts: Counter, last_swipe: str, flash: bool) -> None:
     import cv2
 
@@ -42,12 +39,17 @@ def _draw(frame: np.ndarray, *, pose: str, trusted: bool, dx: float | None,
         y += 28
 
     line("좌우 스와이프 라이브 관찰 (실행 안 함)  q/ESC:종료", (60, 220, 120), 0.5)
-    if dx is None:
+    if direction is None:
         line("두 손가락 미검출", (120, 120, 240))
     else:
-        committed = "왼쪽" if dx >= SWIPE_SIDE_MIN else ("오른쪽" if dx <= -SWIPE_SIDE_MIN else "중립")
+        dx, dy = direction
+        # 판별 기준은 스크롤과 동일: |dy|≥MIN_VERTICALITY면 '수직(좌우 판별 안 함)'.
+        if abs(dy) >= MIN_VERTICALITY:
+            committed = "수직(스크롤)"
+        else:
+            committed = "왼쪽" if dx > 0 else "오른쪽"
         pose_txt = f"{pose or '-'}{'' if trusted else '(거부)'}"
-        line(f"pose={pose_txt}  dx={dx:+.2f}  커밋={committed}", (80, 240, 240))
+        line(f"pose={pose_txt}  dx={dx:+.2f} dy={dy:+.2f}  판정={committed}", (80, 240, 240))
     line(
         f"스와이프  이전(prev)={counts.get('desktop_prev', 0)}  다음(next)={counts.get('desktop_next', 0)}",
         (230, 200, 90),
@@ -81,7 +83,7 @@ def run(camera: int, hand_model: Path, pose_model: Path) -> int:
     start = time.monotonic()
     last_ts = -1
     frame_id = 0
-    print("관찰 시작 — 두 손가락을 좌↔우로 스와이프해 보세요(데스크톱은 바뀌지 않음). q로 종료.")
+    print("관찰 시작 — 두 손가락을 좌↔우로 넘겨 보세요(데스크톱은 바뀌지 않음). q로 종료.")
     try:
         while True:
             ok, bgr = cap.read()
@@ -94,12 +96,11 @@ def run(camera: int, hand_model: Path, pose_model: Path) -> int:
             snapshot = probe.process_rgb(rgb, ts, frame_id)
             frame_id += 1
 
-            pose_label, trusted, dx = "", True, None
+            pose_label, trusted, direction = "", True, None
             if snapshot is not None and snapshot.hand_detected and snapshot.observation is not None:
                 if snapshot.pose is not None:
                     pose_label, trusted = snapshot.pose.label, bool(snapshot.pose.trusted)
                 direction = pointing_direction(np.asarray(snapshot.observation.landmarks, dtype=np.float64))
-                dx = None if direction is None else direction[0]
                 for event in snapshot.pose_events:
                     if event.kind in ("desktop_prev", "desktop_next"):
                         counts[event.kind] += 1
@@ -108,7 +109,7 @@ def run(camera: int, hand_model: Path, pose_model: Path) -> int:
                         print(f"[{ts:>6}ms] SWIPE {event.kind}  누적 {dict(counts)}")
 
             view = cv2.flip(bgr, 1)
-            _draw(view, pose=pose_label, trusted=trusted, dx=dx, counts=counts,
+            _draw(view, pose=pose_label, trusted=trusted, direction=direction, counts=counts,
                   last_swipe=last_swipe, flash=now < flash_until)
             cv2.imshow("two-finger swipe live", view)
             if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
