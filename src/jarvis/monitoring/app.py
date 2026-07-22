@@ -41,7 +41,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDockWidget,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -79,7 +78,6 @@ from jarvis.gesture_fusion.model_protocol import (
 from jarvis.gesture_fusion.pose_protocol import DEFAULT_POSE_TILT_LIMITS
 from jarvis.gesture_fusion.pose_state import TWO_FINGER_STRAIGHTNESS_MIN
 from jarvis.monitoring.camera_worker import CameraWorker
-from jarvis.monitoring.console import ConsoleLog, StderrCapture
 from jarvis.monitoring.gaze_probe import GazeProbe, GazeSnapshot
 from jarvis.monitoring.gaze_samples import GazeSampleStore, format_gaze_sample
 from jarvis.monitoring.gesture_probe import (
@@ -620,6 +618,7 @@ class HandPanel(QScrollArea):
         probe_status: str,
         gesture_status: str,
         *,
+        gesture_available: bool = False,
         smoothing: bool = True,
         on_smoothing_toggled: Callable[[bool], None] | None = None,
         on_control_toggled: Callable[[bool], None] | None = None,
@@ -680,14 +679,14 @@ class HandPanel(QScrollArea):
         self._control_status.setStyleSheet(_MONO)
         layout.addWidget(self._control_status)
 
-        # The one thing that must not be misread: recognition is OFF (untrained).
-        banner = QLabel("⚠ 제스처 인식 비활성\n" + gesture_status)
-        banner.setWordWrap(True)
-        banner.setStyleSheet(
-            "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
-            " border-radius:6px; padding:8px; font-weight:600;"
-        )
-        layout.addWidget(banner)
+        # The one thing that must not be misread: this must reflect the real
+        # gesture source (`MainWindow._gesture_source`), not a static guess — a
+        # trained checkpoint can be live even though hand *tracking* here never
+        # ran a gesture classifier of its own.
+        self._gesture_banner = QLabel()
+        self._gesture_banner.setWordWrap(True)
+        layout.addWidget(self._gesture_banner)
+        self.set_gesture_status(gesture_status, gesture_available)
 
         layout.addWidget(_header("손 랜드마크 추적 (MediaPipe Hands, 실제)"))
         self._detected = QLabel("hand detected : —")
@@ -724,6 +723,21 @@ class HandPanel(QScrollArea):
         outer.addLayout(columns)
         outer.addStretch(1)
         self.setWidget(body)
+
+    def set_gesture_status(self, status: str, available: bool) -> None:
+        """Update the recognition banner from the real gesture source (weight switch, too)."""
+        prefix = "✓ 제스처 인식 활성" if available else "⚠ 제스처 인식 비활성"
+        self._gesture_banner.setText(f"{prefix}\n{status}")
+        if available:
+            self._gesture_banner.setStyleSheet(
+                "background:#12261a; color:#3fb950; border:1px solid #1e5a30;"
+                " border-radius:6px; padding:8px; font-weight:600;"
+            )
+        else:
+            self._gesture_banner.setStyleSheet(
+                "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
+                " border-radius:6px; padding:8px; font-weight:600;"
+            )
 
     def update_snapshot(self, s: HandSnapshot, control_action: str = "") -> None:
         self._status.setText(f"frame #{s.frame_id} · {s.inference_ms:.0f} ms/frame")
@@ -1152,29 +1166,6 @@ class MessagePanel(QListWidget):
         self.scrollToBottom()
 
 
-class ConsolePanel(QListWidget):
-    """앱 하단 콘솔 독 — 가로챈 프로세스 stderr(네이티브 로그)를 표시한다.
-
-    터미널로 새던 C++ stderr(MediaPipe clearcut 등)를 여기로 모은다. 시스템 메시지
-    패널(:class:`MessagePanel`)과 분리해, 노이즈가 실제 INFO/WARN을 덮지 않게 한다.
-    """
-
-    def __init__(self, console: ConsoleLog) -> None:
-        super().__init__()
-        self._console = console
-        self.setStyleSheet(
-            "QListWidget{background:#0a0d12; border:none;"
-            " font-family:Consolas,monospace; font-size:11px; color:#8b949e;}"
-        )
-
-    def refresh(self) -> None:
-        self.clear()
-        for line in self._console.recent(200):
-            suffix = f"  (x{line.count})" if line.count > 1 else ""
-            self.addItem(f"{line.text}{suffix}")
-        self.scrollToBottom()
-
-
 class StageCard(QFrame):
     """One pipeline stage's availability card."""
 
@@ -1494,22 +1485,6 @@ class MainWindow(QMainWindow):
         # 녹화 단축키가 다른 탭에서 실수로 발동하지 않도록).
         self._tabs = tabs
 
-        # 하단 콘솔 독: 터미널로 새던 네이티브 stderr(MediaPipe clearcut 등)를 앱 안에
-        # 모은다. 모든 탭 아래에 걸쳐 항상 보인다. 실제 캡처(fd 2 리다이렉트)는 run()이
-        # start_console_capture()로 시작한다 — __init__에서 하면 테스트의 stderr까지 삼킨다.
-        self._console_log = ConsoleLog()
-        self._console_panel = ConsolePanel(self._console_log)
-        self._stderr_capture: StderrCapture | None = None
-        console_dock = QDockWidget("콘솔 (stderr)", self)
-        console_dock.setObjectName("console_dock")
-        console_dock.setWidget(self._console_panel)
-        console_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
-        console_dock.setMaximumHeight(160)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, console_dock)
-
         self._log.info("모니터 시작")
         if self._gesture_source.available:
             self._log.info(f"제스처 인식: {self._gesture_source.status_text}")
@@ -1603,11 +1578,13 @@ class MainWindow(QMainWindow):
             self._recognizer = None
             self._gesture_source = UntrainedGestureSource()
             self._sidebar.set_source(self._gesture_source)
+            self._hand_panel.set_gesture_status(self._gesture_source.status_text, False)
             self._log.warn(f"가중치 전환 실패: {checkpoint.name} — 인식 off")
             return
         self._recognizer = probe
         self._gesture_source = ProbeGestureSource(probe)
         self._sidebar.set_source(self._gesture_source)
+        self._hand_panel.set_gesture_status(self._gesture_source.status_text, True)
         self._log.info(f"제스처 인식 가중치 전환: {checkpoint.name}")
 
     def _build_live_tab(self) -> QWidget:
@@ -1755,7 +1732,8 @@ class MainWindow(QMainWindow):
     def _build_hand_tab(self) -> QWidget:
         self._hand_panel = HandPanel(
             self._hand_probe.status_text,
-            self._hand_probe.gesture_recognition_status,
+            self._gesture_source.status_text,
+            gesture_available=self._gesture_source.available,
             smoothing=self._hand_probe.smoothing,
             on_smoothing_toggled=self._hand_probe.set_smoothing,
             on_control_toggled=self._set_control_enabled,
@@ -2701,21 +2679,9 @@ class MainWindow(QMainWindow):
         self._video._show_placeholder("NO CAMERA")
         self._gaze_video._show_placeholder("NO CAMERA")
 
-    def start_console_capture(self) -> None:
-        """프로세스 stderr(fd 2)를 하단 콘솔 독으로 가로챈다. run()이 창을 띄운 뒤 호출한다.
-
-        __init__이 아니라 여기서 하는 이유: __init__은 테스트가 창을 만들 때도 돌아,
-        거기서 fd 2를 리다이렉트하면 pytest의 stderr까지 삼켜버린다.
-        """
-        if self._stderr_capture is not None:
-            return
-        self._stderr_capture = StderrCapture(self._console_log.add)
-        self._stderr_capture.start()
-
     def _on_tick(self) -> None:
         # 인식 스트림은 _on_hand에서 프레임마다(12fps로 솎아) 직접 찍는다 — 여기선 안 건드림.
         self._messages.refresh()
-        self._console_panel.refresh()
         self._latency_panel.refresh()
         self._update_session_status()
 
@@ -2750,9 +2716,6 @@ class MainWindow(QMainWindow):
         # 실행 워커를 확실히 접는다 — 진행 중인 명령 하나는 끝까지 보내고 종료한다.
         if self._execute_worker is not None:
             self._execute_worker.stop()
-        # stderr를 원래 콘솔로 복원한다 — 프로세스 종료 후에도 stderr가 깨지지 않게.
-        if self._stderr_capture is not None:
-            self._stderr_capture.stop()
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
@@ -2797,6 +2760,4 @@ def run(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(argv or [])
     window = MainWindow()
     window.show()
-    # 창을 띄운 뒤 stderr 캡처를 켠다 — 이후 네이티브 로그는 터미널이 아니라 하단 콘솔 독으로.
-    window.start_console_capture()
     return int(app.exec())
