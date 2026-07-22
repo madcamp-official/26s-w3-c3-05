@@ -42,11 +42,12 @@ FloatArray = npt.NDArray[np.float64]
 INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP = 5, 6, 7, 8
 MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP = 9, 10, 11, 12
 
-# 자세별 진입 유지 시간(ms). 핀치 클릭류만 빠른 반응이 중요해 짧게(60) 명시하고,
-# 그 외 자세(index_point·two_fingers·open_palm·fist)는 모두 기본값(120)을 쓴다.
+# 자세별 진입 유지 시간(ms). 여기 없는 자세(two_fingers·open_palm·fist 등)는 기본값(120)을 쓴다.
 DWELL_MS: dict[str, int] = {
+    # 좌클릭 핀치는 즉각 반응이 중요해 가장 짧게(30). 우클릭 핀치는 전환 중 스치는 중지
+    # 핀치 오발동을 줄이려 기본(120)까지 올려 신중하게 진입한다.
     "pinch_index": 30,
-    "pinch_middle": 60,
+    "pinch_middle": 120,
     # 검지 포즈(커서)는 반응이 빨라야 해 기본(120)보다 짧게 잡는다.
     "index_point": 60,
     # 탭 닫기는 되돌리기 어려운 파괴적 동작이라, 전환 중 스치는 중지 포즈로 오발동하지
