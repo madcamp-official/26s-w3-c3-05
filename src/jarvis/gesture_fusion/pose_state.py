@@ -17,9 +17,9 @@
    무의미해지기 때문이다(예: 검지 10° 초과 시 커서 정지, 다시 세우면 즉시 재개).
 
 3. **`none`은 자세 이력을 지우지 않는다.** 주먹에서 손바닥으로 갈 때 중간의 어중간하게
-   펴진 상태가 `none`으로 분류되기 때문에, `fist → open_palm`을 인접 상태로 보면 절대
-   성립하지 않는다. 그래서 "마지막 명령 자세"를 따로 기억하고 `none`은 그걸 덮어쓰지
-   않는다 — 전이 판정이 중간의 빈 구간을 건너뛴다.
+   펴진 상태가 `none`으로 분류되기 때문에, `fist → open_palm`(미션 컨트롤)을 인접 상태로
+   보면 절대 성립하지 않는다. 그래서 "마지막 명령 자세"를 따로 기억하고 `none`은 그걸
+   덮어쓰지 않는다 — 전이 판정이 중간의 빈 구간을 건너뛴다.
 
 여기서 쓰는 임계는 전부 **시간**이다. 이 프로젝트에서 반복적으로 실패한 것은 기하학적
 임계(palm_scale로 나눈 거리 등)였고, 그것들은 손 각도·거리에 따라 값이 8.85배까지
@@ -69,8 +69,9 @@ CLICK_MAX_MS = 400
 # 직전 클릭과 이 간격 안에 다음 클릭이 나오면 더블클릭으로 승격한다(마우스와 동일 UX).
 # 간격은 두 핀치의 **진입** 시각으로 잰다(_leave 확정 간격이 아니라) — dwell·release
 # 확정 지연을 예산에서 빼야 사용자가 체감하는 간격과 맞는다.
-DOUBLE_CLICK_MS = 600
-# `fist → open_palm` 전이로 인정하는 최대 간격. 중간의 `none` 구간을 건너뛴다.
+DOUBLE_CLICK_MS = 800
+# 미션 컨트롤: 주먹(fist) → 보(open_palm) 전이로 인정하는 최대 간격. 전이 중간의 어중간
+# 하게 펴진 구간은 none으로 분류되므로 인접 프레임이 아니라 직전 명령 자세와 비교한다.
 TRANSITION_WINDOW_MS = 1000
 # 위/아래(스크롤)와 좌/우(스와이프)를 가르는 하나의 기준. |dy|≥MIN_VERTICALITY면 '수직'
 # 으로 보아 스크롤(좌우 판별 안 함), 미만이면 좌우 스와이프로 판별한다.
@@ -122,6 +123,10 @@ SWIPE_RESET_MS = 1000
 # 파라미터는 실측(2026-07-22 rotation_probe: 각속도 중앙 ~400deg/s, 회전 중 tilt 중앙 16°,
 # index_point 유지 88%) 기반이며 실기기 튜닝 대상이다.
 ROT_STEP_DEG = 60.0       # 누적 회전 이만큼마다 볼륨 1스텝(작을수록 민감)
+# 워밍업 게이트: 한 회전 세션에서 순(net) 회전이 이 값을 넘어야 볼륨을 내기 시작한다.
+# 일상 동작의 작은 회전이 갑자기 볼륨을 바꾸는 것을 막는다 — 좌우로 오가는 흔들림은
+# 부호가 상쇄돼 누적되지 않고, 의도적인 한 방향 큰 회전(약 한 바퀴)만 활성화한다.
+ROT_ACTIVATION_DEG = 270.0
 ROT_MIN_SPEED = 60.0      # deg/s. 이 미만 각속도는 누적하지 않는다(포인팅 지터·드리프트 차단)
 ROT_SIGN = -1.0           # 화면 시계방향을 볼륨 증가로(실기기 확인 결과 -1). 뒤집히면 부호 변경
 # 회전을 감지하면 이 시간 동안 "볼륨 노브 모드"를 유지해 다른 모든 동작(클릭·드래그·커서·
@@ -259,14 +264,19 @@ class PoseStateMachine:
     _missing: int = 0
     # 연속 `trusted=False` 프레임 수(관용 카운터). trusted 프레임에서 0으로 리셋.
     _untrusted: int = 0
-    # `none`이 덮어쓰지 않는 "마지막 명령 자세" — 전이 판정이 빈 구간을 건너뛴다.
+    # `none`이 덮어쓰지 않는 "마지막 명령 자세" — 미션 컨트롤 fist→보 전이 판정이 중간의
+    # none 구간을 건너뛰도록 한다.
     _last_pose: str = ""
     _last_pose_end: int = 0
-    # 직전 클릭의 pinch **진입** 시각 — 다음 클릭의 진입이 double_click_ms 안이면
-    # 더블클릭으로 승격한다. 확정(_leave)이 아니라 진입 기준이라 dwell·release 지연이
-    # 예산에 들어가지 않는다. 첫 클릭이 오인되지 않도록 "아주 오래전"으로 시작한다.
+    # 직전 **짧은 단일 클릭**의 pinch 진입 시각 — 다음 핀치의 진입이 double_click_ms
+    # 안이면 그 눌림을 더블클릭(clickState=2)으로 실어 보낸다. 확정(_leave)이 아니라
+    # 진입 기준이라 dwell·release 지연이 예산에 들어가지 않는다. 드래그·이미 더블인
+    # 눌림은 여기서 제외해 트리플 승격을 막는다. 첫 클릭 오인 방지로 "아주 오래전" 시작.
     _last_click_ms: int = -1_000_000
-    _dragging: bool = False
+    # 현재 눌려 있는 pinch_index 클릭의 clickState(1=단일, 2=더블). _enter에서 정하고
+    # _leave의 mouse_up이 같은 값을 실어, down/up 쌍이 짝을 이뤄 macOS가 더블클릭으로
+    # 합치게 한다(macOS는 두 단일 클릭만으로는 더블클릭을 인식하지 않는다).
+    _press_click_state: int = 1
     # 커서 이동 참조점(이미지 좌표)과 시각 — 델타 계산용. 상태 진입 때 초기화한다.
     _cursor_ref: tuple[float, float] | None = None
     _cursor_ref_ms: int = 0
@@ -278,6 +288,8 @@ class PoseStateMachine:
     _rot_accum: float = 0.0
     _rot_missing: int = 0        # 연속으로 index_point 라벨이 아닌 프레임 수(관용 카운터)
     _rot_active_until: int = 0   # 이 시각까지는 볼륨 노브 모드(다른 동작 차단)
+    _rot_activated: bool = False  # 이 회전 세션이 워밍업(한 바퀴)을 통과했는지
+    _rot_warmup: float = 0.0      # 세션 시작 이후 순(net) 회전각 — 활성화 판정용(소비 안 함)
     # 좌우 스와이프(데스크톱 전환) 추적. 직전에 커밋된 수평 방향(+1=왼쪽/−1=오른쪽,
     # 0=아직 없음). 수직 구간(|dy|≥MIN_VERTICALITY, 좌우 판별 안 함)에서는 이 값을 유지하고,
     # 좌우 판별 프레임에서 반대 부호로 커밋되는 순간 스와이프를 낸다. `_swipe_last_ms`는
@@ -293,11 +305,13 @@ class PoseStateMachine:
         self._untrusted = 0
         self._last_pose = ""
         self._last_click_ms = -1_000_000
-        self._dragging = False
+        self._press_click_state = 1
         self._rot_prev_angle = None
         self._rot_accum = 0.0
         self._rot_missing = 0
         self._rot_active_until = 0
+        self._rot_activated = False
+        self._rot_warmup = 0.0
         self._swipe_side = 0
         self._swipe_last_ms = 0
         self._palm_smoother.reset()
@@ -407,6 +421,7 @@ class PoseStateMachine:
             self._rot_missing += 1
             if self._rot_missing > self.untrusted_grace_frames:
                 self._rot_prev_angle, self._rot_accum = None, 0.0
+                self._rot_activated, self._rot_warmup = False, 0.0
             return []
         self._rot_missing = 0
         points = np.asarray(landmarks, dtype=np.float64)
@@ -424,7 +439,19 @@ class PoseStateMachine:
         self._rot_prev_angle, self._rot_prev_ms = angle, timestamp_ms
         if abs(delta) / dt_s < ROT_MIN_SPEED:  # 회전으로 볼 만큼 빠르지 않으면 무시
             return []
-        self._rot_active_until = timestamp_ms + ROT_HOLD_MS  # 볼륨 노브 모드 연장
+        # 회전이 감지되면(속도 게이트 통과) 워밍업 중이든 활성화 후든 볼륨 노브 모드를
+        # 건다 — 볼륨 조절 제스처 내내(게이지 채우는 동안 포함) 다른 동작을 막아, 회전 중
+        # 순간 오인식(pinch·fist)이 클릭·드래그로 새지 않게 한다.
+        self._rot_active_until = timestamp_ms + ROT_HOLD_MS
+        # 워밍업 게이트: 활성화 전에는 순(net) 회전만 쌓고 볼륨은 내지 않는다. 순 회전이
+        # ROT_ACTIVATION_DEG(약 한 바퀴)를 넘어야 활성화되고, 그때부터 볼륨을 낸다 —
+        # 일상 동작의 작은 회전이 갑자기 볼륨을 바꾸는 것을 막는다.
+        if not self._rot_activated:
+            self._rot_warmup += delta
+            if abs(self._rot_warmup) < ROT_ACTIVATION_DEG:
+                return []
+            self._rot_activated = True
+            self._rot_accum = 0.0  # 활성화 이후 회전만 볼륨에 반영(워밍업 회전은 소비 안 함)
         self._rot_accum += delta
         steps = int(self._rot_accum / ROT_STEP_DEG)  # 0을 향해 버림
         if steps == 0:
@@ -488,7 +515,9 @@ class PoseStateMachine:
 
     def _enter(self, label: str, timestamp_ms: int) -> list[PoseEvent]:
         events: list[PoseEvent] = []
-        # 규칙 3: 중간의 none 구간을 건너뛰고 직전 **명령 자세**와 비교한다.
+        # 미션 컨트롤: 주먹(fist) → 보(open_palm) 전이일 때만 발화한다. 전이 중간의 어중간
+        # 하게 펴진 구간은 none으로 분류되므로, 인접 프레임이 아니라 "직전 명령 자세"
+        # (none이 덮어쓰지 않는 _last_pose)와 비교하고 transition_window 안일 때만 인정한다.
         if (
             label == "open_palm"
             and self._last_pose == "fist"
@@ -499,6 +528,20 @@ class PoseStateMachine:
         # label==state라 _continuous로 빠져 재발화하지 않는다).
         elif label == "middle_point":
             events.append(PoseEvent("close_tab", timestamp_ms))
+        # OK 사인(엄지-검지 원) → 재생/일시정지. 진입 시 한 번만 발화한다(close_tab과 동일).
+        # 2026-07-22 실험: 주먹을 없앤 자리에 넣은 새 자세 — 모델 재학습 후에 동작한다.
+        elif label == "ok":
+            events.append(PoseEvent("play_pause", timestamp_ms))
+        # 핀치(집게) 진입 → 마우스 버튼 down(릴리즈에서 up). 짧게 쥐었다 떼면 클릭,
+        # 길게 쥐고 이동하면 드래그가 자연히 갈린다 — 누른 시간·이동을 OS가 판정하므로
+        # click/drag를 상태기계가 미리 가를 필요가 없다. 직전 짧은 클릭이 double_click_ms
+        # 이내면 이 눌림에 clickState=2를 실어 OS가 더블클릭으로 합치게 한다.
+        elif label == "pinch_index":
+            is_double = timestamp_ms - self._last_click_ms <= self.double_click_ms
+            self._press_click_state = 2 if is_double else 1
+            events.append(
+                PoseEvent("mouse_down", timestamp_ms, value=float(self._press_click_state))
+            )
         self.state, self._state_since = label, timestamp_ms
         self._pending, self._missing = "", 0
         return events
@@ -507,35 +550,33 @@ class PoseStateMachine:
         events: list[PoseEvent] = []
         held = timestamp_ms - self._state_since
         if self.state == "pinch_index":
-            if self._dragging:
-                events.append(PoseEvent("drag_end", timestamp_ms))
-            elif held <= self.click_max_ms:
-                # 더블클릭 간격은 두 핀치의 **진입** 시각(_state_since)으로 잰다 —
-                # dwell·release 확정 지연을 예산에서 빼야 체감 간격과 맞는다. 첫 클릭은
-                # 이미 나갔지만(마우스와 동일) 두 번째를 double_click으로 낸다.
-                if self._state_since - self._last_click_ms <= self.double_click_ms:
-                    events.append(PoseEvent("double_click", timestamp_ms))
-                    self._last_click_ms = -1_000_000  # 3연속 핀치가 또 더블클릭 되지 않게 초기화
-                else:
-                    events.append(PoseEvent("click", timestamp_ms))
-                    self._last_click_ms = self._state_since  # 이번 클릭의 진입 시각 기록
+            # 핀치 릴리즈 → 마우스 버튼 up. down에서 실은 clickState를 그대로 실어
+            # down/up 쌍이 짝을 이루게 한다(더블클릭이면 두 번째 쌍이 clickState=2).
+            events.append(PoseEvent("mouse_up", timestamp_ms, value=float(self._press_click_state)))
+            # 짧은 단일 클릭만 다음 핀치의 더블클릭 후보로 남긴다. 길게 쥔 드래그나 이미
+            # 더블인 눌림은 후보에서 빼 다음 핀치가 트리플로 승격되지 않게 한다.
+            if held <= self.click_max_ms and self._press_click_state == 1:
+                self._last_click_ms = self._state_since
+            else:
+                self._last_click_ms = -1_000_000
         elif self.state == "pinch_middle" and held <= self.click_max_ms:
             events.append(PoseEvent("right_click", timestamp_ms))
+        # none이 덮어쓰지 않는 "직전 명령 자세" 기록 — 미션 컨트롤 fist→보 전이가 중간의
+        # none 구간을 건너뛰어 비교하도록 한다.
         if self.state:
             self._last_pose, self._last_pose_end = self.state, timestamp_ms
         # 좌우 커밋(_swipe_side)은 여기서 지우지 않는다. 빠른 좌↔우 스윙 중에는 모션 블러로
         # two_fingers 포즈가 잠깐 끊겨 이 _leave가 불릴 수 있는데, 그때 side를 초기화하면
         # 반대쪽에 도착해도 '직전 왼쪽'이 사라져 첫 커밋으로 취급돼 발화가 씹힌다. side는
-        # 추적 손실 시 reset()에서만 지운다.
-        self.state, self._dragging, self._missing = "", False, 0
+        # 추적 손실 시 reset()에서만 지우고, 무활동 SWIPE_RESET_MS 만료로 update()에서 지운다.
+        self.state, self._missing = "", 0
         return events
 
     def _continuous(
         self, timestamp_ms: int, landmarks: FloatArray | None
     ) -> list[PoseEvent]:
-        """상태를 유지하는 동안 계속 나가는 이벤트(스크롤·드래그 승격)."""
+        """상태를 유지하는 동안 계속 나가는 이벤트(스크롤·핀치 드래그)."""
         events: list[PoseEvent] = []
-        held = timestamp_ms - self._state_since
         # 커서 이동: index_point(이동)·pinch_index(드래그) 상태에서 손 이동을 옮긴다.
         # 드래그도 여기서 커서가 따라 움직인다 — pinch_index가 CURSOR_POSES에 있다.
         # 검지 폄 게이트: index_point로 분류돼도 검지가 충분히 펴지지 않았으면(애매하게
@@ -558,11 +599,9 @@ class PoseStateMachine:
                     events.append(move)
         else:
             self._cursor_ref = None  # 이동 자세를 벗어나면 참조점을 버린다
-        if self.state == "pinch_index" and not self._dragging and held > self.click_max_ms:
-            # 오래 쥐고 있으면 클릭이 아니라 드래그다. 진입 시점으로 소급해 알린다.
-            self._dragging = True
-            events.append(PoseEvent("drag_start", self._state_since))
-        elif self.state == "two_fingers" and landmarks is not None:
+        # 핀치 드래그는 별도 승격이 필요 없다 — 진입에서 이미 버튼이 down이라, 위의
+        # 커서 이동이 곧 드래그다(버튼을 누른 채 커서가 따라간다). 릴리즈의 up이 끝낸다.
+        if self.state == "two_fingers" and landmarks is not None:
             direction = pointing_direction(landmarks)
             straightness = two_finger_straightness(landmarks)
             # 두 손가락이 충분히 펴진 동안만 스크롤·스와이프한다. 주먹을 쥐려 접히기

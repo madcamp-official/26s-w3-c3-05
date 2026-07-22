@@ -95,15 +95,21 @@ def test_sustained_none_releases_state() -> None:
     assert machine.state == ""
 
 
-# --- 규칙 3: none이 자세 이력을 지우지 않는다 ---
+# --- 미션 컨트롤(open_palm) / OK(재생·일시정지) ---
+
+def test_ok_pose_fires_play_pause() -> None:
+    """OK 사인(ok) 진입은 재생/일시정지를 한 번 발화한다(주먹 자리에 넣은 새 자세)."""
+    machine = PoseStateMachine()
+    events = _feed(machine, "ok", ms=300)
+    assert [e.kind for e in events] == ["play_pause"]
+
 
 def test_fist_to_open_palm_through_none_fires_media_toggle() -> None:
     """주먹→손바닥 전이 중간은 none이다. 인접 상태로 보면 절대 성립하지 않는다."""
     machine = PoseStateMachine()
     _feed(machine, "fist", ms=300)
     assert machine.state == "fist"
-    # 어중간하게 펴진 중간 구간 — none으로 분류된다
-    for t in (400, 433, 466, 500, 533):
+    for t in (400, 433, 466, 500, 533):  # 어중간하게 펴진 중간 구간 — none
         machine.update(_pose(NONE_POSE), t)
     assert machine.state == ""
     events = _feed(machine, "open_palm", ms=300, start=566)
@@ -114,6 +120,16 @@ def test_open_palm_alone_does_not_fire_media_toggle() -> None:
     """주먹을 거치지 않은 손바닥은 아무것도 아니다 — 손만 펴도 재생이 토글되면 안 된다."""
     machine = PoseStateMachine()
     events = _feed(machine, "open_palm", ms=400)
+    assert events == []
+
+
+def test_non_fist_pose_to_open_palm_does_not_fire() -> None:
+    """주먹이 아닌 다른 자세(예: 검지) → 보 전이는 미션 컨트롤을 발화하지 않는다."""
+    machine = PoseStateMachine()
+    _feed(machine, "index_point", ms=300)
+    for t in (400, 433, 466):
+        machine.update(_pose(NONE_POSE), t)
+    events = _feed(machine, "open_palm", ms=300, start=500)
     assert events == []
 
 
@@ -129,64 +145,75 @@ def test_media_toggle_expires_after_window() -> None:
 
 # --- 클릭 / 드래그 ---
 
-def test_short_pinch_is_click() -> None:
+def _kv(events: list) -> list:
+    """(kind, click_state) 목록 — mouse_down/up의 clickState까지 검증한다."""
+    return [(e.kind, int(e.value)) for e in events]
+
+
+def test_short_pinch_emits_down_then_up() -> None:
+    """짧은 핀치: 진입에서 버튼 down, 릴리즈에서 up (둘 다 clickState=1)."""
     machine = PoseStateMachine()
-    _feed(machine, "pinch_index", ms=200)
-    events = [e for t in (300, 333, 366, 400)
-              for e in machine.update(_pose(NONE_POSE), t)]
-    assert [e.kind for e in events] == ["click"]
+    down = _feed(machine, "pinch_index", ms=200)
+    up = [e for t in (300, 333, 366, 400)
+          for e in machine.update(_pose(NONE_POSE), t)]
+    assert _kv(down) == [("mouse_down", 1)]
+    assert _kv(up) == [("mouse_up", 1)]
 
 
 def _pinch_click(machine: PoseStateMachine, *, start: int) -> list:
-    """핀치를 짧게 쥐었다 떼는 한 사이클 — click/double_click 이벤트를 낸다."""
-    events = _feed(machine, "pinch_index", ms=150, start=start)  # dwell(120ms) 통과
+    """핀치를 짧게 쥐었다 떼는 한 사이클 — mouse_down→mouse_up 한 쌍을 낸다."""
+    events = _feed(machine, "pinch_index", ms=150, start=start)  # dwell 통과 + 진입 down
     t = start + 150 + 33
-    for _ in range(4):  # RELEASE_FRAMES(3) 넘겨 확실히 이탈
+    for _ in range(4):  # RELEASE_FRAMES(3) 넘겨 확실히 이탈 → up
         events.extend(machine.update(_pose(NONE_POSE), t))
         t += 33
     return events
 
 
 def test_two_quick_pinches_are_double_click() -> None:
-    """두 클릭 간격이 double_click_ms 안이면 두 번째가 더블클릭으로 승격된다."""
+    """두 핀치 간격이 double_click_ms 안이면 두 번째 down/up이 clickState=2다."""
     machine = PoseStateMachine()
     first = _pinch_click(machine, start=0)
-    second = _pinch_click(machine, start=300)  # 첫 클릭에서 ~300ms 뒤
-    assert [e.kind for e in first] == ["click"]
-    assert [e.kind for e in second] == ["double_click"]
+    second = _pinch_click(machine, start=300)  # 첫 핀치 진입에서 ~300ms 뒤
+    assert _kv(first) == [("mouse_down", 1), ("mouse_up", 1)]
+    assert _kv(second) == [("mouse_down", 2), ("mouse_up", 2)]
 
 
 def test_slow_second_pinch_is_plain_click() -> None:
-    """간격이 double_click_ms를 넘으면 둘 다 그냥 클릭이다."""
+    """간격이 double_click_ms를 넘으면 둘 다 clickState=1이다."""
     machine = PoseStateMachine()
     first = _pinch_click(machine, start=0)
     second = _pinch_click(machine, start=1000)  # 충분히 늦음
-    assert [e.kind for e in first] == ["click"]
-    assert [e.kind for e in second] == ["click"]
+    assert _kv(first) == [("mouse_down", 1), ("mouse_up", 1)]
+    assert _kv(second) == [("mouse_down", 1), ("mouse_up", 1)]
 
 
 def test_triple_pinch_does_not_chain_double_clicks() -> None:
-    """세 번 연속 핀치는 (클릭, 더블클릭, 클릭) — 더블클릭이 연쇄되지 않는다."""
+    """세 번 연속 핀치: 두 번째 눌림만 clickState=2, 세 번째는 다시 1로 돌아간다."""
     machine = PoseStateMachine()
-    kinds = [
-        e.kind
+    states = [
+        int(e.value)
         for start in (0, 300, 600)
         for e in _pinch_click(machine, start=start)
+        if e.kind == "mouse_down"
     ]
-    assert kinds == ["click", "double_click", "click"]
+    assert states == [1, 2, 1]
 
 
-def test_long_pinch_becomes_drag() -> None:
-    """오래 쥐면 드래그다. 시작 시점은 핀치 진입 순간으로 소급된다."""
+def test_long_pinch_holds_button_then_releases() -> None:
+    """오래 쥐면 버튼이 눌린 채 유지(드래그)되고, 릴리즈에서 한 번만 up이 나간다.
+
+    down/up 모델에선 진입에서 이미 버튼이 down이라 별도 drag 이벤트가 없다 — 유지 중
+    커서 move가 곧 드래그이고, 릴리즈의 mouse_up이 끝낸다.
+    """
     machine = PoseStateMachine()
-    events = _feed(machine, "pinch_index", ms=700)
-    starts = [e for e in events if e.kind == "drag_start"]
-    assert len(starts) == 1
-    assert starts[0].timestamp_ms < 700  # 소급 적용
+    held = _feed(machine, "pinch_index", ms=700)
+    button = [e for e in held if e.kind in ("mouse_down", "mouse_up")]
+    assert _kv(button) == [("mouse_down", 1)]  # 유지 내내 down 한 번, up 없음
 
     release = [e for t in (800, 833, 866, 900)
                for e in machine.update(_pose(NONE_POSE), t)]
-    assert [e.kind for e in release] == ["drag_end"]
+    assert _kv(release) == [("mouse_up", 1)]
 
 
 def test_pinch_middle_is_right_click() -> None:
@@ -369,11 +396,11 @@ def test_index_point_moves_cursor() -> None:
 
 
 def test_pinch_drag_also_moves_cursor() -> None:
-    """드래그(핀치 유지) 중에도 커서가 따라 움직인다."""
+    """드래그(핀치 유지) 중에도 커서가 따라 움직인다 — 진입 down 뒤 move가 이어진다."""
     machine = PoseStateMachine()
     events = _feed_cursor(machine, "pinch_index", ((0.4, 0.4), (0.6, 0.6)), ms=700)
     assert any(e.kind == "move" for e in events)
-    assert any(e.kind == "drag_start" for e in events)
+    assert any(e.kind == "mouse_down" for e in events)  # 진입에서 버튼 down(=드래그 시작)
 
 
 def _index_hand(*, straight: bool) -> np.ndarray:
@@ -503,11 +530,13 @@ def test_index_rotation_drives_volume() -> None:
     t = _enter_index(machine)
     assert machine.state == "index_point"
 
-    cw, t = _rotate(machine, sign=+1, frames=20, start=t)
+    # frames=30(450°): 앞 ~24프레임(360°)은 워밍업, 이후부터 볼륨 스텝이 나온다.
+    cw, t = _rotate(machine, sign=+1, frames=30, start=t)
     cw_vol = {e for e in cw if e.startswith("volume")}
     assert len(cw_vol) == 1, "한 방향 회전은 한 종류의 볼륨 스텝만"
     assert machine.state == "index_point"  # 회전 내내 상태 유지
 
+    # 세션이 이미 활성화됐으므로(연속 index_point) 반대 회전은 워밍업 없이 바로 볼륨.
     ccw, t = _rotate(machine, sign=-1, frames=20, start=t)
     ccw_vol = {e for e in ccw if e.startswith("volume")}
     assert len(ccw_vol) == 1
@@ -517,21 +546,42 @@ def test_index_rotation_drives_volume() -> None:
 def test_index_rotation_starts_at_high_tilt_without_entering_state() -> None:
     """상태 진입(낮은 tilt) 없이도, 고tilt(untrusted) 라벨만으로 회전 볼륨이 시작된다."""
     machine = PoseStateMachine()
-    events, _ = _rotate(machine, sign=+1, frames=20, start=0, trusted=False)
+    events, _ = _rotate(machine, sign=+1, frames=30, start=0, trusted=False)  # 워밍업 통과
     assert any(e.startswith("volume") for e in events)
     assert machine.state == ""  # 상태로 진입하지 않았어도 동작
+
+
+def test_small_rotation_does_not_change_volume() -> None:
+    """워밍업(한 바퀴 ROT_ACTIVATION_DEG) 미만의 회전은 볼륨을 바꾸지 않는다.
+
+    일상 동작의 작은 검지 회전이 갑자기 볼륨을 한두 칸 바꾸던 것을 막는 게이트다.
+    """
+    machine = PoseStateMachine()
+    events, _ = _rotate(machine, sign=+1, frames=16, start=0, trusted=False)  # 240° < ROT_ACTIVATION_DEG
+    assert not any(e.startswith("volume") for e in events)
+
+
+def test_volume_knob_locks_during_warmup() -> None:
+    """워밍업(활성화 전) 중에도 회전이 감지되면 볼륨 노브 락이 걸린다 — 게이지 채우는
+    동안 순간 오인식이 클릭·커서로 새지 않게(볼륨 자체는 활성화 후에만 나간다)."""
+    machine = PoseStateMachine()
+    events, _ = _rotate(machine, sign=+1, frames=10, start=0, trusted=False)  # 150° < ROT_ACTIVATION_DEG
+    assert not any(e.startswith("volume") for e in events)  # 활성화 전 → 볼륨 없음
+    assert not machine._rot_activated  # 아직 워밍업 중
+    assert machine._rot_active_until > 0  # 그래도 락은 걸렸다(다른 동작 차단)
 
 
 def test_volume_knob_mode_blocks_other_actions() -> None:
     """회전(볼륨 노브 모드) 중에는 순간 오인식(pinch 등)이 섞여도 클릭·드래그가 나오지 않는다."""
     machine = PoseStateMachine()
     events, t, theta = [], 0, 0.0
-    for i in range(15):
+    # 워밍업(360°)을 index_point 프레임(3중 2)만으로 넘기려면 넉넉히 돌려야 한다.
+    for i in range(48):
         theta += 15.0
         label = "pinch_index" if i % 3 == 0 else "index_point"  # 회전 중 오인식 섞기
         events += [e.kind for e in machine.update(_pose(label, trusted=False), t, _hand_pointing(theta))]
         t += 33
-    assert not any(e in ("click", "drag_start", "right_click") for e in events)
+    assert not any(e in ("mouse_down", "mouse_up", "right_click") for e in events)
     assert any(e.startswith("volume") for e in events)
 
 

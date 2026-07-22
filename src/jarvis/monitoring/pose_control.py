@@ -90,12 +90,14 @@ class PoseControlBridge:
             return ""  # 커서 이동은 매 프레임이라 기록/표시하지 않는다(로그가 뒤덮인다)
         if event.kind == "scroll":
             return f"스크롤 {'위' if event.value > 0 else '아래'}"
+        if event.kind == "mouse_down":
+            # down 시점엔 클릭/드래그가 아직 안 갈린다(누른 시간으로 결정) — 중립적으로
+            # '버튼 ↓'로 적되, clickState=2면 더블클릭 눌림이므로 그렇게 표시한다.
+            return "더블클릭 ↓" if event.value >= 2 else "버튼 ↓"
+        if event.kind == "mouse_up":
+            return "버튼 ↑"
         return {
-            "click": "클릭",
-            "double_click": "더블클릭",
             "right_click": "우클릭",
-            "drag_start": "드래그 시작",
-            "drag_end": "드래그 끝",
             # 주먹→보 전이. macOS=Mission Control, Windows=Task View.
             "media_toggle": (
                 "미션 컨트롤" if self.transition_key is InputKey.MISSION_CONTROL
@@ -103,6 +105,7 @@ class PoseControlBridge:
                 else "재생/일시정지"
             ),
             "close_tab": "탭 닫기",
+            "play_pause": "재생/일시정지",
             "volume_up": "볼륨 +",
             "volume_down": "볼륨 −",
             # 두 손가락 좌↔우 전이 스와이프 → 가상 데스크톱 전환(정적 경로, 실험).
@@ -120,22 +123,22 @@ class PoseControlBridge:
             self.sink.move_cursor(
                 round(event.delta[0]), round(event.delta[1]), dragging=self._dragging
             )
-        elif event.kind == "click":
-            self.sink.click(MouseButton.LEFT)
-        elif event.kind == "double_click":
-            self.sink.double_click(MouseButton.LEFT)
+        elif event.kind == "mouse_down":
+            # 핀치 진입 → 버튼 down. clickState를 실어 더블클릭이면 OS가 합치게 한다.
+            # 버튼이 눌린 동안(_dragging) move는 드래그로 나가고, release가 안전하게 뗀다.
+            self.sink.press(MouseButton.LEFT, down=True, click_state=int(event.value) or 1)
+            self._dragging = True
+        elif event.kind == "mouse_up":
+            self.sink.press(MouseButton.LEFT, down=False, click_state=int(event.value) or 1)
+            self._dragging = False
         elif event.kind == "right_click":
             self.sink.click(MouseButton.RIGHT)
-        elif event.kind == "drag_start":
-            self.sink.press(MouseButton.LEFT, down=True)
-            self._dragging = True
-        elif event.kind == "drag_end":
-            self.sink.press(MouseButton.LEFT, down=False)
-            self._dragging = False
         elif event.kind == "media_toggle":
             self.sink.tap_key(self.transition_key)
         elif event.kind == "close_tab":
             self.sink.tap_key(InputKey.CLOSE_TAB)
+        elif event.kind == "play_pause":
+            self.sink.tap_key(InputKey.PLAY_PAUSE)
         elif event.kind == "volume_up":
             self.sink.tap_key(InputKey.VOLUME_UP)
         elif event.kind == "volume_down":
