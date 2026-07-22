@@ -132,8 +132,8 @@ JARVIS가 해결하려는 문제는 다음과 같다.
 
 실제 구현은 다음 두 종류로 제한한다.
 
-1. Windows 노트북
-2. 스마트싱스 전구
+1. Windows/macOS 노트북 (로컬 입력 합성)
+2. 스마트 전구 — **실제 데모는 Philips WiZ(로컬 UDP 직접 제어)로 구현**했다. SmartThings adapter(클라우드 API)도 계약·코드로 갖춰 두었으나, 데모 당일 클라우드 왕복·전구 UUID 확보 리스크를 피해 같은 LAN에서 토큰 없이 제어되는 WiZ를 실행 백엔드로 택했다(두 adapter 모두 같은 `DeviceAdapter` 계약. documents/decisions.md·runtime-protocol.md 참조).
 
 “모든 전자기기”는 확장 방향이고, MVP에서는 서로 다른 제어 방식을 가진 두 종류의 기기를 하나의 코어로 제어하는 것을 증명한다.
 

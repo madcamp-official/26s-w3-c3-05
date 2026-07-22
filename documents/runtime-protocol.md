@@ -11,6 +11,7 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 - device capability model
 - Windows adapter
 - SmartThings adapter
+- WiZ 전구 adapter (로컬 UDP, 2026-07-22 추가 — 클라우드/토큰 없이 LAN 직접 제어)
 - 명령 timeout·ACK·deduplication
 - End-to-End latency 측정
 
@@ -52,6 +53,15 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 - **비밀 관리**: 실제 토큰은 `.env`(gitignore)에만. `.env.example`은 키 이름·안전한 설명·플레이스홀더만(원칙 6.2). 전구 UUID는 미확보 → `SMARTTHINGS_DEVICE_TARGETS={}` 상태. 실물 연결하려면 `GET /devices`로 UUID 얻어 채워야 함(아래 이슈).
 - 테스트 18개: unconfigured·미매핑·power set/toggle·brightness set·increment/decrement clamp(하한 0·상한 100)·오류 4종 분류·토큰 비노출·verify 불가→UNVERIFIED·미지원 capability·from_env 파싱.
 
+### adapters/ (청크 3c — WiZ 전구, 2026-07-22 데모용)
+
+`wiz.py`: Philips WiZ 전구를 **클라우드 없이 로컬 UDP**(포트 38899, JSON-RPC `setPilot`/`getPilot`)로 직접 제어한다. SmartThings와 같은 `DeviceAdapter` 계약이지만 경로가 다르다 — 토큰·계정 불필요, 왕복이 LAN 한 홉(실측 15~47ms)이라 제스처 제어에 유리하다. `room.bulb` 기기의 실제 실행 백엔드(`jarvis.runtime.devices.build_default_registry`가 배선).
+
+- **정직한 상태**(원칙 1.1): `setPilot` 후 `getPilot`으로 되읽어 일치할 때만 `VERIFIED`. 보냈지만 확인 못 하면 `UNVERIFIED`(성공 위조 없음). 설정(`WIZ_DEVICE_TARGETS`) 없으면 `UNCONFIGURED`로 네트워크 미접촉.
+- **capability**: `power`(set/toggle), `brightness`·`color_temperature`(set 절대값, increment/decrement는 현재 상태 GET→delta→`[min,max]` clamp→절대 setPilot, clamp는 adapter 몫이라는 decisions.md 결정 구현), **`color`(색상각 hue, 0~360°)**. color는 **순환량**이라 유일하게 클램프하지 않고 360°에서 0°로 감아 돈다(`_apply_color`) — 클램프하면 회전 제스처가 양 끝에서 죽는다. 기기 프로필 범위는 실측 WiZ 모델(ESP25_SHRGB_01): brightness 10~100(하한 10=`minDimLevel`), color_temperature 2700~6500K.
+- **주소 지정**: `IP`/`MAC`/`MAC@IP` 세 형식. `MAC@IP` 권장 — 평소 IP로 바로 쏘고(탐색 비용 0), 무응답 시에만 MAC 재탐색으로 DHCP 주소 변경 흡수(AP 클라이언트 격리로 브로드캐스트 탐색이 막히는 네트워크 대비).
+- 테스트(`test_adapter_wiz.py`): unconfigured·power·brightness/color clamp·color 순환·verify 불일치→UNVERIFIED·주소 형식 파싱 등.
+
 ### adapters/ (청크 3a — Windows + dispatch 코디네이터)
 
 실제 실행 경계. adapter는 실제로 일어난 일을 정직하게 보고하고, 성공을 위조하지 않는다(원칙 1.1).
@@ -59,7 +69,8 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 - **계약 보강**: `Command`에 `device_id` 추가(계약 변경, decisions.md 기록). command만으로 어느 adapter로 라우팅할지 결정하기 위함. dev-3 경계 안에서만 쓰여 Gaze/Gesture/Fusion 영향 없음.
 - `base.py`: `AdapterStatus`(ACKNOWLEDGED/VERIFIED/UNVERIFIED/FAILED/UNCONFIGURED) + `AdapterResult` + `DeviceAdapter`(Protocol). `DispatchCoordinator`가 `device_id`로 profile·adapter를 **먼저** 라우팅 → TTL 재검증(원칙 4) → 그 직후에만 `DISPATCHED` 전이 → adapter 결과를 lifecycle 전이로 매핑. 실패·미설정·만료는 모두 미실행이 안전 기본(원칙 2.7).
 - **dispatch 순서·상태 정직성 수정(리뷰 후)**: `DISPATCHED`("adapter로 보냄")를 라우팅·TTL 확인 전에 올리던 것을 바로잡음. (1) 대상 기기가 registry에 없으면 `REJECTED`(never dispatched, lifecycle 새 edge `VALIDATED→REJECTED`)로 정직한 터미널 처리 — 예전엔 `DISPATCHED`를 거쳐 `FAILED`. (2) profile이 없는 adapter를 가리키면(배선 오류) `UnknownAdapterError`를 raise하되 command은 `VALIDATED`로 남아(보낸 적 없음이 정직) 예전처럼 `DISPATCHED`에 정체되지 않음. (3) `dispatch()`를 idempotent하게: `VALIDATED`가 아니면 adapter를 건드리지 않고 현재 상태를 리포트 → 재호출로 중복 실행·`IllegalTransitionError` 없음.
-- `windows.py`: `WindowsAdapter`가 discrete command(scroll/volume/media)를 `InputSink`로 매핑. 로컬 합성 입력은 OS가 받아들이지만 효과를 되읽지 않으므로 성공은 `ACKNOWLEDGED`가 정직한 상한(VERIFIED 위조 안 함). 처리 못 하는 capability/operation은 추측 없이 `FAILED`. `Win32InputSink`는 user32(keybd_event/mouse_event) 하드웨어 경계로 `ctypes` lazy import — 실물 검증 필요(자동 테스트는 fake sink 사용).
+- `windows.py`: `WindowsAdapter`가 discrete command(scroll/volume/media/**window_switch**)를 `InputSink`로 매핑. 로컬 합성 입력은 OS가 받아들이지만 효과를 되읽지 않으므로 성공은 `ACKNOWLEDGED`가 정직한 상한(VERIFIED 위조 안 함). 처리 못 하는 capability/operation은 추측 없이 `FAILED`. `Win32InputSink`는 user32(keybd_event/mouse_event) 하드웨어 경계로 `ctypes` lazy import — 실물 검증 필요(자동 테스트는 fake sink 사용).
+  - **window_switch(2026-07-22 추가)**: `_window_switch`가 `switch_window(forward, count)`로 Alt+Tab hold(macOS는 `MacOSInputSink`가 Cmd+Tab)를 합성해 창 전환. README 15장 "노트북 Swipe Left(창 전환)" 데모 시나리오용. 이전 decisions.md의 "window_switch 미구현" 갭 해소.
 - **macOS 확장(2026-07-18, 이번 세션)**: `WindowsAdapter`는 `InputSink`만 호출해 원래 OS 무관이었다 — `macos.py`에 `MacOSInputSink`(Quartz/AppKit CGEvent, `macos` extra: `pyobjc-framework-Quartz`+`pyobjc-framework-Cocoa`, `sys_platform=='darwin'` 마커)를 추가하고 `windows.py`에 `default_input_sink()`(플랫폼별 sink 선택, 미지원 OS는 `RuntimeError`)를 더했다. `Win32InputSink`·기존 Windows 테스트는 전혀 건드리지 않음(8개 그대로 통과). macOS 미디어 키(볼륨·재생/일시정지)는 표준 keycode가 아니라 `NSEvent`의 system-defined 이벤트(`NX_KEYTYPE_*`)로 보낸다 — Win32InputSink와 마찬가지로 실물 검증 필요, 자동 테스트는 import·매핑 테이블·플랫폼 분기만 확인(실제 CGEvent 발사는 개발자 화면에 부작용을 남겨 자동화하지 않음).
 - 커서 연속 경로(Cursor Control Mapper, README 6장)는 `InputSink.move_cursor`를 재사용할 예정이나 이번 범위 밖(pointer/ 모듈, 공동 소유). macOS 쪽도 `MacOSInputSink.move_cursor`로 이미 준비됨.
 - 테스트 20개(리뷰 후 +4) + macOS 확장 테스트 5개: windows 매핑(scroll/volume/media·미지원·sink 오류 내성) 8개 + coordinator(5종 status 매핑·만료 미전달·미등록 adapter 정체 없음·미등록 기기 REJECTED·재호출 idempotency) 10개 + lifecycle `VALIDATED→REJECTED` 1개 + Command 계약 테스트 2개(`tests/contract/`) + macOS sink import·매핑·플랫폼 분기 5개.
@@ -94,7 +105,9 @@ README [10장 핵심 기능 4](../README.md), [11장 전자기기 연결 방법]
 - [x] 청크 3a: adapters/base + DispatchCoordinator + Windows adapter (리뷰 수정 후 76개). Command.device_id 계약 보강 + dispatch 순서·idempotency 수정 + Command contract test 포함
 - [x] 청크 3b: adapters/ SmartThings + http transport + config/secrets + `.env.example` + 테스트 18개 (누적 94개, pytest/mypy/ruff 통과)
 - [x] 청크 4: telemetry/ events + latency 프리미티브 + 테스트 14개 (누적 108개, pytest/mypy/ruff 통과)
-- [ ] 후속: composition root(전체 배선) + telemetry emit 지점 통합 + 실물 검증(전구 UUID·Win32)
+- [x] 청크 3c: WiZ 전구 adapter(로컬 UDP) + `room.bulb` 실행 백엔드 + color(hue) capability (2026-07-22, 데모용)
+- [x] 청크 5: composition root 일부 — `jarvis.runtime.devices`가 laptop(로컬 입력)·room.bulb(WiZ) 레지스트리·executor 배선, `IntentExecutor`가 CommitDecision→기기 명령까지 묶음. 모니터 `시연` 탭이 그 앞단(실시간 TargetEstimate·GestureEstimate → FusionEngine)을 `demo_bridge`로 연결 — 전체 시선→제스처→Fusion→실기기 경로 완성
+- [ ] 후속: telemetry emit 지점 통합(capture/protocol/adapter가 tracer/aggregator 실제 호출) + 실물 검증(WiZ 전구 IP/MAC·SmartThings UUID·Win32)
 
 ## 이슈 / 의사결정 필요 사항
 
