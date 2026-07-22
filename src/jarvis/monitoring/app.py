@@ -2475,6 +2475,15 @@ class MainWindow(QMainWindow):
         # 손을 놓치면 드래그가 눌린 채 남지 않게 먼저 정리한다.
         if not snapshot.hand_detected:
             self._pose_control.release()
+        # 중지(middle_point) 포즈의 '창 닫기': **디버깅 툴 창이 활성일 때만** 이 툴을
+        # 닫는다(사용자 지시 2026-07-22) — 카메라 앞에서 손만으로 툴을 종료할 수 있게.
+        # 다른 창이 활성이면 가로채지 않고 아래 pose_control.apply가 평소대로 그 창에
+        # Cmd+W를 보낸다 — 모든 close_tab을 가로채면 배경 앱의 탭을 닫을 수 없게 된다.
+        if self.isActiveWindow() and any(
+            event.kind == "close_tab" for event in snapshot.pose_events
+        ):
+            self.close()
+            return
         # 시선 lock에 의한 경로 중재: 노트북이 아닌 기기(전구)를 보는 동안에는 pose
         # 제어를 멈춘다 — 전구를 보며 손을 움직일 때 커서까지 따라가면 안 된다. 사용자의
         # 제어 토글(`_pose_control.enabled`)은 건드리지 않고 억제만 얹으므로, 전구에서
