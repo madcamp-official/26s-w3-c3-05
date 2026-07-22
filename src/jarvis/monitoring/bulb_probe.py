@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QThread, Signal
 
+from jarvis.monitoring.virtual_bulb import VirtualBulbState, state_from_pilot
 from jarvis.runtime_protocol.adapters.wiz import WizConfig, WizTransport, parse_target
 
 # 시작 프로브는 사용자를 기다리게 하는 화면이 아니라 배경 확인이라, 명령용 타임아웃보다
@@ -34,6 +35,8 @@ class BulbProbeResult:
 
     ok: bool
     detail: str
+    state: VirtualBulbState | None = None
+    """실물에서 읽은 상태. 못 읽었으면 None — 화면은 "확인 전"을 유지한다."""
 
 
 def probe_bulb(
@@ -70,7 +73,10 @@ def probe_bulb(
     state = "켜짐" if result.get("state") else "꺼짐"
     dimming = result.get("dimming")
     brightness = f" · 밝기 {dimming}" if isinstance(dimming, (int, float)) else ""
-    return BulbProbeResult(True, f"전구 연결됨 ({where}) — 현재 {state}{brightness}")
+    # 읽은 상태를 함께 돌려준다 — 화면의 전구가 실물과 맞으려면 여기서 시작해야 한다.
+    return BulbProbeResult(
+        True, f"전구 연결됨 ({where}) — 현재 {state}{brightness}", state_from_pilot(result)
+    )
 
 
 class BulbProbeWorker(QThread):

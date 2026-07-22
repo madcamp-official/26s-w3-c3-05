@@ -1,14 +1,18 @@
-"""화면상 가상 전구 — 시연에서 "명령이 무엇이었는가"를 눈에 보이게 한다.
+"""화면상 전구 표시 — 실물에서 읽은 상태를 기준으로, 그 위에 보낸 명령을 얹는다.
 
 실물 전구(Philips WiZ, 로컬 UDP)는 같은 네트워크·전원·설정이 모두 갖춰져야
 반응한다. 그 중 하나라도 빠지면 전구 시나리오(같은 slide_down이 노트북에선
-스크롤, 전구에선 밝기 감소)가 통째로 빈다. 이 상태 객체는 **dispatch된 Intent를
-그대로 누적**해 그 명령이 무엇이었는지를 보여준다.
+스크롤, 전구에선 밝기 감소)가 통째로 빈다. 그래서 이 상태 객체는 실물이 없어도
+**dispatch된 Intent를 누적**해 그 명령이 무엇이었는지는 보여준다.
 
-정직성 경계가 중요하다: 이 값은 **명령 기준**이지 실물의 응답이 아니다. 실물이
-성공했는지는 `ExecutionOutcome`이 따로 말해 주며, UI는 그 둘을 분리해 표시해야
-한다(가상 상태 + 실물 결과 배지). 실물이 실패했는데 가상 전구가 밝아지는 것을
-"전구가 켜졌다"로 읽히게 두면 성공을 지어내는 것이다.
+다만 명령 누적만으로는 화면이 실물과 어긋난다 — 시작 시점의 실제 밝기·색을
+모르는 채 임의의 초기값에서 출발하기 때문이다(2026-07-22 시연에서 "표시가 실물과
+하나도 안 맞는다"로 드러났다). `state_from_pilot()`이 그 공백을 메운다: `getPilot`
+응답을 그대로 이 상태로 옮겨, 시작할 때와 명령을 보낸 뒤에 실물 값으로 맞춘다.
+
+정직성 경계는 그대로다: 이 값이 **실물에서 읽은 것인지 보낸 명령 기준인지**를 UI가
+구분해 표시해야 한다(`DemoPanel.set_bulb(..., verified=...)`). 실물이 실패했는데
+그림만 밝아지는 것을 "전구가 켜졌다"로 읽히게 두면 성공을 지어내는 것이다.
 
 값의 범위·step은 `jarvis.runtime.devices._bulb_profile()`의 capability model과
 같다 — 거기서 검증을 통과한 명령만 여기 도달하므로 두 정의가 어긋나면 화면과
@@ -17,10 +21,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from jarvis.contracts.messages import Intent
 from jarvis.monitoring.demo_bridge import BULB_DEVICE_ID
+from jarvis.runtime_protocol.adapters.wiz import rgb_to_hue
 from jarvis.runtime_protocol.protocol.capability import Operation
 
 # 하한이 0이 아니라 10인 것은 실측 WiZ 모델의 `minDimLevel`이 10이기 때문이다 —
@@ -42,12 +48,11 @@ def _clamp(value: float, low: int, high: int) -> int:
 
 @dataclass
 class VirtualBulbState:
-    """전구의 **명령 기준** 상태. 실물 응답이 아니다.
+    """화면에 그릴 전구 상태.
 
-    초기값은 SmartThings 기본 프리셋과 무관한 임의의 중간값이다 — 실물 상태를
-    읽어오지 않으므로 "지금 실물이 이렇다"고 주장하지 않는다. 시연에서 의미 있는
-    것은 절대값이 아니라 제스처에 따른 **변화**다(밝기 capability 자체가 상대
-    연산 전용이다).
+    초기값은 아무 근거 없는 임의의 중간값이다 — 실물을 읽기 전에는 "지금 실물이
+    이렇다"고 주장할 수 없다. 그래서 앱은 시작하자마자 `state_from_pilot()`으로
+    이 값을 실물에서 읽은 것으로 갈아끼우고, UI는 그 전까지 "확인 전"으로 표시한다.
     """
 
     power: bool = True
@@ -139,6 +144,50 @@ class VirtualBulbState:
             else f"색온도 {self.color_temperature}K"
         )
         return f"밝기 {self.brightness}% · {tint}"
+
+
+def _number(state: Mapping[str, object], key: str) -> float | None:
+    """getPilot의 수치 필드 하나. 없거나 수치가 아니면 None — 값을 지어내지 않는다."""
+    value = state.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def state_from_pilot(result: Mapping[str, object]) -> VirtualBulbState | None:
+    """WiZ `getPilot` 응답 → 화면 상태. 전원조차 못 읽으면 ``None``.
+
+    실물 WiZ는 색상(RGB) 모드와 색온도(CCT) 모드 중 **하나로만** 켜져 있고,
+    getPilot도 그 모드의 필드만 돌려준다 — RGB 모드면 ``r/g/b``, CCT 모드면
+    ``temp``. 그래서 어느 필드가 왔는지가 곧 모드다. 둘 다 없으면(장면 모드 등)
+    화면이 마지막으로 알던 모드를 유지하는 대신 기본값을 쓴다 — 어차피 다음
+    명령 한 번이면 실제 모드가 확정된다.
+
+    읽히지 않은 필드는 기본값으로 남는다. 이 함수는 "읽은 만큼만" 반영하고,
+    읽지 못한 것을 추측하지 않는다.
+    """
+    power = result.get("state")
+    if not isinstance(power, bool):
+        return None
+    bulb = VirtualBulbState(power=power)
+
+    dimming = _number(result, "dimming")
+    if dimming is not None:
+        bulb.brightness = _clamp(dimming, BRIGHTNESS_MIN, BRIGHTNESS_MAX)
+
+    red, green, blue = (_number(result, param) for param in ("r", "g", "b"))
+    temperature = _number(result, "temp")
+    if any(component for component in (red, green, blue)):
+        # 하나라도 0이 아닌 성분이 오면 RGB 모드다. 전부 0이거나 없으면 색이 아니라
+        # 흰색/꺼짐이므로 CCT 쪽으로 넘긴다(rgb_to_hue도 무채색을 0도로 본다).
+        bulb.hue = int(round(rgb_to_hue(red or 0.0, green or 0.0, blue or 0.0)))
+        bulb.color_mode = True
+    elif temperature is not None:
+        bulb.color_temperature = _clamp(
+            temperature, COLOR_TEMPERATURE_MIN, COLOR_TEMPERATURE_MAX
+        )
+        bulb.color_mode = False
+    return bulb
 
 
 # 색상각 → 사람이 읽는 이름. 60도마다 이름이 바뀌므로 시연에서 한 스텝의 변화가

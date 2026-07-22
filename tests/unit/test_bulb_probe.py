@@ -84,3 +84,18 @@ def test_probe_never_raises_on_transport_error() -> None:
     result = probe_bulb(WizConfig(TARGETS), "room.bulb", FakeTransport(error=OSError("boom")))
     assert not result.ok
     assert "OSError" in result.detail
+
+
+def test_probe_returns_the_state_it_read() -> None:
+    """프로브는 도달 여부만이 아니라 **읽은 상태**를 돌려준다 — 화면이 그 값에서 시작한다."""
+    response = {"result": {"state": True, "dimming": 40, "temp": 4200}}
+    result = probe_bulb(WizConfig(TARGETS), "room.bulb", FakeTransport(response))
+    assert result.state is not None
+    assert result.state.brightness == 40
+    assert result.state.color_temperature == 4200
+
+
+def test_failed_probe_carries_no_state() -> None:
+    """안 닿았으면 상태도 없다 — 화면은 '확인 전'을 유지해야 한다."""
+    result = probe_bulb(WizConfig(TARGETS), "room.bulb", FakeTransport(error=WizTimeout("no")))
+    assert result.state is None

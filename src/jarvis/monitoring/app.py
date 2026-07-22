@@ -1469,6 +1469,11 @@ class MainWindow(QMainWindow):
         self._pose_suppressed = False
         self._virtual_bulb = VirtualBulbState()
         self._last_bulb_badge = ("미설정", False)
+        # 전구 표시가 실물에서 읽은 값인지(True) 보낸 명령 누적인지(False). 시작 프로브가
+        # 성공할 때까지는 False이며, UI가 그 사실을 문구로 드러낸다.
+        self._bulb_verified = False
+        self._bulb_quiet_probe = False
+        self._bulb_resync_pending = False
         # 전구 프로브와 실행 어댑터가 같은 transport를 공유한다 — 프로브가 MAC→IP 캐시를
         # 미리 채워, 첫 제스처가 재탐색 비용을 떠안지 않게 한다(bulb_probe.py 참조).
         self._wiz_transport = UdpWizTransport()
@@ -1868,43 +1873,71 @@ class MainWindow(QMainWindow):
                 self._register_target_button.setFocus()
                 return
 
-    def start_bulb_probe(self) -> None:
-        """시작 시 전구에 실제로 닿는지 한 번 확인한다(GUI 스레드 밖).
+    def start_bulb_probe(self, *, quiet: bool = False) -> None:
+        """전구에 `getPilot`을 보내 도달 여부와 **현재 상태**를 읽는다(GUI 스레드 밖).
 
         WiZ는 연결 없는 UDP라 "연결"이라는 단계가 없다 — 그래서 이 프로브를 넣기
         전에는 부팅 시 전구를 한 번도 건드리지 않았고, 도달 불가를 첫 제스처에서야
         알 수 있었다. 시도·성공·실패를 시연 로그에 그대로 찍는다.
+
+        시작할 때 한 번(`quiet=False`), 그리고 전구 명령을 보낼 때마다 한 번 더
+        (`quiet=True`) 부른다. 후자가 화면과 실물을 계속 맞춰 주는 장치다 — 밝기·색은
+        전구가 가진 절대 상태인데 화면이 자기 누적값만 들고 있으면 시작 시점의 차이가
+        영원히 남는다. 재동기화는 로그를 어지럽히지 않도록 조용히 돈다.
         """
         if self._bulb_probe is not None and self._bulb_probe.isRunning():
+            # 이미 도는 프로브를 새 객체로 덮으면 실행 중인 QThread가 수거될 수 있다.
+            # 대신 예약해 두고 끝나는 즉시 한 번 더 읽는다(마지막 명령이 반영되도록).
+            self._bulb_resync_pending = True
             return
         config = WizConfig.from_env(self._env)
-        target = config.device_targets.get(BULB_DEVICE_ID) if config else None
-        self._demo_panel.append_line(
-            f"전구 연결 시도… ({target})" if target else "전구 연결 시도… (대상 미설정)",
-            ok=True,
-        )
-        self._log.info("전구 연결 확인 중…")
+        if not quiet:
+            target = config.device_targets.get(BULB_DEVICE_ID) if config else None
+            self._demo_panel.append_line(
+                f"전구 연결 시도… ({target})" if target else "전구 연결 시도… (대상 미설정)",
+                ok=True,
+            )
+            self._log.info("전구 연결 확인 중…")
+        self._bulb_quiet_probe = quiet
         self._bulb_probe = BulbProbeWorker(config, BULB_DEVICE_ID, self._wiz_transport)
         self._bulb_probe.result_ready.connect(self._on_bulb_probed)
         self._bulb_probe.start()
 
     def _on_bulb_probed(self, result: object) -> None:
         assert isinstance(result, BulbProbeResult)
-        self._demo_panel.append_line(result.detail, ok=result.ok)
-        if result.ok:
-            self._log.info(result.detail)
+        if not self._bulb_quiet_probe:
+            self._demo_panel.append_line(result.detail, ok=result.ok)
+            if result.ok:
+                self._log.info(result.detail)
+            else:
+                self._log.warn(result.detail)
+        # 읽은 상태를 화면의 단일 소스로 삼는다. 못 읽었으면 이전 값을 유지하되
+        # "확인됨" 표시를 내려 화면이 실물이라고 주장하지 않게 한다.
+        if result.state is not None:
+            self._virtual_bulb = result.state
+            self._bulb_verified = True
         else:
-            self._log.warn(result.detail)
+            self._bulb_verified = False
         # 배지를 "설정 여부"가 아니라 **실제 도달 여부**로 갱신한다.
         self._last_bulb_badge = (result.detail, result.ok)
-        self._demo_panel.set_bulb(self._virtual_bulb, badge=result.detail, ok=result.ok)
+        self._demo_panel.set_bulb(
+            self._virtual_bulb,
+            badge=result.detail,
+            ok=result.ok,
+            verified=self._bulb_verified,
+        )
+        if self._bulb_resync_pending:
+            self._bulb_resync_pending = False
+            self.start_bulb_probe(quiet=True)
 
     def _refresh_bulb_badge(self) -> None:
         # 프로브가 실제 도달 여부를 확인했으면 그 결과를 유지한다 — 여기서 "설정됨"으로
         # 덮으면 닿지도 않는 전구가 다시 정상처럼 보인다.
         if self._bulb_probe is not None:
             badge, ok = self._last_bulb_badge
-            self._demo_panel.set_bulb(self._virtual_bulb, badge=badge, ok=ok)
+            self._demo_panel.set_bulb(
+                self._virtual_bulb, badge=badge, ok=ok, verified=self._bulb_verified
+            )
             return
         configured = WizConfig.from_env(self._env) is not None
         badge = "설정됨 · 연결 확인 전" if configured else "미설정 (WIZ_DEVICE_TARGETS 없음)"
@@ -1961,9 +1994,11 @@ class MainWindow(QMainWindow):
         intent = outcome.intent
         if intent is None or intent.target != BULB_DEVICE_ID:
             return
-        # 가상 전구는 **보낸 명령**을 누적한다. 실물의 성공 여부는 배지로 따로 말한다 —
-        # dispatch가 실패했는데 그림만 밝아지면 성공을 지어내는 것이다.
+        # 먼저 보낸 명령을 그대로 반영해 즉시 반응을 보여주고(왕복을 기다리면 무대에서
+        # 굼떠 보인다), 곧바로 실물을 다시 읽어 그 값으로 덮는다. 실물의 성공 여부는
+        # 배지로 따로 말한다 — dispatch가 실패했는데 그림만 밝아지면 성공을 지어내는 것이다.
         self._virtual_bulb.apply(intent)
+        self._bulb_verified = False
         if outcome.executed:
             badge = "OK · " + outcome.detail
         elif outcome.stage is ExecutionStage.DISPATCHED:
@@ -1971,7 +2006,12 @@ class MainWindow(QMainWindow):
         else:
             badge = "미전달: " + outcome.detail
         self._last_bulb_badge = (badge, outcome.executed)
-        self._demo_panel.set_bulb(self._virtual_bulb, badge=badge, ok=outcome.executed)
+        self._demo_panel.set_bulb(
+            self._virtual_bulb, badge=badge, ok=outcome.executed, verified=False
+        )
+        # 실물 재확인. 화면 누적값과 전구의 실제 값이 어긋나 있어도 여기서 다시 맞는다
+        # (밝기·색은 전구가 가진 절대 상태이고, 어댑터의 상대 연산도 그 값을 기준으로 한다).
+        self.start_bulb_probe(quiet=True)
 
     def _on_execution_failed(self, message: str) -> None:
         self._log.error(message)
