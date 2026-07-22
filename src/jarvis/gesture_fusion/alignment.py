@@ -301,3 +301,22 @@ class TemporalAligner:
             return AlignmentResult(False, "missing onset timestamp", None, 0.0, 0.0)
 
         return check_alignment(self._lock_tracker.state, onset_ms, estimate.timestamp_ms)
+
+    def evaluate_active(self, estimate: GestureEstimate) -> AlignmentResult | None:
+        """진행 중(`ACTIVE`)인 제스처를 **지금 시각 기준**으로 정렬 평가한다(조기 발사용).
+
+        `push_gesture`와 두 가지가 다르다:
+
+        1. **onset을 소비하지 않는다.** 이벤트는 아직 끝나지 않았고 뒤이어 ENDING이
+           와야 하므로, 시작 시각을 지우면 그 ENDING이 "missing onset"으로 거부된다.
+        2. **상태를 바꾸지 않는다.** 순수 조회라 조기 발사를 안 하기로 해도 부작용이 없다.
+
+        조건 2("제스처가 lock보다 먼저 시작했는가")는 ONSET 시각으로 판정하므로 진행
+        중에도 동일하게 검사할 수 있다. 아직 ACTIVE가 아니거나 ONSET을 못 본 경우 `None`.
+        """
+        if estimate.phase != GesturePhase.ACTIVE:
+            return None
+        onset_ms = self._onset_timestamp_ms
+        if onset_ms is None:
+            return None
+        return check_alignment(self._lock_tracker.state, onset_ms, estimate.timestamp_ms)

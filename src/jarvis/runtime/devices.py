@@ -52,7 +52,7 @@ SMARTTHINGS_ADAPTER = "smartthings"
 
 
 def _laptop_profile() -> DeviceProfile:
-    """노트북 capability. scroll/volume/window_switch 모두 상대 연산 전용."""
+    """노트북 capability. scroll/volume/desktop_switch 모두 상대 연산 전용."""
     relative: Capability = NumberCapability(
         minimum=0, maximum=100, step=1, operations=_RELATIVE_OPS
     )
@@ -62,7 +62,7 @@ def _laptop_profile() -> DeviceProfile:
         capabilities={
             "scroll": relative,
             "volume": relative,
-            "window_switch": relative,
+            "desktop_switch": relative,
         },
     )
 

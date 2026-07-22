@@ -37,12 +37,15 @@ _NX_KEYTYPE = {
 # 감각을 맞추는 정도로 충분 — 정밀 매핑은 실기기 튜닝 대상).
 _SCROLL_UNIT_LINE = 1
 
-# 표준 ANSI 키보드 keycode(Carbon HIToolbox/Events.h). Cmd+Tab 창 전환용.
+# 표준 ANSI 키보드 keycode(Carbon HIToolbox/Events.h).
 _KEYCODE_TAB = 0x30
 _KEYCODE_COMMAND = 0x37
 _KEYCODE_SHIFT = 0x38
+_KEYCODE_CONTROL = 0x3B  # Ctrl — Space(가상 데스크톱) 전환 modifier
 _KEYCODE_F11 = 0x67  # 바탕화면 표시
 _KEYCODE_W = 0x0D  # 탭 닫기(Cmd+W)용
+_KEYCODE_LEFT = 0x7B  # ← 화살표 — 이전 Space
+_KEYCODE_RIGHT = 0x7C  # → 화살표 — 다음 Space
 
 
 def dock_transition(
@@ -183,7 +186,7 @@ class MacOSInputSink:
     def _tap_close_tab(self) -> None:
         """Cmd+W로 현재 탭(또는 창)을 닫는다.
 
-        `switch_window`의 Cmd+Tab과 같은 구조: Command 플래그를 실은 W 키를
+        `switch_desktop`의 Ctrl+화살표와 같은 구조: Command 플래그를 실은 W 키를
         누름→뗌으로 보낸다. 표준 keycode 경로라 미디어 키(NSEvent)와 달리
         Quartz 키보드 이벤트로 충분하다. 앱이 정의한 '탭 또는 창 닫기'로 동작한다.
         """
@@ -323,30 +326,29 @@ class MacOSInputSink:
         self._desktop_bounds_cache = cached
         return cached
 
-    def switch_window(self, forward: bool, repeat: int) -> None:
-        """Cmd+Tab (forward) / Cmd+Shift+Tab (backward)로 창을 전환한다.
+    def switch_desktop(self, forward: bool, repeat: int) -> None:
+        """Ctrl+→ (forward) / Ctrl+← (backward)로 Space(가상 데스크톱)를 전환한다.
 
-        Win32의 Alt+Tab hold와 같은 구조: Command를 누른 채로 Tab을 repeat번
-        누른다. Quartz 키 이벤트에 Command(+backward면 Shift) 플래그를 실어
-        보내며, 앱 스위처가 뜬 상태를 유지하도록 Command down/up으로 감싼다.
+        Win32의 Ctrl+Win+화살표 hold와 같은 구조: Control을 누른 채로 화살표를
+        repeat번 눌러 여러 칸을 이동한다. Quartz 키 이벤트에 Control 플래그를
+        실어 보내며, Control down/up으로 감싼다.
+
+        macOS의 "Mission Control > 이전/다음 Space로 이동" 단축키(기본 Ctrl+←/→)에
+        의존한다 — 설정 > 키보드 > 단축키 > Mission Control에서 꺼져 있거나 다른
+        키로 바뀌었으면 동작하지 않는다(기본값은 켜져 있다).
         """
         import Quartz
 
-        flags = Quartz.kCGEventFlagMaskCommand
-        if not forward:
-            flags |= Quartz.kCGEventFlagMaskShift
+        arrow = _KEYCODE_RIGHT if forward else _KEYCODE_LEFT
+        flags = Quartz.kCGEventFlagMaskControl
 
         def key(code: int, key_down: bool, event_flags: int) -> None:
             event = Quartz.CGEventCreateKeyboardEvent(None, code, key_down)
             Quartz.CGEventSetFlags(event, event_flags)
             self._post(event)
 
-        key(_KEYCODE_COMMAND, True, Quartz.kCGEventFlagMaskCommand)
-        if not forward:
-            key(_KEYCODE_SHIFT, True, flags)
+        key(_KEYCODE_CONTROL, True, flags)
         for _ in range(repeat):
-            key(_KEYCODE_TAB, True, flags)
-            key(_KEYCODE_TAB, False, flags)
-        if not forward:
-            key(_KEYCODE_SHIFT, False, Quartz.kCGEventFlagMaskCommand)
-        key(_KEYCODE_COMMAND, False, 0)
+            key(arrow, True, flags)
+            key(arrow, False, flags)
+        key(_KEYCODE_CONTROL, False, 0)

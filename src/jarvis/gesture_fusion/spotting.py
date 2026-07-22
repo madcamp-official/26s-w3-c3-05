@@ -44,8 +44,17 @@ class SpotterConfig:
     """Gesture spotting 디바운스·게이팅 파라미터."""
 
     min_consecutive_frames: int = 2
-    """gesture 활성/비활성 신호가 이 수만큼 연속으로 같아야 상태 전이를 확정한다
-    (단일 프레임 노이즈 억제). 활성 = 비배경 label + 확신도 임계 이상."""
+    """gesture **활성** 신호가 이 수만큼 연속으로 같아야 전이를 확정한다(단일 프레임
+    노이즈 억제). 활성 = 비배경 label + 확신도 임계 이상."""
+
+    min_release_frames: int = 1
+    """gesture **비활성**(종료) 확정에 필요한 연속 프레임 수 — 진입과 비대칭이다.
+
+    ENDING은 "제스처가 끝났다"가 아니라 "더 이상 감지되지 않는다"로 정의되므로
+    (`_advance`), 이 값이 곧 "동작을 멈춘 뒤 명령이 나가기까지의 고정 지연"이다.
+    12fps 추론에서 2프레임이면 약 167ms가 그대로 반응 지연에 실린다. 진입을 느리게
+    두는 이유(오발 방지)는 종료에는 해당하지 않는다 — 종료를 한 프레임 일찍 인정해서
+    생기는 최악은 "이미 하던 제스처가 조금 일찍 확정되는 것"이라 위험이 비대칭이다."""
 
     min_onset_gesture_confidence: float = 0.5
     """제스처를 "활성"으로 인정할 gesture 분류 확신도 하한. 이 값 미만이면 배경과
@@ -64,6 +73,8 @@ class SpotterConfig:
     def __post_init__(self) -> None:
         if self.min_consecutive_frames < 1:
             raise ValueError("min_consecutive_frames must be at least 1")
+        if self.min_release_frames < 1:
+            raise ValueError("min_release_frames must be at least 1")
         if not math.isfinite(self.min_onset_gesture_confidence) or not (
             0.0 <= self.min_onset_gesture_confidence <= 1.0
         ):
@@ -165,10 +176,12 @@ class GestureSpotter:
         )
 
     def _debounce(self, active: bool) -> bool | None:
-        """활성 신호가 `min_consecutive_frames` 연속으로 같을 때만 확정값으로 인정한다.
+        """같은 신호가 연속으로 충분히 반복될 때만 확정값으로 인정한다.
 
-        아직 확정되지 않았으면(스트릭이 임계값 미만) `None`을 반환해 `_advance`가
-        전이를 시도하지 않게 한다(단일 프레임 깜빡임 억제).
+        임계는 **방향에 따라 다르다**: 활성(진입)은 `min_consecutive_frames`, 비활성
+        (종료)은 `min_release_frames`. 종료 임계가 곧 반응 지연이라 더 짧게 둔다
+        (`SpotterConfig.min_release_frames` 참조). 아직 확정되지 않았으면 `None`을
+        반환해 `_advance`가 전이를 시도하지 않게 한다(단일 프레임 깜빡임 억제).
         """
         if active == self._pending_active:
             self._pending_streak += 1
@@ -176,7 +189,10 @@ class GestureSpotter:
             self._pending_active = active
             self._pending_streak = 1
 
-        if self._pending_streak >= self._config.min_consecutive_frames:
+        required = (
+            self._config.min_consecutive_frames if active else self._config.min_release_frames
+        )
+        if self._pending_streak >= required:
             return active
         return None
 

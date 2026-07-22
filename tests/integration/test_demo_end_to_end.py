@@ -176,8 +176,8 @@ def test_slide_left_right_reach_the_bulb_as_brightness(tmp_path: Path) -> None:
         assert adapter.calls[0].operation == operation
 
 
-def test_same_slide_left_means_window_switch_on_the_laptop(tmp_path: Path) -> None:
-    """같은 좌측 슬라이드가 노트북에서는 창 전환이다 — 기기별 재해석."""
+def test_same_slide_left_means_desktop_switch_on_the_laptop(tmp_path: Path) -> None:
+    """같은 좌측 슬라이드가 노트북에서는 가상 데스크톱 전환이다 — 기기별 재해석."""
     bridge = _bridge(tmp_path, {"target_002": LAPTOP_DEVICE_ID})
     decision = _run_event(bridge, "target_002", "slide_two_fingers_left")
     assert decision is not None
@@ -185,7 +185,7 @@ def test_same_slide_left_means_window_switch_on_the_laptop(tmp_path: Path) -> No
     adapter = FakeAdapter()
     outcome = _executor({LAPTOP_ADAPTER: adapter}).execute(decision)
     assert outcome.executed is True
-    assert adapter.calls[0].capability == "window_switch"
+    assert adapter.calls[0].capability == "desktop_switch"
 
 
 def test_rotate_reaches_the_bulb_as_color(tmp_path: Path) -> None:
