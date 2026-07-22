@@ -66,6 +66,7 @@ from jarvis.calibration.target_registration import RegistrationPhase, TargetRegi
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.lock import GazeLockState
+from jarvis.gaze.registration_lint import lint_target_record
 from jarvis.gaze.session_report import build_report, format_report, load_session
 from jarvis.gaze.smoothing import SmoothedGaze
 from jarvis.gesture_fusion.landmarks import HandObservation
@@ -1991,6 +1992,10 @@ class MainWindow(QMainWindow):
                 f"정밀 테두리 {self._registration.boundary_valid_frame_count} frames) | "
                 f"{self._registration.diagnostic_summary()}"
             )
+            # 등록 품질 린트: 스윕 커버리지·clamp·희박 bin 문제를 지금 잡아야
+            # 나중에 "왜 안 되지"로 돌아오지 않는다.
+            for warning in lint_target_record(record, self._gaze_config):
+                self._log.warn(f"등록 린트 [{record.name}]: {warning}")
         except ValueError as exc:
             self._log.warn(f"기기 등록 실패: {exc} | {self._registration.diagnostic_summary()}")
         finally:

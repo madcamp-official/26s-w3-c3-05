@@ -121,6 +121,49 @@ def _bin_label(lower: float, upper: float) -> str:
     return f"[{left},{right})"
 
 
+def export_sweep_samples(
+    path,
+    *,
+    target_id: str,
+    name: str,
+    center_yaw_pitch: tuple[float, float],
+    samples: Sequence[TargetFeatureSample],
+    label: str,
+) -> None:
+    """검증 스윕의 원시 샘플을 등록 export와 같은 스키마로 저장한다.
+
+    등록 없이도 스윕 한 번이 세션 데이터 파일 하나가 되게 하는 배관이다 —
+    비선형 residual 후보의 교차 세션 관문(`jarvis-gaze ab-residual --train/--eval`)
+    은 서로 다른 세션의 파일을 요구한다. `feature_names`/`samples` 키가 등록
+    export(`target_registration._export_raw_samples`)와 동일해 어느 쪽 파일이든
+    같은 로더로 읽힌다.
+    """
+    import json
+    from pathlib import Path
+
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "target_id": target_id,
+        "name": name,
+        "label": label,
+        "center_yaw_pitch": [float(center_yaw_pitch[0]), float(center_yaw_pitch[1])],
+        "reference_head_yaw_deg": None,
+        "feature_names": [
+            "gaze_yaw",
+            "gaze_pitch",
+            "head_yaw",
+            "head_pitch",
+            "head_roll",
+            "face_scale",
+            "face_center_x",
+            "face_center_y",
+        ],
+        "samples": [[float(value) for value in sample.as_array()] for sample in samples],
+    }
+    output.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 _MINIMUM_COMPARE_FRAMES = 8
 """이보다 표본이 적은 bin은 비교 판정에서 제외한다(우연을 결론으로 만들지 않는다)."""
 

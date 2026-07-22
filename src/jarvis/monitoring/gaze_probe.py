@@ -956,6 +956,19 @@ class GazeProbe:
         assert isinstance(self._adapter, FaceLandmarkerAdapter)
         started = time.monotonic()
         observation = self._adapter.process(rgb_frame, timestamp_ms, frame_id)
+        return self.process_observation(
+            observation, inference_ms=(time.monotonic() - started) * 1000.0
+        )
+
+    def process_observation(
+        self, observation: FaceObservation, *, inference_ms: float = 0.0
+    ) -> GazeSnapshot:
+        """이미 얻은 FaceObservation 하나를 파이프라인에 통과시킨다.
+
+        `process_rgb`의 상태 스레딩(iris jump/blink/motion 기억)을 그대로
+        수행하는 유일한 경로다 — 세션 리플레이가 카메라 없이 같은 동작을
+        재현할 때도 이 메서드를 쓴다(복제 금지).
+        """
         iris_is_stable = observation.face_detected and (
             _unstable_iris_reason(
                 observation,
@@ -975,7 +988,7 @@ class GazeProbe:
             classifier=self._classifier,
             lock=self._lock,
             config=self._config,
-            inference_ms=(time.monotonic() - started) * 1000.0,
+            inference_ms=inference_ms,
             target_labels=self._target_labels,
             previous_iris_offset=self._previous_iris_offset,
             last_closed_eye_ms=self._last_closed_eye_ms,

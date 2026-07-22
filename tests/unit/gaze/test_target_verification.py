@@ -120,6 +120,32 @@ def test_compare_reports_stable_and_skips_thin_bins() -> None:
     assert not any("세션 드리프트" in line for line in lines)
 
 
+def test_export_sweep_samples_round_trips_registration_schema(tmp_path) -> None:
+    """스윕 export가 등록 export와 같은 스키마라 ab-residual 로더로 그대로 읽힌다."""
+    import json
+
+    import numpy as np
+
+    from jarvis.gaze.target_verification import export_sweep_samples
+
+    samples = [_sample(1.0, 2.0, head_yaw=5.0), _sample(-1.0, 0.5, head_yaw=-15.0)]
+    path = tmp_path / "sweep.json"
+    export_sweep_samples(
+        path,
+        target_id="monitor",
+        name="모니터",
+        center_yaw_pitch=(0.5, 6.0),
+        samples=samples,
+        label="session-b",
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["target_id"] == "monitor"
+    assert payload["center_yaw_pitch"] == [0.5, 6.0]
+    assert len(payload["samples"]) == 2
+    restored = TargetFeatureSample.from_array(np.asarray(payload["samples"][0]))
+    assert restored == samples[0]
+
+
 def test_compare_with_no_overlap_asks_for_wider_sweep() -> None:
     lines = compare_verifications([], [_bin_dict("[-10,+10)", 1.0)])
     assert any("비교 가능한 bin이 없습니다" in line for line in lines)
