@@ -157,3 +157,45 @@ def test_fallback_reaches_adapter_without_any_gaze(tmp_path: Path) -> None:
     assert outcome.executed is True
     assert adapter.calls[0].capability == "volume"
     assert adapter.calls[0].operation == "increment"
+
+
+def test_slide_left_right_reach_the_bulb_as_brightness(tmp_path: Path) -> None:
+    """좌우 슬라이드도 전구에서는 밝기다 — 상하가 잘 안 잡힐 때의 이중 경로."""
+    for gesture, operation in (
+        ("slide_two_fingers_left", "decrement"),
+        ("slide_two_fingers_right", "increment"),
+    ):
+        bridge = _bridge(tmp_path, {"target_001": BULB_DEVICE_ID})
+        decision = _run_event(bridge, "target_001", gesture)
+        assert decision is not None and decision.committed
+
+        adapter = FakeAdapter()
+        outcome = _executor({BULB_ADAPTER: adapter}).execute(decision)
+        assert outcome.executed is True
+        assert adapter.calls[0].capability == "brightness"
+        assert adapter.calls[0].operation == operation
+
+
+def test_same_slide_left_means_window_switch_on_the_laptop(tmp_path: Path) -> None:
+    """같은 좌측 슬라이드가 노트북에서는 창 전환이다 — 기기별 재해석."""
+    bridge = _bridge(tmp_path, {"target_002": LAPTOP_DEVICE_ID})
+    decision = _run_event(bridge, "target_002", "slide_two_fingers_left")
+    assert decision is not None
+
+    adapter = FakeAdapter()
+    outcome = _executor({LAPTOP_ADAPTER: adapter}).execute(decision)
+    assert outcome.executed is True
+    assert adapter.calls[0].capability == "window_switch"
+
+
+def test_rotate_reaches_the_bulb_as_color(tmp_path: Path) -> None:
+    """회전은 색온도가 아니라 색상이다(2026-07-22 변경)."""
+    bridge = _bridge(tmp_path, {"target_001": BULB_DEVICE_ID})
+    decision = _run_event(bridge, "target_001", "rotate_clockwise")
+    assert decision is not None
+
+    adapter = FakeAdapter()
+    outcome = _executor({BULB_ADAPTER: adapter}).execute(decision)
+    assert outcome.executed is True
+    assert adapter.calls[0].capability == "color"
+    assert adapter.calls[0].operation == "increment"

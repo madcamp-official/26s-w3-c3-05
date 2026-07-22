@@ -44,6 +44,7 @@ from jarvis.monitoring.virtual_bulb import (
     COLOR_TEMPERATURE_MIN,
     VirtualBulbState,
 )
+from jarvis.runtime_protocol.adapters.wiz import hue_to_rgb
 
 _NO_DEVICE = "(연결 안 함)"
 
@@ -96,17 +97,23 @@ class BulbView(QWidget):
     def _bulb_color(self) -> QColor:
         if not self._state.power:
             return QColor("#21262d")
-        # 색온도 → 따뜻한 주황(2700K) ↔ 차가운 흰(6500K) 사이 선형 보간.
-        span = COLOR_TEMPERATURE_MAX - COLOR_TEMPERATURE_MIN
-        warmth = (self._state.color_temperature - COLOR_TEMPERATURE_MIN) / span
-        warmth = max(0.0, min(1.0, warmth))
-        red = 255
-        green = int(170 + 70 * warmth)
-        blue = int(90 + 155 * warmth)
+        red, green, blue = self._tint()
         # 밝기는 명도로. 하한이 10이라 완전히 검어지지는 않는다(꺼짐과 구분).
         level = (self._state.brightness - BRIGHTNESS_MIN) / (BRIGHTNESS_MAX - BRIGHTNESS_MIN)
         scale = 0.35 + 0.65 * max(0.0, min(1.0, level))
         return QColor(int(red * scale), int(green * scale), int(blue * scale))
+
+    def _tint(self) -> tuple[int, int, int]:
+        """색조. 실물 WiZ와 같이 색상 모드와 색온도 모드 중 하나를 따른다."""
+        if self._state.color_mode:
+            # 색상 모드: adapter가 기기로 보내는 것과 **같은** 변환을 쓴다 — 화면과
+            # 실물이 서로 다른 색을 내면 시연에서 바로 들통난다.
+            return hue_to_rgb(self._state.hue)
+        # 색온도 모드: 따뜻한 주황(2700K) ↔ 차가운 흰(6500K) 사이 선형 보간.
+        span = COLOR_TEMPERATURE_MAX - COLOR_TEMPERATURE_MIN
+        warmth = (self._state.color_temperature - COLOR_TEMPERATURE_MIN) / span
+        warmth = max(0.0, min(1.0, warmth))
+        return 255, int(170 + 70 * warmth), int(90 + 155 * warmth)
 
 
 class DemoPanel(QWidget):

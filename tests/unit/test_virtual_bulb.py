@@ -138,3 +138,63 @@ def test_boolean_value_rejected_for_number_capability() -> None:
 def test_describe_distinguishes_power_off() -> None:
     assert VirtualBulbState(power=False).describe() == "전원 꺼짐"
     assert "밝기" in VirtualBulbState(power=True, brightness=40).describe()
+
+
+# --- 색상(hue): 순환하고, 모드를 전환한다 ---
+
+
+def test_hue_cycles_forward_through_a_full_turn() -> None:
+    """회전을 6번이면 한 바퀴 — 클램프하면 시연에서 색이 양 끝에 붙어 죽는다."""
+    bulb = VirtualBulbState()
+    seen = []
+    for _ in range(6):
+        bulb.apply(_intent(capability="color", operation="increment", value=60))
+        seen.append(bulb.hue)
+    assert seen == [60, 120, 180, 240, 300, 0]
+
+
+def test_hue_wraps_backward_below_zero() -> None:
+    bulb = VirtualBulbState(hue=0)
+    bulb.apply(_intent(capability="color", operation="decrement", value=60))
+    assert bulb.hue == 300
+
+
+def test_color_command_switches_to_color_mode() -> None:
+    """실물 WiZ는 r/g/b를 받으면 CCT 모드에서 색상 모드로 넘어간다."""
+    bulb = VirtualBulbState()
+    assert bulb.color_mode is False
+    bulb.apply(_intent(capability="color", operation="increment", value=60))
+    assert bulb.color_mode is True
+
+
+def test_color_temperature_command_switches_back_to_cct_mode() -> None:
+    bulb = VirtualBulbState(color_mode=True, hue=120)
+    bulb.apply(_intent(capability="color_temperature", operation="increment", value=100))
+    assert bulb.color_mode is False
+
+
+def test_brightness_does_not_change_the_mode() -> None:
+    bulb = VirtualBulbState(color_mode=True, hue=120)
+    bulb.apply(_intent(capability="brightness", operation="decrement", value=30))
+    assert bulb.color_mode is True
+    assert bulb.hue == 120
+
+
+def test_hue_rejects_boolean_value() -> None:
+    bulb = VirtualBulbState()
+    assert bulb.apply(_intent(capability="color", operation="increment", value=True)) is False
+    assert bulb.hue == 0
+
+
+def test_describe_follows_the_active_mode() -> None:
+    assert "색온도" in VirtualBulbState(color_mode=False).describe()
+    described = VirtualBulbState(color_mode=True, hue=120).describe()
+    assert "색상" in described and "초록" in described
+
+
+def test_hue_name_covers_the_whole_circle() -> None:
+    """이름 없는 각도가 없어야 한다 — 시연에서 '색상 210°'만 뜨면 읽히지 않는다."""
+    from jarvis.monitoring.virtual_bulb import hue_name
+
+    assert all(hue_name(deg) for deg in range(0, 360, 5))
+    assert hue_name(0) == hue_name(359) == "빨강"  # 원형으로 이어진다

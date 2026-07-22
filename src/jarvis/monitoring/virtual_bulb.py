@@ -31,6 +31,10 @@ BRIGHTNESS_MAX = 100
 COLOR_TEMPERATURE_MIN = 2700
 COLOR_TEMPERATURE_MAX = 6500
 
+# 색상은 순환량이라 상·하한이 벽이 아니라 한 바퀴의 경계다 — 클램프가 아니라 감아 돈다
+# (WizAdapter `_apply_color`와 같은 규약).
+HUE_DEGREES = 360
+
 
 def _clamp(value: float, low: int, high: int) -> int:
     return int(max(low, min(high, value)))
@@ -49,6 +53,16 @@ class VirtualBulbState:
     power: bool = True
     brightness: int = 60
     color_temperature: int = 4000
+    hue: int = 0
+    """색상각(도). `color_mode`가 True일 때만 화면에 반영된다."""
+
+    color_mode: bool = False
+    """RGB(색상) 모드인가, CCT(색온도) 모드인가.
+
+    실물 WiZ는 둘 중 하나로만 켜진다 — r/g/b를 보내면 색상 모드로, temp를 보내면
+    색온도 모드로 넘어간다. 어느 쪽 명령을 마지막에 보냈는지를 그대로 따라가야
+    화면과 실물이 갈리지 않는다.
+    """
 
     def apply(self, intent: Intent) -> bool:
         """전구를 향한 Intent 하나를 반영한다. 반영했으면 True.
@@ -63,10 +77,32 @@ class VirtualBulbState:
         if intent.capability == "brightness":
             return self._apply_number(intent, "brightness", BRIGHTNESS_MIN, BRIGHTNESS_MAX)
         if intent.capability == "color_temperature":
-            return self._apply_number(
+            applied = self._apply_number(
                 intent, "color_temperature", COLOR_TEMPERATURE_MIN, COLOR_TEMPERATURE_MAX
             )
+            if applied:
+                self.color_mode = False  # temp를 보내면 실물도 CCT 모드로 돌아간다
+            return applied
+        if intent.capability == "color":
+            return self._apply_hue(intent)
         return False
+
+    def _apply_hue(self, intent: Intent) -> bool:
+        """색상각. 다른 수치와 달리 클램프가 아니라 **순환**한다 — 회전을 계속하면 한 바퀴 돈다."""
+        if isinstance(intent.value, bool) or not isinstance(intent.value, (int, float)):
+            return False
+        delta = float(intent.value)
+        if intent.operation == Operation.INCREMENT:
+            updated = self.hue + delta
+        elif intent.operation == Operation.DECREMENT:
+            updated = self.hue - delta
+        elif intent.operation == Operation.SET:
+            updated = delta
+        else:
+            return False
+        self.hue = int(round(updated)) % HUE_DEGREES
+        self.color_mode = True  # r/g/b를 보내면 실물도 색상 모드로 넘어간다
+        return True
 
     def _apply_power(self, intent: Intent) -> bool:
         if intent.operation == Operation.TOGGLE:
@@ -94,7 +130,33 @@ class VirtualBulbState:
         return True
 
     def describe(self) -> str:
-        """한 줄 요약(로그·툴팁용)."""
+        """한 줄 요약(로그·툴팁용). 지금 어느 모드인지에 따라 색상/색온도를 골라 보여준다."""
         if not self.power:
             return "전원 꺼짐"
-        return f"밝기 {self.brightness}% · 색온도 {self.color_temperature}K"
+        tint = (
+            f"색상 {self.hue}° ({hue_name(self.hue)})"
+            if self.color_mode
+            else f"색온도 {self.color_temperature}K"
+        )
+        return f"밝기 {self.brightness}% · {tint}"
+
+
+# 색상각 → 사람이 읽는 이름. 60도마다 이름이 바뀌므로 시연에서 한 스텝의 변화가
+# 이름 수준에서 드러난다("빨강 → 노랑"), 숫자만 볼 때보다 무대에서 확인하기 쉽다.
+_HUE_NAMES: tuple[tuple[int, str], ...] = (
+    (15, "빨강"),
+    (45, "주황"),
+    (75, "노랑"),
+    (165, "초록"),
+    (195, "청록"),
+    (255, "파랑"),
+    (285, "보라"),
+    (345, "자홍"),
+)
+
+
+def hue_name(hue_deg: int) -> str:
+    for upper, name in _HUE_NAMES:
+        if hue_deg % HUE_DEGREES < upper:
+            return name
+    return "빨강"  # 345도 이상은 다시 빨강으로 감긴다

@@ -20,11 +20,17 @@
 │   ├── runtime_protocol/             # 3인: Runtime & Device Protocol
 │   │   ├── capture/                  # 카메라·timestamp·bounded queue
 │   │   ├── protocol/                 # capability·TTL·ACK·dedup
-│   │   ├── adapters/                 # Windows·SmartThings 실제 실행
+│   │   ├── adapters/                 # Windows·SmartThings·WiZ(전구 로컬 UDP) 실제 실행
 │   │   └── telemetry/                # trace·상태 전이·latency
+│   ├── runtime/                      # composition root: 기기 레지스트리·executor 배선(devices.py)
 │   ├── calibration/                  # 기기 등록 및 사용자 calibration
 │   ├── pointer/                      # 커서·pinch click·drag 연속 제어
-│   └── monitoring/                   # 최소 로컬 모니터링 UI (pose_control.py: 자세→실제 OS 입력)
+│   └── monitoring/                   # 로컬 모니터링·시연 UI
+│       # pose_control.py: 자세→실제 OS 입력
+│       # demo_bridge.py: 실시간 gaze·gesture 스트림→FusionEngine 배선(시연 탭 코어, Qt 무관)
+│       # execute_worker.py: 기기 명령 비동기 실행(UDP 타임아웃 GUI 프리징 방지)
+│       # virtual_bulb.py: dispatch된 Intent를 화면에 시각화(명령 기준, 실물 응답 아님)
+│       # demo_panel.py: 시연 탭 위젯
 ├── tests/
 │   ├── unit/                         # 모듈 내부 로직
 │   ├── contract/                     # producer-consumer 메시지 호환성
@@ -57,9 +63,12 @@ gesture_fusion ──────┘
 
 calibration -> gaze
 pointer -> contracts + runtime_protocol/adapters
-monitoring -> contracts + telemetry
+runtime -> contracts + runtime_protocol (composition root: 기기 레지스트리·executor)
+monitoring -> contracts + telemetry + gesture_fusion + runtime (시연 배선)
 ```
 
 세 핵심 모듈은 서로의 내부 파일을 직접 import하지 않는다. 데이터 교환은
-`jarvis.contracts`를 통하고, 실제 조립은 Runtime의 composition root에서 수행한다.
+`jarvis.contracts`를 통하고, 실제 조립은 `jarvis.runtime`의 composition root에서 수행한다.
+`monitoring`의 시연 탭(`demo_bridge`)은 공동 소유 배선 계층으로, 실시간 두 계약 스트림을
+`FusionEngine`에 물려 composition root의 `IntentExecutor`까지 잇는다.
 

@@ -10,6 +10,8 @@ from jarvis.contracts.messages import Command
 from jarvis.runtime_protocol.adapters.base import AdapterStatus
 from jarvis.runtime_protocol.adapters.wiz import (
     UdpWizTransport,
+    hue_to_rgb,
+    rgb_to_hue,
     WizAdapter,
     WizConfig,
     WizTimeout,
@@ -33,6 +35,10 @@ def _profile() -> DeviceProfile:
             "power": BooleanCapability(),
             "brightness": NumberCapability(minimum=10, maximum=100, step=10),
             "color_temperature": NumberCapability(minimum=2700, maximum=6500, step=100),
+            "color": NumberCapability(
+                minimum=0, maximum=360, step=30,
+                operations=frozenset({"increment", "decrement"}),
+            ),
         },
     )
 
@@ -278,3 +284,114 @@ def test_resolution_raises_when_mac_undiscoverable(monkeypatch: pytest.MonkeyPat
     transport = UdpWizTransport()
     with pytest.raises(WizTimeout, match="MAC@IP"):
         transport._resolve(parse_target("9877d5cffaf8"), rediscover=False)
+
+
+# --- color(색상) ---------------------------------------------------------------
+#
+# 색상은 WiZ에 대응 파라미터가 없어(기기는 r/g/b를 받는다) 다른 수치 capability와
+# 다른 경로를 탄다. 그리고 유일하게 **클램프가 아니라 순환**한다 — 클램프하면 회전
+# 제스처가 양 끝 색에서 죽어 시연이 멈춘 것처럼 보인다.
+
+
+def _state_at_hue(hue: float) -> dict[str, object]:
+    red, green, blue = hue_to_rgb(hue)
+    return {"state": True, "dimming": 50, "r": red, "g": green, "b": blue}
+
+
+def test_hue_to_rgb_hits_the_primaries() -> None:
+    assert hue_to_rgb(0) == (255, 0, 0)
+    assert hue_to_rgb(120) == (0, 255, 0)
+    assert hue_to_rgb(240) == (0, 0, 255)
+
+
+def test_hue_to_rgb_wraps_at_a_full_turn() -> None:
+    assert hue_to_rgb(360) == hue_to_rgb(0)
+    assert hue_to_rgb(420) == hue_to_rgb(60)
+
+
+def test_rgb_to_hue_round_trips() -> None:
+    for hue in (0, 60, 120, 180, 240, 300):
+        assert abs(rgb_to_hue(*hue_to_rgb(hue)) - hue) < 1.0
+
+
+def test_rgb_to_hue_treats_greyscale_as_zero() -> None:
+    """CCT 모드에서는 r/g/b가 없거나 같다 — 색상을 지어내지 않고 0도에서 시작한다."""
+    assert rgb_to_hue(0, 0, 0) == 0.0
+    assert rgb_to_hue(200, 200, 200) == 0.0
+
+
+def test_color_increment_sends_rgb_not_temp() -> None:
+    transport = FakeTransport(_state_at_hue(0))
+    adapter = WizAdapter(WizConfig({"room.bulb": TARGET}), transport)
+    result = adapter.execute(_command("color", "increment", 60), _profile())
+
+    assert result.status is AdapterStatus.VERIFIED
+    sent = transport.sent[0]
+    assert set(sent) == {"r", "g", "b"}  # temp를 건드리지 않는다(모드 전환)
+    assert sent == dict(zip("rgb", hue_to_rgb(60)))
+
+
+def test_color_wraps_forward_past_a_full_turn() -> None:
+    """330도에서 +60도는 30도다 — 360도 벽에 부딪혀 멈추지 않는다."""
+    transport = FakeTransport(_state_at_hue(330))
+    adapter = WizAdapter(WizConfig({"room.bulb": TARGET}), transport)
+    result = adapter.execute(_command("color", "increment", 60), _profile())
+
+    assert result.status is AdapterStatus.VERIFIED
+    assert abs(rgb_to_hue(*(transport.sent[0][k] for k in "rgb")) - 30) < 1.0
+
+
+def test_color_wraps_backward_below_zero() -> None:
+    transport = FakeTransport(_state_at_hue(30))
+    adapter = WizAdapter(WizConfig({"room.bulb": TARGET}), transport)
+    result = adapter.execute(_command("color", "decrement", 60), _profile())
+
+    assert result.status is AdapterStatus.VERIFIED
+    assert abs(rgb_to_hue(*(transport.sent[0][k] for k in "rgb")) - 330) < 1.0
+
+
+def test_color_starts_from_red_when_bulb_is_in_cct_mode() -> None:
+    """r/g/b가 아예 없는 상태(CCT 모드)에서도 실패하지 않고 0도 기준으로 움직인다."""
+    transport = FakeTransport({"state": True, "dimming": 50, "temp": 4000})
+    adapter = WizAdapter(WizConfig({"room.bulb": TARGET}), transport)
+    result = adapter.execute(_command("color", "increment", 60), _profile())
+
+    assert result.status is AdapterStatus.VERIFIED
+    assert transport.sent[0] == dict(zip("rgb", hue_to_rgb(60)))
+
+
+def test_color_reports_unverified_when_device_disagrees() -> None:
+    """되읽은 색이 보낸 색과 다르면 성공을 지어내지 않는다."""
+    transport = FakeTransport(_state_at_hue(0))
+
+    def _send(target: str, payload: Mapping[str, object], timeout_s: float) -> Mapping[str, object]:
+        method = payload.get("method")
+        if method == "setPilot":
+            transport.sent.append(dict(payload.get("params") or {}))  # type: ignore[arg-type]
+            return {"result": {"success": True}}
+        return {"result": _state_at_hue(200)}  # 엉뚱한 색을 보고한다
+
+    transport.send = _send  # type: ignore[assignment]
+    adapter = WizAdapter(WizConfig({"room.bulb": TARGET}), transport)
+    result = adapter.execute(_command("color", "increment", 60), _profile())
+
+    assert result.status is AdapterStatus.UNVERIFIED
+    assert "device reports" in result.detail
+
+
+def test_color_rejects_non_numeric_value() -> None:
+    transport = FakeTransport(_state_at_hue(0))
+    adapter = WizAdapter(WizConfig({"room.bulb": TARGET}), transport)
+    result = adapter.execute(_command("color", "increment", True), _profile())
+
+    assert result.status is AdapterStatus.FAILED
+    assert transport.sent == []  # 아무것도 보내지 않았다
+
+
+def test_color_rejects_unsupported_operation() -> None:
+    transport = FakeTransport(_state_at_hue(0))
+    adapter = WizAdapter(WizConfig({"room.bulb": TARGET}), transport)
+    result = adapter.execute(_command("color", "toggle", 60), _profile())
+
+    assert result.status is AdapterStatus.FAILED
+    assert transport.sent == []
