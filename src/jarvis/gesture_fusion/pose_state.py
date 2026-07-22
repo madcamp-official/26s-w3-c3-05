@@ -46,7 +46,7 @@ MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP = 9, 10, 11, 12
 # 그 외 자세(index_point·two_fingers·open_palm·fist)는 모두 기본값(120)을 쓴다.
 DWELL_MS: dict[str, int] = {
     "pinch_index": 30,
-    "pinch_middle": 30,
+    "pinch_middle": 60,
     # 검지 포즈(커서)는 반응이 빨라야 해 기본(120)보다 짧게 잡는다.
     "index_point": 60,
     # 탭 닫기는 되돌리기 어려운 파괴적 동작이라, 전환 중 스치는 중지 포즈로 오발동하지
