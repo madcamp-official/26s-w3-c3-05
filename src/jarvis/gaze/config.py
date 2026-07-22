@@ -224,14 +224,16 @@ class GazeConfig:
     한다.
     """
 
-    registration_max_area_radius_deg: float = 4.5
+    registration_max_area_radius_deg: float = 6.0
     """Runtime/storage cap for edge-loop target area radii.
 
-    2026-07-22 실사용 조정: 6.0도에서 낮췄다. 모니터처럼 카메라에 가깝고 큰
-    물체는 테두리 트레이싱이 이 상한에 그대로 붙어(6.0도 그대로 저장) 등록
-    영역이 필요 이상으로 넓어졌고, 근처에 다른 target(전구)이 있을 때 그 여유가
-    시야각을 잠식하는 것처럼 느껴졌다(사용자 관찰). 하한(`registration_min_spread_deg`
-    4.0)보다는 위, 기존 상한(`registration_max_spread_deg` 8.0)보다는 아래로 둔다."""
+    2026-07-22: 모니터 판정 영역을 좁히려고 6.0→4.5로 한 번 낮췄다가 되돌렸다 —
+    이 값은 특정 기기 하나가 아니라 **모든 등록에 적용되는 전역 상한**이라, 그
+    뒤 다시 등록한 전구까지 함께 4.5도로 좁아져 실사용 인식률이 전반적으로
+    나빠졌다(전구는 아예 등록이 빠진 채로도 발견됨). 특정 기기만 좁히려면
+    이 전역 값이 아니라 개별 target의 저장된 반경을 건드리거나, 향후 기기별
+    스케일(`TargetAreaProfile.normalized_distance`의 `radius_scale`, 현재
+    미배선)을 config에 연결하는 별도 작업이 필요하다."""
 
     pose_correction_bin_edges_deg: tuple[float, ...] = (-30.0, -20.0, -10.0, 10.0, 20.0, 30.0)
     """등록 1단계 샘플을 나누는 head-yaw 구간 경계(도).

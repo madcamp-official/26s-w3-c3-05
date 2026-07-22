@@ -494,7 +494,7 @@ invalidates legacy/stale rows. Renaming does not change the fingerprint.
 | --- | ---: | --- |
 | `registration_min_spread_deg` | `4.0` | Minimum angular spread saved for a registered target. Prevents overly tiny target regions. |
 | `registration_max_spread_deg` | `8.0` | Maximum angular spread saved for a registered target. Prevents one target from swallowing too much space. |
-| `registration_max_area_radius_deg` | `4.5` | Runtime cap for edge-loop target area radius, even if an old JSON profile saved a larger area. Lowered from `6.0` (2026-07-22) — large near-camera objects (e.g. a monitor) traced right up to the old cap, crowding the angular space around nearby targets. |
+| `registration_max_area_radius_deg` | `6.0` | Runtime cap for edge-loop target area radius, even if an old JSON profile saved a larger area. Briefly lowered to `4.5` (2026-07-22) to tighten one large near-camera object (a monitor), then reverted — this is a global cap, not per-target, so it also shrank every other re-registered target (the bulb) and made overall recognition worse. Per-target tightening needs a separate mechanism (e.g. wiring `TargetAreaProfile.normalized_distance`'s unused `radius_scale`). |
 | `pose_correction_bin_edges_deg` | `(-30, -20, -10, 10, 20, 30)` | Head-yaw bin boundaries for the pose-conditioned gaze correction learned from phase-1 samples. |
 | `pose_correction_min_bin_samples` | `8` | Bins with fewer phase-1 samples do not produce a correction point. |
 | `pose_correction_max_offset_deg` | `10.0` | Per-bin cap on the stored gaze correction offset. Measured bias was 4~8° at head yaw 35°. |
