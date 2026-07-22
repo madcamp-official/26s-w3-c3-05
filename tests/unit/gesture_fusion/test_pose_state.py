@@ -110,6 +110,17 @@ def test_fist_to_open_palm_through_none_fires_media_toggle() -> None:
     assert [e.kind for e in events] == ["media_toggle"]
 
 
+def test_any_pose_to_open_palm_fires_media_toggle() -> None:
+    """주먹뿐 아니라 다른 아무 명령 자세 → 보(open_palm) 전이도 미션 컨트롤을 발화한다."""
+    machine = PoseStateMachine()
+    _feed(machine, "index_point", ms=300)  # 주먹이 아닌 다른 자세
+    for t in (400, 433, 466):  # RELEASE_FRAMES 넘겨 이탈 → _last_pose=index_point
+        machine.update(_pose(NONE_POSE), t)
+    assert machine.state == ""
+    events = _feed(machine, "open_palm", ms=300, start=500)
+    assert [e.kind for e in events] == ["media_toggle"]
+
+
 def test_open_palm_alone_does_not_fire_media_toggle() -> None:
     """주먹을 거치지 않은 손바닥은 아무것도 아니다 — 손만 펴도 재생이 토글되면 안 된다."""
     machine = PoseStateMachine()

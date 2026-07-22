@@ -70,7 +70,7 @@ CLICK_MAX_MS = 400
 # 간격은 두 핀치의 **진입** 시각으로 잰다(_leave 확정 간격이 아니라) — dwell·release
 # 확정 지연을 예산에서 빼야 사용자가 체감하는 간격과 맞는다.
 DOUBLE_CLICK_MS = 800
-# `fist → open_palm` 전이로 인정하는 최대 간격. 중간의 `none` 구간을 건너뛴다.
+# `아무 자세 → open_palm(보)` 전이로 인정하는 최대 간격. 중간의 `none` 구간을 건너뛴다.
 TRANSITION_WINDOW_MS = 1000
 # 스크롤 방향을 인정할 최소 수직성(|dy| / 길이). 손가락이 옆을 가리키면 위아래를
 # 지어내지 않는다 — cos(30°)는 수직에서 30° 이상 벗어나면(=수평에서 60° 미만이면)
@@ -452,10 +452,13 @@ class PoseStateMachine:
 
     def _enter(self, label: str, timestamp_ms: int) -> list[PoseEvent]:
         events: list[PoseEvent] = []
-        # 규칙 3: 중간의 none 구간을 건너뛰고 직전 **명령 자세**와 비교한다.
+        # 미션 컨트롤: **다른 아무 명령 자세 → 보(open_palm)** 전이로 발화한다(주먹→보로
+        # 한정하지 않는다 — 주먹 검출이 불안정해 놓치는 경우가 있었다). 규칙 3대로 중간의
+        # none 구간은 건너뛰고 직전 명령 자세와 비교한다. 직전 자세가 없거나(첫 진입) 보
+        # 자신이면 제외해, 손을 편 채 유지하다 재진입하는 경우엔 발화하지 않는다.
         if (
             label == "open_palm"
-            and self._last_pose == "fist"
+            and self._last_pose not in ("", "open_palm")
             and timestamp_ms - self._last_pose_end <= self.transition_window_ms
         ):
             events.append(PoseEvent("media_toggle", timestamp_ms))
