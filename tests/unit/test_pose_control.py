@@ -36,6 +36,9 @@ class _FakeSink:
     def tap_key(self, key: InputKey) -> None:
         self.calls.append(("key", key))
 
+    def switch_desktop(self, forward: bool, repeat: int) -> None:
+        self.calls.append(("desktop", forward, repeat))
+
 
 def test_move_executes_even_though_it_is_not_logged() -> None:
     sink = _FakeSink()
@@ -125,6 +128,17 @@ def test_media_toggle_sends_transition_key() -> None:
     bridge = PoseControlBridge(sink=sink, enabled=True)
     bridge.apply([PoseEvent("media_toggle", 0)])
     assert ("key", _transition_key()) in sink.calls
+
+
+def test_desktop_swipe_switches_virtual_desktop() -> None:
+    """좌우 스와이프 이벤트는 가상 데스크톱을 앞/뒤로 한 칸 전환한다."""
+    sink = _FakeSink()
+    bridge = PoseControlBridge(sink=sink, enabled=True)
+    bridge.apply([PoseEvent("desktop_next", 0)])
+    bridge.apply([PoseEvent("desktop_prev", 0)])
+    assert ("desktop", True, 1) in sink.calls
+    assert ("desktop", False, 1) in sink.calls
+    assert bridge.history[-2:] == ["데스크톱 다음", "데스크톱 이전"]
 
 
 def test_play_pause_sends_media_key() -> None:

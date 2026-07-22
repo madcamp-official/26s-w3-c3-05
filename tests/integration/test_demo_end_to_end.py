@@ -114,17 +114,21 @@ def test_registered_target_reaches_bulb_adapter(tmp_path: Path) -> None:
     assert command.operation == "decrement"
 
 
-def test_same_gesture_reaches_laptop_as_scroll(tmp_path: Path) -> None:
-    """같은 slide_down이 노트북에서는 스크롤로 간다 — 기획안의 핵심 주장."""
-    bridge = _bridge(tmp_path, {"target_002": LAPTOP_DEVICE_ID})
-    decision = _run_event(bridge, "target_002", "slide_two_fingers_down")
-    assert decision is not None
+def test_laptop_dynamic_gestures_no_longer_map(tmp_path: Path) -> None:
+    """노트북(컴퓨터) 제어를 전부 정적 포즈로 통일했다(2026-07-22, 사용자 지시).
 
-    adapter = FakeAdapter()
-    outcome = _executor({LAPTOP_ADAPTER: adapter}).execute(decision)
-    assert outcome.executed is True
-    assert adapter.calls[0].capability == "scroll"
-    assert adapter.calls[0].operation == "decrement"
+    그래서 노트북에는 어떤 동적 제스처도 매핑되지 않는다 — slide_down(구 스크롤)·
+    rotate(구 볼륨) 모두 커밋은 되지만 NO_MAPPING으로 떨어져 adapter에 도달하지 않는다.
+    스크롤·볼륨·데스크톱 전환은 이제 pose_state → pose_control 정적 경로가 담당한다."""
+    for gesture in ("slide_two_fingers_down", "rotate_clockwise"):
+        bridge = _bridge(tmp_path, {"target_002": LAPTOP_DEVICE_ID})
+        decision = _run_event(bridge, "target_002", gesture)
+        assert decision is not None and decision.committed
+
+        adapter = FakeAdapter()
+        outcome = _executor({LAPTOP_ADAPTER: adapter}).execute(decision)
+        assert outcome.stage is ExecutionStage.NO_MAPPING
+        assert adapter.calls == []
 
 
 def test_unmapped_target_never_reaches_any_adapter(tmp_path: Path) -> None:
@@ -143,9 +147,12 @@ def test_unmapped_target_never_reaches_any_adapter(tmp_path: Path) -> None:
 
 
 def test_fallback_reaches_adapter_without_any_gaze(tmp_path: Path) -> None:
-    """타깃 고정 폴백이면 시선 스트림이 전혀 없어도 명령이 나간다(--no-gaze 대비)."""
+    """타깃 고정 폴백이면 시선 스트림이 전혀 없어도 명령이 나간다(--no-gaze 대비).
+
+    동적 경로는 이제 전구(room.bulb) 전용이라(노트북은 전부 정적) 전구로 고정해 검증한다.
+    """
     bridge = _bridge(tmp_path, {})
-    bridge.set_fallback(LAPTOP_DEVICE_ID)
+    bridge.set_fallback(BULB_DEVICE_ID)
     for ms in range(0, 1500, 100):
         bridge.push_gesture(_gesture(GesturePhase.IDLE, ms, "none"))
     bridge.push_gesture(_gesture(GesturePhase.ONSET, 1500, "rotate_clockwise"))
@@ -153,9 +160,9 @@ def test_fallback_reaches_adapter_without_any_gaze(tmp_path: Path) -> None:
     assert decision is not None and decision.committed
 
     adapter = FakeAdapter()
-    outcome = _executor({LAPTOP_ADAPTER: adapter}).execute(decision)
+    outcome = _executor({BULB_ADAPTER: adapter}).execute(decision)
     assert outcome.executed is True
-    assert adapter.calls[0].capability == "volume"
+    assert adapter.calls[0].capability == "color"
     assert adapter.calls[0].operation == "increment"
 
 
@@ -176,16 +183,22 @@ def test_slide_left_right_reach_the_bulb_as_brightness(tmp_path: Path) -> None:
         assert adapter.calls[0].operation == operation
 
 
-def test_same_slide_left_means_desktop_switch_on_the_laptop(tmp_path: Path) -> None:
-    """같은 좌측 슬라이드가 노트북에서는 가상 데스크톱 전환이다 — 기기별 재해석."""
-    bridge = _bridge(tmp_path, {"target_002": LAPTOP_DEVICE_ID})
-    decision = _run_event(bridge, "target_002", "slide_two_fingers_left")
-    assert decision is not None
+def test_laptop_slide_left_right_no_longer_maps_dynamically(tmp_path: Path) -> None:
+    """노트북 데스크톱 전환은 정적 two_fingers 스와이프로 갈아끼웠다(2026-07-22).
 
-    adapter = FakeAdapter()
-    outcome = _executor({LAPTOP_ADAPTER: adapter}).execute(decision)
-    assert outcome.executed is True
-    assert adapter.calls[0].capability == "desktop_switch"
+    그래서 동적 slide_left/right는 더 이상 노트북 capability에 매핑되지 않는다 —
+    커밋은 되지만 노트북에 capability 매핑이 없어 NO_MAPPING으로 떨어지고 어떤
+    adapter에도 도달하지 않는다. 실제 데스크톱 전환은 pose_state._track_swipe →
+    pose_control.switch_desktop 경로가 담당한다(capability map을 타지 않음)."""
+    for gesture in ("slide_two_fingers_left", "slide_two_fingers_right"):
+        bridge = _bridge(tmp_path, {"target_002": LAPTOP_DEVICE_ID})
+        decision = _run_event(bridge, "target_002", gesture)
+        assert decision is not None and decision.committed
+
+        adapter = FakeAdapter()
+        outcome = _executor({LAPTOP_ADAPTER: adapter}).execute(decision)
+        assert outcome.stage is ExecutionStage.NO_MAPPING
+        assert adapter.calls == []
 
 
 def test_rotate_reaches_the_bulb_as_color(tmp_path: Path) -> None:

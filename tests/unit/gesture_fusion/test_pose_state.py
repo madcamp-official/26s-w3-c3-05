@@ -251,6 +251,108 @@ def test_pointing_direction_is_unit_and_none_when_degenerate() -> None:
     assert pointing_direction(np.zeros((21, 2))) is None
 
 
+# --- 좌우 스와이프: 데스크톱 전환(정적 two_fingers 전이) ---
+
+def _swipe_seq(machine: PoseStateMachine, dxs: list[float], *, start: int, step: int = 33) -> list:
+    """two_fingers 상태에서 매 프레임 수평 방향 dx를 바꿔 넣는다(수직 성분 0)."""
+    events = []
+    t = start
+    for dx in dxs:
+        events.extend(machine.update(_pose("two_fingers"), t, _hand(dx, 0.0)))
+        t += step
+    return events
+
+
+def _desktop_kinds(events: list) -> list[str]:
+    return [e.kind for e in events if e.kind.startswith("desktop_")]
+
+
+def _feed_hands(machine: PoseStateMachine, hands: list, *, start: int, step: int = 33) -> list:
+    """매 프레임 명시한 랜드마크(방향)를 넣는다 — dx·dy를 정밀하게 통제할 때."""
+    events = []
+    t = start
+    for h in hands:
+        events.extend(machine.update(_pose("two_fingers"), t, h))
+        t += step
+    return events
+
+
+def test_right_to_left_crossing_fires_desktop_prev() -> None:
+    """오른쪽(dx<0) 커밋 뒤 왼쪽(dx>0)으로 부호가 넘어가면 즉시 desktop_prev."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(-0.9, 0.0))  # 진입 + 오른쪽 첫 커밋(무발화)
+    assert machine.state == "two_fingers"
+    events = _swipe_seq(machine, [-0.9, 0.0, 0.9], start=300)  # 데드존 지나 왼쪽으로 교차
+    assert _desktop_kinds(events) == ["desktop_prev"]  # side=+1 → 이전 데스크톱
+
+
+def test_left_to_right_crossing_fires_desktop_next() -> None:
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(0.9, 0.0))  # 왼쪽 첫 커밋
+    events = _swipe_seq(machine, [0.9, 0.0, -0.9], start=300)
+    assert _desktop_kinds(events) == ["desktop_next"]  # side=−1 → 다음 데스크톱
+
+
+def test_first_commit_does_not_fire() -> None:
+    """진입 후 첫 커밋은 넘어온 반대쪽이 없어 발화하지 않는다."""
+    machine = PoseStateMachine()
+    events = _feed(machine, "two_fingers", ms=300, landmarks=_hand(0.9, 0.0))
+    assert _desktop_kinds(events) == []
+
+
+def test_back_and_forth_fires_each_crossing() -> None:
+    """부호가 넘어갈 때마다 매번 발화한다(왼→오→왼 = next, prev)."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(0.9, 0.0))  # 왼쪽 첫 커밋
+    events = _swipe_seq(machine, [0.9, 0.0, -0.9, 0.0, 0.9], start=300)
+    assert _desktop_kinds(events) == ["desktop_next", "desktop_prev"]
+
+
+def test_vertical_pose_does_not_judge_left_right() -> None:
+    """너무 수직이면(|dy|≥MIN_VERTICALITY) 좌우로 판별하지 않아 side가 안 뒤집힌다."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(-0.9, 0.0))  # 오른쪽 커밋
+    near_vertical_left = _hand(0.3, 0.95)  # dx>0이지만 |dy|=0.95 → 수직(스크롤)로 취급
+    right = _hand(-0.9, 0.0)
+    events = _feed_hands(machine, [right, near_vertical_left, right], start=300)
+    assert _desktop_kinds(events) == []  # 수직 프레임은 왼쪽으로 커밋되지 않는다
+
+
+def test_swipe_does_not_also_emit_scroll() -> None:
+    """수평 커밋 프레임은 수직 게이트와 상보적이라 스크롤이 함께 나오지 않는다."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(-0.9, 0.0))
+    events = _swipe_seq(machine, [-0.9, 0.0, 0.9], start=300)
+    assert [e for e in events if e.kind == "scroll"] == []
+
+
+def test_steady_horizontal_hold_does_not_fire() -> None:
+    """한쪽만 계속 향하고 있으면(전이 없음) 아무 스와이프도 안 난다."""
+    machine = PoseStateMachine()
+    events = _feed(machine, "two_fingers", ms=500, landmarks=_hand(0.9, 0.0))
+    assert _desktop_kinds(events) == []
+
+
+def test_swipe_commit_expires_after_inactivity() -> None:
+    """왼쪽 커밋 후 two_fingers가 SWIPE_RESET_MS 이상 끊기면(주먹 쥐고 대기) 커밋이
+    초기화돼, 다시 오른쪽을 가리켜도 스와이프가 나지 않는다(첫 커밋 취급)."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(0.9, 0.0))  # 왼쪽 커밋(side+1)
+    _feed(machine, "fist", ms=1200, start=300)  # 주먹으로 >SWIPE_RESET_MS 대기 → 커밋 만료
+    events = _feed(machine, "two_fingers", ms=200, start=1600, landmarks=_hand(-0.9, 0.0))
+    assert _desktop_kinds(events) == []
+
+
+def test_swipe_commit_survives_brief_dropout() -> None:
+    """왼쪽 커밋 후 짧게(SWIPE_RESET_MS 미만) 포즈가 끊겨도 커밋이 유지돼, 오른쪽 도달 시
+    발화한다 — 빠른 스윙 중 모션 블러로 포즈가 깜빡 끊기는 경우를 지킨다."""
+    machine = PoseStateMachine()
+    _feed(machine, "two_fingers", ms=200, landmarks=_hand(0.9, 0.0))  # 왼쪽 커밋
+    _feed(machine, NONE_POSE, ms=100, start=300)  # 100ms 끊김 (<500)
+    events = _feed(machine, "two_fingers", ms=200, start=430, landmarks=_hand(-0.9, 0.0))
+    assert _desktop_kinds(events) == ["desktop_next"]
+
+
 # --- 규칙: 신뢰 못 하는 판정은 무시 ---
 
 def test_untrusted_prediction_neither_enters_nor_breaks() -> None:

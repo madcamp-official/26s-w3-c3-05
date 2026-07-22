@@ -104,7 +104,10 @@ def test_bulb_slide_down_reaches_adapter_as_brightness_decrement() -> None:
     assert command.value == expected.value
 
 
-def test_laptop_slide_down_reaches_adapter_as_scroll_decrement() -> None:
+def test_laptop_dynamic_gesture_no_longer_maps() -> None:
+    """노트북(컴퓨터) 제어를 전부 정적 포즈로 통일해(2026-07-22, 사용자 지시), 동적
+    slide_down은 노트북에 매핑되지 않는다 — 커밋은 되지만 NO_MAPPING으로 adapter에
+    도달하지 않는다. 스크롤·볼륨·데스크톱 전환은 정적 pose_control 경로가 담당한다."""
     fusion = _locked_fusion("laptop")
     fusion.push_gesture(_gesture(100, GesturePhase.ONSET, "slide_two_fingers_down"))
     decision = fusion.push_gesture(_gesture(300, GesturePhase.ENDING, "slide_two_fingers_down"))
@@ -114,11 +117,5 @@ def test_laptop_slide_down_reaches_adapter_as_scroll_decrement() -> None:
     executor = _executor({"windows": laptop_adapter})
     outcome = executor.execute(decision)
 
-    assert outcome.stage == ExecutionStage.DISPATCHED
-    assert outcome.executed is True
-    assert len(laptop_adapter.calls) == 1
-    command = laptop_adapter.calls[0]
-    assert command.device_id == "laptop"
-    assert command.capability == "scroll"
-    assert command.operation == "decrement"
-    assert command.value == 3
+    assert outcome.stage == ExecutionStage.NO_MAPPING
+    assert laptop_adapter.calls == []
