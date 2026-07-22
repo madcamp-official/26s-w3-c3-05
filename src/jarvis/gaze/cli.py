@@ -417,6 +417,74 @@ def _run_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_replay(args: argparse.Namespace) -> int:
+    from jarvis.gaze.session_report import build_report, format_report, load_session
+    from jarvis.monitoring.session_replay import parse_override, replay_session
+
+    path = Path(args.session)
+    session = load_session(path)
+    overrides = dict(parse_override(item) for item in (args.set or []))
+    replayed = replay_session(
+        session,
+        overrides=overrides,
+        disable_pose_correction=args.no_pose_correction,
+    )
+
+    baseline = build_report(session, path=path, bin_width_deg=args.bin_width)
+    changed = build_report(
+        replayed, path=f"{path} (replayed)", bin_width_deg=args.bin_width
+    )
+    described = ", ".join(
+        [f"{key}={value}" for key, value in overrides.items()]
+        + (["pose_correction=off"] if args.no_pose_correction else [])
+    )
+    print(f"-- what-if: {described or '(no overrides — sanity replay)'} --")
+    baseline_by_label = {item.label: item for item in baseline.labels}
+    for label in changed.labels:
+        before = baseline_by_label.get(label.label)
+        before_text = f"{before.accuracy_percent:.0f}%" if before is not None else "--"
+        print(
+            f"{label.display_name} ({label.label}): "
+            f"accuracy {before_text} -> {label.accuracy_percent:.0f}%"
+        )
+    print()
+    print(format_report(changed))
+
+    if args.output:
+        import json as _json
+
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as file:
+            file.write(_json.dumps(replayed.header, ensure_ascii=False) + "\n")
+            for frame in replayed.frames:
+                file.write(_json.dumps(frame, ensure_ascii=False) + "\n")
+        print(f"replayed session saved to {output_path}")
+    return 0
+
+
+def _run_lint_profiles(args: argparse.Namespace) -> int:
+    from jarvis.calibration.registry import TargetRegistry
+    from jarvis.gaze.config import GazeConfig
+    from jarvis.gaze.registration_lint import lint_records
+
+    registry = TargetRegistry(Path(args.profiles))
+    records = registry.records
+    if not records:
+        print(f"no targets registered in {args.profiles}")
+        return 0
+    findings = lint_records(records, GazeConfig())
+    exit_code = 0
+    for record in records:
+        warnings = findings[record.target_id]
+        status = "OK" if not warnings else f"{len(warnings)} warning(s)"
+        print(f"[{record.target_id}] {record.name}: {status}")
+        for warning in warnings:
+            exit_code = 1
+            print(f"  - {warning}")
+    return exit_code
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jarvis-gaze")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -486,6 +554,33 @@ def _build_parser() -> argparse.ArgumentParser:
     report.add_argument("session", help="session .jsonl recorded by the monitoring app")
     report.add_argument("--bin-width", type=float, default=10.0, help="head-yaw bin width (deg)")
     report.set_defaults(handler=_run_report)
+
+    lint = subparsers.add_parser(
+        "lint-profiles",
+        help="warn about registration-quality problems in saved target profiles",
+    )
+    lint.add_argument("--profiles", default="data/calibration/profiles.json")
+    lint.set_defaults(handler=_run_lint_profiles)
+
+    replay = subparsers.add_parser(
+        "replay",
+        help="re-judge a recorded session with modified config (what-if, no camera)",
+    )
+    replay.add_argument("session", help="session .jsonl recorded by the monitoring app")
+    replay.add_argument(
+        "--set",
+        action="append",
+        metavar="KEY=VALUE",
+        help="override a GazeConfig field (repeatable), e.g. --set target_match_tolerance=1.2",
+    )
+    replay.add_argument(
+        "--no-pose-correction",
+        action="store_true",
+        help="drop stored pose corrections during the replay",
+    )
+    replay.add_argument("--bin-width", type=float, default=10.0)
+    replay.add_argument("--output", help="save the replayed session JSONL here")
+    replay.set_defaults(handler=_run_replay)
     return parser
 
 

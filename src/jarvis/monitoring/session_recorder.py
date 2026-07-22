@@ -129,25 +129,55 @@ class GazeSessionRecorder:
         """한 프레임의 파이프라인 산출 전체와 현재 정답 라벨을 기록한다."""
         if self._file is None:
             raise ValueError("session recording is not active")
-        per_target: dict[str, dict[str, object]] = {}
-        for area in snapshot.area_details:
-            per_target.setdefault(area.device_id, {}).update(
-                {
-                    "area_nd": round(float(area.normalized_distance), 4),
-                    "used_gaze": [
-                        round(float(area.used_gaze_yaw), 3),
-                        round(float(area.used_gaze_pitch), 3),
-                    ],
-                    "correction_applied": bool(area.correction_applied),
-                }
-            )
-        for feature in snapshot.feature_details:
-            per_target.setdefault(feature.device_id, {})[
-                "feature_nd"
-            ] = round(float(feature.normalized_distance), 4)
+        self._write(snapshot_frame_dict(snapshot, label))
+        self._frame_count += 1
+        self._label_counts[label if label is not None else "(unlabeled)"] += 1
 
-        sample = snapshot.feature_sample
-        frame = {
+    def stop(self) -> dict[str, object]:
+        """기록을 닫고 요약을 반환한다."""
+        if self._file is None:
+            raise ValueError("session recording is not active")
+        footer = {
+            "type": "footer",
+            "frames": self._frame_count,
+            "labels": dict(self._label_counts),
+        }
+        self._write(footer)
+        self._file.close()
+        self._file = None
+        return footer
+
+    def _write(self, payload: dict[str, object]) -> None:
+        assert self._file is not None
+        self._file.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        self._file.flush()
+
+
+def snapshot_frame_dict(snapshot: "GazeSnapshot", label: str | None) -> dict[str, object]:
+    """GazeSnapshot 하나를 세션 frame 레코드(dict)로 직렬화한다.
+
+    레코더(라이브 녹화)와 세션 리플레이(오프라인 재평가)가 같은 포맷을 쓰도록
+    한 곳에 둔다 — 두 경로의 출력이 달라지면 report가 거짓 비교를 하게 된다.
+    """
+    per_target: dict[str, dict[str, object]] = {}
+    for area in snapshot.area_details:
+        per_target.setdefault(area.device_id, {}).update(
+            {
+                "area_nd": round(float(area.normalized_distance), 4),
+                "used_gaze": [
+                    round(float(area.used_gaze_yaw), 3),
+                    round(float(area.used_gaze_pitch), 3),
+                ],
+                "correction_applied": bool(area.correction_applied),
+            }
+        )
+    for feature in snapshot.feature_details:
+        per_target.setdefault(feature.device_id, {})[
+            "feature_nd"
+        ] = round(float(feature.normalized_distance), 4)
+
+    sample = snapshot.feature_sample
+    return {
             "type": "frame",
             "t": snapshot.timestamp_ms,
             "frame": snapshot.frame_id,
@@ -233,25 +263,3 @@ class GazeSessionRecorder:
             },
             "targets": per_target,
         }
-        self._write(frame)
-        self._frame_count += 1
-        self._label_counts[label if label is not None else "(unlabeled)"] += 1
-
-    def stop(self) -> dict[str, object]:
-        """기록을 닫고 요약을 반환한다."""
-        if self._file is None:
-            raise ValueError("session recording is not active")
-        footer = {
-            "type": "footer",
-            "frames": self._frame_count,
-            "labels": dict(self._label_counts),
-        }
-        self._write(footer)
-        self._file.close()
-        self._file = None
-        return footer
-
-    def _write(self, payload: dict[str, object]) -> None:
-        assert self._file is not None
-        self._file.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        self._file.flush()
