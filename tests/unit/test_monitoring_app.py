@@ -17,7 +17,7 @@ import pytest  # noqa: E402
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication, QInputDialog  # noqa: E402
+from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox  # noqa: E402
 
 from jarvis.monitoring.app import (  # noqa: E402
     MainWindow,
@@ -214,12 +214,22 @@ def test_target_registration_selects_device_type_from_dropdown(
         return device_type, True
 
     monkeypatch.setattr(QInputDialog, "getItem", choose_type)
+    # computer는 끄덕임 게이트 여부를 실제 모달(QMessageBox.question)로 묻는다
+    # (2026-07-22) — mock하지 않으면 자동 테스트가 응답 없는 모달에서 멈춘다.
+    # electric bulb는 이 다이얼로그를 아예 띄우지 않으므로 호출되면 실패시켜
+    # 그 가정이 깨지지 않는지도 함께 확인한다.
+    def answer_nod_gate_prompt(*_args: object, **_kwargs: object) -> QMessageBox.StandardButton:
+        assert device_type == "computer", "electric bulb는 끄덕임 게이트를 묻지 않아야 한다"
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", answer_nod_gate_prompt)
     try:
         window._start_target_registration()
         assert window._registration is not None
         assert window._registration.name == "테스트 물체"
         assert window._registration.device_type == device_type
         assert device_type in window._registration_status.text()
+        assert window._registration.requires_nod_gate == (device_type == "computer")
     finally:
         window._cancel_target_registration()
         window.close()
