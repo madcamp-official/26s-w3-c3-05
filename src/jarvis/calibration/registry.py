@@ -15,8 +15,10 @@ from jarvis.gaze.classifier import DeviceGazeProfile, TargetGeometry3D
 from jarvis.gaze.direction import direction_to_yaw_pitch, yaw_pitch_to_direction
 from jarvis.gaze.feature_profile import (
     FEATURE_DIMENSION,
+    PoseCorrectionPoint,
     TargetAreaProfile,
     TargetFeatureProfile,
+    TargetPoseCorrection,
 )
 
 
@@ -69,6 +71,7 @@ class TargetRecord:
     reference_face_scale: float | None = None
     feature_profile: TargetFeatureProfile | None = None
     area_profile: TargetAreaProfile | None = None
+    pose_correction: TargetPoseCorrection | None = None
     """10초 등록 동안 모은 시선 광선의 삼각측량 결과(calibration/triangulation.py).
 
     품질 기준(baseline·각도 다양성·잔차)을 만족했을 때만 채워지며, 그렇지 않으면
@@ -154,6 +157,7 @@ class TargetRegistry:
             reference_face_scale=current.reference_face_scale,
             feature_profile=current.feature_profile,
             area_profile=current.area_profile,
+            pose_correction=current.pose_correction,
         )
         self.upsert(updated)
         return updated
@@ -201,6 +205,7 @@ class TargetRegistry:
                 reference_face_scale=self._parse_positive_float(item.get("reference_face_scale")),
                 feature_profile=self._parse_feature_profile(item.get("feature_profile")),
                 area_profile=self._parse_area_profile(item.get("area_profile")),
+                pose_correction=self._parse_pose_correction(item.get("pose_correction")),
             )
             self._records[record.target_id] = record
 
@@ -239,21 +244,33 @@ class TargetRegistry:
         threshold = payload.get("threshold")
         if (
             not isinstance(mean, list)
-            or len(mean) != FEATURE_DIMENSION
+            or len(mean) not in (6, FEATURE_DIMENSION)
             or not isinstance(covariance, list)
-            or len(covariance) != FEATURE_DIMENSION
+            or len(covariance) != len(mean)
             or not isinstance(sample_count, int)
             or not isinstance(threshold, (int, float))
         ):
             return None
         try:
+            dimension = len(mean)
             rows = []
             for row in covariance:
-                if not isinstance(row, list) or len(row) != FEATURE_DIMENSION:
+                if not isinstance(row, list) or len(row) != dimension:
                     return None
                 rows.append(tuple(float(value) for value in row))
+            parsed_mean = [float(value) for value in mean]
+            if dimension == 6:
+                # Old registrations did not include face location. Preserve
+                # them with a neutral center and deliberately broad variance;
+                # re-registering upgrades them to a real 8D profile.
+                parsed_mean.extend((0.5, 0.5))
+                expanded = np.eye(FEATURE_DIMENSION, dtype=np.float64)
+                expanded[:6, :6] = np.asarray(rows, dtype=np.float64)
+                expanded[6, 6] = 1.0
+                expanded[7, 7] = 1.0
+                rows = [tuple(float(value) for value in row) for row in expanded]
             return TargetFeatureProfile(
-                mean=tuple(float(value) for value in mean),
+                mean=tuple(parsed_mean),
                 covariance=tuple(rows),
                 sample_count=sample_count,
                 threshold=float(threshold),
@@ -262,16 +279,54 @@ class TargetRegistry:
             return None
 
     @staticmethod
+    def _parse_pose_correction(payload: object) -> TargetPoseCorrection | None:
+        """예전 JSON에는 필드가 없으므로 None으로 로드된다(하위 호환)."""
+        if not isinstance(payload, dict):
+            return None
+        points_payload = payload.get("points")
+        if not isinstance(points_payload, list) or not points_payload:
+            return None
+        try:
+            points = tuple(
+                PoseCorrectionPoint(
+                    head_yaw_deg=float(point["head_yaw_deg"]),
+                    offset_yaw_deg=float(point["offset_yaw_deg"]),
+                    offset_pitch_deg=float(point["offset_pitch_deg"]),
+                    sample_count=int(point["sample_count"]),
+                )
+                for point in points_payload
+                if isinstance(point, dict)
+            )
+            reference = payload.get("reference_head_yaw_deg")
+            return TargetPoseCorrection(
+                points=points,
+                reference_head_yaw_deg=(
+                    float(reference) if isinstance(reference, (int, float)) else None
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _parse_area_profile(payload: object) -> TargetAreaProfile | None:
         if not isinstance(payload, dict):
             return None
         try:
+            polygon_payload = payload.get("boundary_polygon", [])
+            if not isinstance(polygon_payload, list):
+                return None
+            polygon: list[tuple[float, float]] = []
+            for point in polygon_payload:
+                if not isinstance(point, (list, tuple)) or len(point) != 2:
+                    return None
+                polygon.append((float(point[0]), float(point[1])))
             return TargetAreaProfile(
                 center_yaw=float(payload["center_yaw"]),
                 center_pitch=float(payload["center_pitch"]),
                 radius_yaw=float(payload["radius_yaw"]),
                 radius_pitch=float(payload["radius_pitch"]),
                 sample_count=int(payload["sample_count"]),
+                boundary_polygon=tuple(polygon),
             )
         except (KeyError, TypeError, ValueError):
             return None

@@ -10,7 +10,7 @@ def test_partial_blink_is_rejected_relative_to_personal_open_baseline() -> None:
     detector = AdaptiveBlinkDetector()
 
     assert detector.update(0.25, 0.24)
-    assert not detector.update(0.15, 0.14)
+    assert not detector.update(0.14, 0.13)
 
 
 def test_reopen_hysteresis_waits_for_eyelids_to_recover() -> None:
@@ -30,3 +30,47 @@ def test_open_baseline_decays_slowly_instead_of_learning_a_partial_blink() -> No
     assert detector.update(0.24, 0.24)
 
     assert detector.open_baseline == pytest.approx(0.2475)
+
+
+def test_one_foreshortened_eye_does_not_freeze_gaze_during_head_turn() -> None:
+    detector = AdaptiveBlinkDetector()
+
+    assert detector.update(0.25, 0.25)
+    assert detector.update(0.08, 0.24)
+    assert detector.eye_baselines[1] == pytest.approx(0.2475)
+
+
+def test_both_eyes_must_close_before_gaze_is_held() -> None:
+    detector = AdaptiveBlinkDetector()
+
+    assert detector.update(0.25, 0.25)
+    assert not detector.update(0.08, 0.09)
+
+
+def test_naturally_narrow_open_eyes_do_not_latch_closed_forever() -> None:
+    detector = AdaptiveBlinkDetector()
+
+    assert detector.update(0.10, 0.11)
+    assert not detector.update(0.03, 0.03)
+    assert detector.update(0.10, 0.11)
+
+
+def test_pose_reduced_eye_opening_rebases_after_sustained_soft_closure() -> None:
+    config = GazeConfig(blink_pose_recovery_frames=4)
+    detector = AdaptiveBlinkDetector(config)
+
+    assert detector.update(0.25, 0.25)
+    assert not detector.update(0.13, 0.13)
+    assert not detector.update(0.13, 0.13)
+    assert not detector.update(0.13, 0.13)
+    assert detector.update(0.13, 0.13)
+    assert detector.eye_baselines == pytest.approx((0.13, 0.13))
+
+
+def test_fully_collapsed_eyes_never_rebase_as_open() -> None:
+    config = GazeConfig(blink_pose_recovery_frames=3)
+    detector = AdaptiveBlinkDetector(config)
+
+    assert detector.update(0.25, 0.25)
+    for _ in range(10):
+        assert not detector.update(0.03, 0.03)

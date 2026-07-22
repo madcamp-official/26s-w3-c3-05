@@ -95,6 +95,7 @@ class GazeSampleStore:
         nearest = latest.device_details[0] if latest.device_details else None
         raw_nearest = latest.raw_device_details[0] if latest.raw_device_details else None
         nearest_feature = latest.feature_details[0] if latest.feature_details else None
+        nearest_area = latest.area_details[0] if latest.area_details else None
 
         def mean(values: Sequence[float]) -> float:
             return float(np.mean(np.asarray(values, dtype=np.float64)))
@@ -141,12 +142,11 @@ class GazeSampleStore:
                 "pitch": gaze_pitch_deg,
             },
             "raw_gaze_yaw_pitch_deg": raw_gaze_yaw_pitch,
-            "calibration_applied": any(item.calibration_applied for item in valid),
-            "calibration_model_kind": latest.calibration_model_kind,
             "gaze_velocity_deg_s": latest.gaze_motion_velocity_deg_s,
             "gaze_acceleration_deg_s2": latest.gaze_motion_acceleration_deg_s2,
+            "gaze_settle_velocity_deg_s": latest.gaze_settle_velocity_deg_s,
+            "gaze_settle_age_ms": latest.gaze_settle_age_ms,
             "gaze_motion_history_valid": latest.gaze_motion_history_valid,
-            "personal_feature_weights": latest.personal_feature_weights,
             "gaze_confidence": mean(eye_confidences),
             "head_pose_deg": {
                 "yaw": mean([item.head_yaw_deg for item in valid]),
@@ -192,6 +192,21 @@ class GazeSampleStore:
             "unknown_elapsed_ms": latest.unknown_elapsed_ms,
             "unknown_required_ms": latest.unknown_required_ms,
             "reject_reason": latest.reject_reason,
+            "nearest_traced_area": (
+                {
+                    "device_id": nearest_area.device_id,
+                    "normalized_distance": nearest_area.normalized_distance,
+                    "tolerance": nearest_area.tolerance,
+                    "status": nearest_area.range_status,
+                    "center_yaw": nearest_area.center_yaw,
+                    "center_pitch": nearest_area.center_pitch,
+                    "radius_yaw": nearest_area.radius_yaw,
+                    "radius_pitch": nearest_area.radius_pitch,
+                    "hull_vertex_count": len(nearest_area.boundary_polygon),
+                }
+                if nearest_area is not None
+                else None
+            ),
             "nearest_target_range": (
                 {
                     "device_id": nearest.device_id,
@@ -264,6 +279,7 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
     nearest_range = sample.get("nearest_target_range")
     raw_nearest_range = sample.get("raw_nearest_target_range")
     nearest_feature = sample.get("nearest_feature_profile")
+    nearest_area = sample.get("nearest_traced_area")
     vector = direction if isinstance(direction, list) else []
     head = head_pose if isinstance(head_pose, dict) else {}
     gaze_yaw_pitch = gaze_angles if isinstance(gaze_angles, dict) else {}
@@ -271,6 +287,7 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
     range_detail = nearest_range if isinstance(nearest_range, dict) else None
     raw_range_detail = raw_nearest_range if isinstance(raw_nearest_range, dict) else None
     feature_detail = nearest_feature if isinstance(nearest_feature, dict) else None
+    area_detail = nearest_area if isinstance(nearest_area, dict) else None
 
     def number(value: object) -> float:
         return float(value) if isinstance(value, (int, float)) else 0.0
@@ -314,22 +331,30 @@ def format_gaze_sample(sample: dict[str, object]) -> str:
         f"실시간={judged} P={probability:.2f}  확정={confirmed} "
         f"dwell={dwell_elapsed_ms / 1000.0:.1f}/{dwell_required_ms / 1000.0:.1f}s"
     )
-    if sample.get("calibration_applied"):
-        row += " CAL"
+    if area_detail is not None:
+        device_id = area_detail.get("device_id", "--")
+        ratio = number(area_detail.get("normalized_distance"))
+        tolerance = number(area_detail.get("tolerance"))
+        status = area_detail.get("status", "--")
+        hull_count = int(number(area_detail.get("hull_vertex_count")))
+        row += (
+            f"  area={device_id} x{ratio:.2f}/x{tolerance:.2f} "
+            f"{status} hull={hull_count}"
+        )
     if range_detail is not None:
         device_id = range_detail.get("device_id", "--")
         distance = number(range_detail.get("angular_distance_deg"))
         radius = number(range_detail.get("allowed_radius_deg"))
         ratio = number(range_detail.get("normalized_distance"))
         status = range_detail.get("status", "--")
-        row += f"  nearest={device_id} {distance:.1f}/{radius:.1f}deg x{ratio:.2f} {status}"
+        row += f"  angle={device_id} {distance:.1f}/{radius:.1f}deg x{ratio:.2f} {status}"
     if raw_range_detail is not None:
         device_id = raw_range_detail.get("device_id", "--")
         distance = number(raw_range_detail.get("angular_distance_deg"))
         radius = number(raw_range_detail.get("allowed_radius_deg"))
         ratio = number(raw_range_detail.get("normalized_distance"))
         status = raw_range_detail.get("status", "--")
-        row += f"  raw_nearest={device_id} {distance:.1f}/{radius:.1f}deg x{ratio:.2f} {status}"
+        row += f"  raw_angle={device_id} {distance:.1f}/{radius:.1f}deg x{ratio:.2f} {status}"
     if feature_detail is not None:
         device_id = feature_detail.get("device_id", "--")
         distance = number(feature_detail.get("distance"))

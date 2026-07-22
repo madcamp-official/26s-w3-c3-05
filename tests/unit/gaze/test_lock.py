@@ -87,11 +87,53 @@ def test_switching_candidate_device_resets_dwell_timer() -> None:
     assert lock.locked_device == "room.bulb"
 
 
-def test_candidate_drops_to_searching_when_confidence_lost() -> None:
-    lock = GazeLockStateMachine()
+def test_candidate_drops_to_searching_after_grace_expires() -> None:
+    """순간 UNKNOWN은 깜빡임일 수 있어 유예하고, 지속되면 탐색으로 돌아간다."""
+    lock = GazeLockStateMachine(GazeConfig(candidate_grace_ms=600))
     lock.update(0, _confident("laptop"))
+    # 유예 안: 후보와 dwell이 유지된다.
     state = lock.update(100, _unknown())
+    assert state == GazeLockState.CANDIDATE
+    assert lock.candidate_device == "laptop"
+    # 유예를 넘겨 계속 UNKNOWN이면 리셋된다.
+    state = lock.update(100 + 700, _unknown())
     assert state == GazeLockState.SEARCHING
+
+
+def test_blink_length_unknown_gap_does_not_reset_dwell() -> None:
+    """깜빡임 길이의 UNKNOWN 공백(<= grace)은 3초 dwell을 0으로 되돌리지 않는다 —
+    깜빡임마다 리셋되면 자연 깜빡임 주기(2~5초)보다 dwell이 길어 영원히 확정되지
+    않는다(2026-07-22 실사용)."""
+    config = GazeConfig(dwell_time_ms=3000, candidate_grace_ms=600)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("laptop"))
+    lock.update(1_000, _confident("laptop"))
+    # 1.0~1.4초 구간 깜빡임 → UNKNOWN 프레임들.
+    lock.update(1_200, _unknown())
+    state = lock.update(1_400, _unknown())
+    assert state == GazeLockState.CANDIDATE
+    # 회복 후 같은 target이면 dwell이 처음부터가 아니라 이어서 적립된다.
+    state = lock.update(2_999, _confident("laptop"))
+    assert state == GazeLockState.CANDIDATE
+    state = lock.update(3_000, _confident("laptop"))
+    assert state == GazeLockState.TARGET_LOCKED
+    assert lock.locked_device == "laptop"
+
+
+def test_second_blink_gap_gets_fresh_grace() -> None:
+    """유예 타이머는 확신 프레임이 돌아올 때마다 초기화된다 — 깜빡임 두 번이
+    누적으로 grace를 넘겨도 각각이 짧으면 dwell은 유지된다."""
+    config = GazeConfig(dwell_time_ms=3000, candidate_grace_ms=600)
+    lock = GazeLockStateMachine(config)
+    lock.update(0, _confident("laptop"))
+    lock.update(500, _unknown())
+    assert lock.state == GazeLockState.CANDIDATE
+    lock.update(900, _confident("laptop"))
+    lock.update(1_800, _unknown())
+    state = lock.update(2_200, _confident("laptop"))
+    assert state == GazeLockState.CANDIDATE
+    state = lock.update(3_000, _confident("laptop"))
+    assert state == GazeLockState.TARGET_LOCKED
 
 
 def test_locked_persists_through_brief_look_away_within_ttl() -> None:

@@ -41,6 +41,7 @@ data/raw/
 data/traces/
 data/calibration/
 data/evaluation/gaze_samples.json
+data/diagnostics/
 artifacts/
 
 # Training pipeline (training/) — offline landmark cache, TensorBoard runs

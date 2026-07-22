@@ -64,6 +64,14 @@ def test_short_blink_holds_last_smoothed_gaze() -> None:
     assert held.frame_id == 50
 
 
+def test_repeated_holds_expire_from_last_measured_frame() -> None:
+    smoother = GazeSmoother(GazeConfig(blink_hold_ms=80))
+    smoother.update(_vector(np.array([0.0, 0.0, 1.0]), frame_id=0))
+
+    assert smoother.hold(1_050, 50) is not None
+    assert smoother.hold(1_090, 90) is None
+
+
 def test_long_eye_closed_interval_expires_hold() -> None:
     smoother = GazeSmoother(GazeConfig(blink_hold_ms=20))
     assert smoother.update(_vector(np.array([0.0, 0.0, 1.0]), frame_id=0)) is not None

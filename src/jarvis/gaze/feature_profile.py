@@ -28,6 +28,8 @@ FEATURE_NAMES: tuple[str, ...] = (
     "head_pitch",
     "head_roll",
     "face_scale",
+    "face_center_x",
+    "face_center_y",
 )
 FEATURE_DIMENSION = len(FEATURE_NAMES)
 HEAD_FEATURE_INDICES: tuple[int, ...] = (2, 3, 4)
@@ -39,6 +41,16 @@ the learned distribution.
 """
 
 GAZE_FEATURE_INDICES: tuple[int, ...] = (0, 1)
+FACE_CONTEXT_INDICES: tuple[int, ...] = (5, 6, 7)
+
+# Each signal uses different units. These standard-deviation floors prevent a
+# nearly constant registration feature from dominating the inverse covariance,
+# while keeping gaze more discriminative than head pose. Face scale and center
+# stay meaningful instead of being erased by a degree-sized global regularizer.
+FEATURE_STD_FLOORS = np.asarray(
+    [1.5, 1.5, 6.0, 6.0, 8.0, 0.008, 0.035, 0.035],
+    dtype=np.float64,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +61,8 @@ class TargetFeatureSample:
     head_pitch: float
     head_roll: float
     face_scale: float
+    face_center_x: float = 0.5
+    face_center_y: float = 0.5
 
     def as_array(self) -> npt.NDArray[np.float64]:
         values = np.array(
@@ -59,6 +73,8 @@ class TargetFeatureSample:
                 self.head_pitch,
                 self.head_roll,
                 self.face_scale,
+                self.face_center_x,
+                self.face_center_y,
             ],
             dtype=np.float64,
         )
@@ -66,6 +82,8 @@ class TargetFeatureSample:
             raise ValueError("target feature sample must contain finite values")
         if self.face_scale <= 0.0:
             raise ValueError("face_scale must be positive")
+        if not 0.0 <= self.face_center_x <= 1.0 or not 0.0 <= self.face_center_y <= 1.0:
+            raise ValueError("face center must be normalized within [0, 1]")
         return values
 
     @classmethod
@@ -80,6 +98,8 @@ class TargetFeatureSample:
             head_pitch=float(array[3]),
             head_roll=float(array[4]),
             face_scale=float(array[5]),
+            face_center_x=float(array[6]),
+            face_center_y=float(array[7]),
         )
 
 
@@ -127,19 +147,66 @@ class TargetFeatureProfile:
 def _mahalanobis_operands(
     profile: TargetFeatureProfile,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Cache the mean vector and pseudo-inverse covariance per (immutable) profile.
+    """Cache the mean vector and inverse covariance per immutable profile.
 
-    `pinv` runs an SVD; recomputing it for every frame × every registered target
-    dominated the whole pure pipeline (>50% of `evaluate()` time). The profile is
-    a frozen, hashable dataclass, so the pair is computed once per registration.
-    Returned arrays are shared — marked read-only so a caller cannot corrupt the
-    cache in place.
+    The profile is a frozen, hashable dataclass, so this pair is computed only
+    once per registration. Returned arrays are read-only so callers cannot
+    corrupt the shared cache.
     """
     mean = np.asarray(profile.mean, dtype=np.float64)
-    inverse = np.linalg.pinv(np.asarray(profile.covariance, dtype=np.float64))
+    inverse = _invert_covariance(profile.covariance)
     mean.setflags(write=False)
     inverse.setflags(write=False)
     return mean, inverse
+
+
+def _invert_covariance(
+    covariance: tuple[tuple[float, ...], ...],
+) -> npt.NDArray[np.float64]:
+    """Invert the fixed 8D covariance without a native LAPACK call.
+
+    New profiles are positive definite because every feature receives a
+    variance floor. Pivoting Gauss-Jordan is stable enough for this tiny matrix
+    and avoids a Windows NumPy/MKL crash when Torch has loaded another OpenMP
+    runtime. A malformed singular legacy matrix falls back to diagonal scoring.
+    """
+    size = FEATURE_DIMENSION
+    matrix = [
+        [float(value) for value in row]
+        + [1.0 if row_index == column else 0.0 for column in range(size)]
+        for row_index, row in enumerate(covariance)
+    ]
+    scale = max(abs(value) for row in covariance for value in row)
+    pivot_floor = max(1e-12, scale * 1e-12)
+
+    for column in range(size):
+        pivot_row = max(range(column, size), key=lambda row: abs(matrix[row][column]))
+        if abs(matrix[pivot_row][column]) <= pivot_floor:
+            diagonal = np.zeros((size, size), dtype=np.float64)
+            for index in range(size):
+                variance = max(
+                    abs(float(covariance[index][index])),
+                    float(FEATURE_STD_FLOORS[index] ** 2),
+                )
+                diagonal[index, index] = 1.0 / variance
+            return diagonal
+        if pivot_row != column:
+            matrix[column], matrix[pivot_row] = matrix[pivot_row], matrix[column]
+
+        pivot = matrix[column][column]
+        matrix[column] = [value / pivot for value in matrix[column]]
+        for row in range(size):
+            if row == column:
+                continue
+            factor = matrix[row][column]
+            if factor == 0.0:
+                continue
+            matrix[row] = [
+                current - factor * pivot_value
+                for current, pivot_value in zip(matrix[row], matrix[column], strict=True)
+            ]
+
+    return np.asarray([row[size:] for row in matrix], dtype=np.float64)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +223,7 @@ class TargetAreaProfile:
     radius_yaw: float
     radius_pitch: float
     sample_count: int
+    boundary_polygon: tuple[tuple[float, float], ...] = ()
 
     def __post_init__(self) -> None:
         values = (self.center_yaw, self.center_pitch, self.radius_yaw, self.radius_pitch)
@@ -165,6 +233,15 @@ class TargetAreaProfile:
             raise ValueError("target area profile radii must be positive")
         if self.sample_count <= 0:
             raise ValueError("target area profile sample_count must be positive")
+        if self.boundary_polygon:
+            hull = _convex_hull(self.boundary_polygon)
+            if len(hull) < 3 or abs(_polygon_signed_area(hull)) <= 1e-9:
+                raise ValueError("target area polygon must contain at least three non-collinear points")
+            if not _point_in_convex_polygon(
+                (self.center_yaw, self.center_pitch), hull
+            ):
+                raise ValueError("target area center must lie inside its polygon")
+            object.__setattr__(self, "boundary_polygon", hull)
 
     def normalized_distance(
         self,
@@ -183,6 +260,21 @@ class TargetAreaProfile:
         )
         radius_yaw *= radius_scale
         radius_pitch *= radius_scale
+        if self.boundary_polygon:
+            scale_yaw = radius_yaw / self.radius_yaw
+            scale_pitch = radius_pitch / self.radius_pitch
+            polygon = tuple(
+                (
+                    self.center_yaw + (yaw - self.center_yaw) * scale_yaw,
+                    self.center_pitch + (pitch - self.center_pitch) * scale_pitch,
+                )
+                for yaw, pitch in self.boundary_polygon
+            )
+            return _radial_polygon_distance(
+                (self.center_yaw, self.center_pitch),
+                polygon,
+                (gaze_yaw, gaze_pitch),
+            )
         return math.hypot(
             (gaze_yaw - self.center_yaw) / radius_yaw,
             (gaze_pitch - self.center_pitch) / radius_pitch,
@@ -201,6 +293,88 @@ class TargetAreaProfile:
             max_radius_deg,
             radius_scale,
         ) <= 1.0
+
+
+def _cross_2d(first: tuple[float, float], second: tuple[float, float]) -> float:
+    return first[0] * second[1] - first[1] * second[0]
+
+
+def _convex_hull(
+    points: tuple[tuple[float, float], ...] | list[tuple[float, float]],
+) -> tuple[tuple[float, float], ...]:
+    """Andrew monotonic-chain hull in counter-clockwise order."""
+    unique = sorted({(float(point[0]), float(point[1])) for point in points})
+    if len(unique) <= 1:
+        return tuple(unique)
+
+    def turn(
+        origin: tuple[float, float],
+        first: tuple[float, float],
+        second: tuple[float, float],
+    ) -> float:
+        return _cross_2d(
+            (first[0] - origin[0], first[1] - origin[1]),
+            (second[0] - origin[0], second[1] - origin[1]),
+        )
+
+    lower: list[tuple[float, float]] = []
+    for point in unique:
+        while len(lower) >= 2 and turn(lower[-2], lower[-1], point) <= 0.0:
+            lower.pop()
+        lower.append(point)
+    upper: list[tuple[float, float]] = []
+    for point in reversed(unique):
+        while len(upper) >= 2 and turn(upper[-2], upper[-1], point) <= 0.0:
+            upper.pop()
+        upper.append(point)
+    return tuple(lower[:-1] + upper[:-1])
+
+
+def _polygon_signed_area(polygon: tuple[tuple[float, float], ...]) -> float:
+    return 0.5 * sum(
+        first[0] * second[1] - second[0] * first[1]
+        for first, second in zip(polygon, (*polygon[1:], polygon[0]), strict=True)
+    )
+
+
+def _point_in_convex_polygon(
+    point: tuple[float, float],
+    polygon: tuple[tuple[float, float], ...],
+    *,
+    tolerance: float = 1e-9,
+) -> bool:
+    for first, second in zip(polygon, (*polygon[1:], polygon[0]), strict=True):
+        edge = (second[0] - first[0], second[1] - first[1])
+        relative = (point[0] - first[0], point[1] - first[1])
+        if _cross_2d(edge, relative) < -tolerance:
+            return False
+    return True
+
+
+def _radial_polygon_distance(
+    center: tuple[float, float],
+    polygon: tuple[tuple[float, float], ...],
+    point: tuple[float, float],
+) -> float:
+    """Return 1 at the hull boundary along the center→point ray."""
+    direction = (point[0] - center[0], point[1] - center[1])
+    if math.hypot(*direction) <= 1e-12:
+        return 0.0
+    intersections: list[float] = []
+    for first, second in zip(polygon, (*polygon[1:], polygon[0]), strict=True):
+        edge = (second[0] - first[0], second[1] - first[1])
+        offset = (first[0] - center[0], first[1] - center[1])
+        denominator = _cross_2d(direction, edge)
+        if abs(denominator) <= 1e-12:
+            continue
+        ray_scale = _cross_2d(offset, edge) / denominator
+        edge_scale = _cross_2d(offset, direction) / denominator
+        if ray_scale > 1e-12 and -1e-9 <= edge_scale <= 1.0 + 1e-9:
+            intersections.append(ray_scale)
+    if not intersections:
+        return math.inf
+    boundary_scale = min(intersections)
+    return 1.0 / boundary_scale
 
 
 def build_area_profile(
@@ -228,29 +402,230 @@ def build_area_profile(
     radius = np.maximum(radius, minimum_radius_deg)
     if maximum_radius_deg is not None:
         radius = np.minimum(radius, maximum_radius_deg)
+    inlier_mask = np.all(deviations <= radius + 1e-9, axis=1)
+    polygon_samples = matrix[inlier_mask]
+    if len(polygon_samples) < 3:
+        polygon_samples = np.clip(matrix, center - radius, center + radius)
+    polygon = _convex_hull(
+        [(float(row[0]), float(row[1])) for row in polygon_samples]
+    )
+    if len(polygon) < 3 or abs(_polygon_signed_area(polygon)) <= 1e-9:
+        polygon = (
+            (float(center[0] - radius[0]), float(center[1] - radius[1])),
+            (float(center[0] + radius[0]), float(center[1] - radius[1])),
+            (float(center[0] + radius[0]), float(center[1] + radius[1])),
+            (float(center[0] - radius[0]), float(center[1] + radius[1])),
+        )
+    else:
+        deviations_from_center = np.abs(
+            np.asarray(polygon, dtype=np.float64) - center
+        )
+        extent = np.max(deviations_from_center, axis=0)
+        axis_scale = np.maximum(1.0, radius / np.maximum(extent, 1e-9))
+        expanded = np.clip(
+            center + (np.asarray(polygon, dtype=np.float64) - center) * axis_scale,
+            center - radius,
+            center + radius,
+        )
+        polygon = _convex_hull(
+            [
+                (float(row[0]), float(row[1]))
+                for row in expanded
+            ]
+        )
+        if not _point_in_convex_polygon(
+            (float(center[0]), float(center[1])), polygon
+        ):
+            polygon = (
+                (float(center[0] - radius[0]), float(center[1] - radius[1])),
+                (float(center[0] + radius[0]), float(center[1] - radius[1])),
+                (float(center[0] + radius[0]), float(center[1] + radius[1])),
+                (float(center[0] - radius[0]), float(center[1] + radius[1])),
+            )
     return TargetAreaProfile(
         center_yaw=float(center[0]),
         center_pitch=float(center[1]),
         radius_yaw=float(radius[0]),
         radius_pitch=float(radius[1]),
         sample_count=int(len(matrix)),
+        boundary_polygon=polygon,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class PoseCorrectionPoint:
+    """한 head-yaw 구간의 대표점: bin 중앙값 head yaw와 그 자세의 gaze 편향."""
+
+    head_yaw_deg: float
+    offset_yaw_deg: float
+    offset_pitch_deg: float
+    sample_count: int
+
+    def __post_init__(self) -> None:
+        values = (self.head_yaw_deg, self.offset_yaw_deg, self.offset_pitch_deg)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("pose correction point values must be finite")
+        if self.sample_count <= 0:
+            raise ValueError("pose correction sample_count must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class TargetPoseCorrection:
+    """Head-yaw 구간별 gaze 편향의 piecewise-linear 보정 테이블.
+
+    MediaPipe iris 추정은 |head yaw| 약 15도 밖에서 포화·역행해(2026-07-22
+    diagnose-composition 실측, documents/gaze.md) 합성 시선이 자세 불변이 되지
+    못한다. 이 편향은 전역 가중치로 고칠 수 없지만 자세별로는 반복 가능하므로,
+    등록 1단계에서 관측한 `bin gaze 중앙값 − area 중심`을 그대로 저장했다가
+    런타임에 빼 준다. 기준 자세(2단계 head yaw)에서는 보정이 정확히 0이 되도록
+    빌드 시 정규화한다.
+
+    점 사이는 선형 보간, 양 끝 밖은 상수 유지(외삽하지 않는다). plain tuple만
+    담아 `TargetRecord`처럼 `asdict()`로 그대로 JSON 직렬화된다.
+    """
+
+    points: tuple[PoseCorrectionPoint, ...]
+    reference_head_yaw_deg: float | None = None
+
+    def __post_init__(self) -> None:
+        if not self.points:
+            raise ValueError("pose correction requires at least one point")
+        yaws = [point.head_yaw_deg for point in self.points]
+        if any(later <= earlier for earlier, later in zip(yaws, yaws[1:], strict=False)):
+            raise ValueError("pose correction points must be sorted by strictly increasing head yaw")
+        if self.reference_head_yaw_deg is not None and not math.isfinite(
+            self.reference_head_yaw_deg
+        ):
+            raise ValueError("reference_head_yaw_deg must be finite")
+
+    def offset_for(self, head_yaw_deg: float) -> tuple[float, float]:
+        """현재 head yaw에 대한 (gaze yaw, gaze pitch) 보정 오프셋."""
+        points = self.points
+        if head_yaw_deg <= points[0].head_yaw_deg:
+            return points[0].offset_yaw_deg, points[0].offset_pitch_deg
+        if head_yaw_deg >= points[-1].head_yaw_deg:
+            return points[-1].offset_yaw_deg, points[-1].offset_pitch_deg
+        for lower, upper in zip(points, points[1:], strict=False):
+            if head_yaw_deg <= upper.head_yaw_deg:
+                span = upper.head_yaw_deg - lower.head_yaw_deg
+                blend = (head_yaw_deg - lower.head_yaw_deg) / span
+                return (
+                    lower.offset_yaw_deg + blend * (upper.offset_yaw_deg - lower.offset_yaw_deg),
+                    lower.offset_pitch_deg
+                    + blend * (upper.offset_pitch_deg - lower.offset_pitch_deg),
+                )
+        return points[-1].offset_yaw_deg, points[-1].offset_pitch_deg
+
+
+def build_pose_correction(
+    samples: list[TargetFeatureSample],
+    *,
+    center_yaw_pitch: tuple[float, float],
+    reference_head_yaw_deg: float | None,
+    bin_edges_deg: tuple[float, ...],
+    minimum_bin_samples: int,
+    maximum_offset_deg: float,
+    maximum_bin_iqr_deg: float = 4.0,
+) -> TargetPoseCorrection | None:
+    """등록 1단계(중앙 응시 + 고개 스윕) 샘플에서 head-yaw 구간별 gaze 보정
+    테이블을 만든다.
+
+    각 bin의 오프셋은 `median(bin gaze) − center`다. 1단계가 물체 중앙 한 점을
+    응시한 채 고개만 돌리므로 bin 중앙값과 응시점의 차이가 곧 그 자세의 센서
+    편향이고, 응시점과 area 중심의 상수 차이는 아래 기준 자세 정규화에서
+    상쇄된다. 주의: 테두리를 훑으며 고개를 돌린 데이터로 만들면 사람이 보는
+    방향으로 고개를 돌리는 상관관계 때문에 편향의 부호가 뒤집힌다(2026-07-22
+    실측 — 등록 안내가 중앙 응시로 바뀐 이유).
+
+    표본이 `minimum_bin_samples` 미만이거나 bin 안 gaze IQR가
+    `maximum_bin_iqr_deg`보다 넓은 bin은 만들지 않는다(지어내지 않는다 —
+    실측에서 |head yaw| 30도 밖 bin은 IQR 9~30도로 반복성이 없었다).
+    유효 bin이 2개 미만이면 보정 자체를 저장하지 않는다(상수 보정은 무의미).
+    `reference_head_yaw_deg`(2단계 head yaw 중앙값)가 주어지면 그 자세의 보간
+    오프셋을 전체에서 빼서, hull을 그린 기준 자세에서 보정이 0이 되게 한다.
+    """
+    if minimum_bin_samples <= 0:
+        raise ValueError("minimum_bin_samples must be positive")
+    if not math.isfinite(maximum_offset_deg) or maximum_offset_deg <= 0.0:
+        raise ValueError("maximum_offset_deg must be finite and positive")
+    if not math.isfinite(maximum_bin_iqr_deg) or maximum_bin_iqr_deg <= 0.0:
+        raise ValueError("maximum_bin_iqr_deg must be finite and positive")
+    edges = tuple(float(edge) for edge in bin_edges_deg)
+    if any(later <= earlier for earlier, later in zip(edges, edges[1:], strict=False)):
+        raise ValueError("bin_edges_deg must be strictly increasing")
+
+    boundaries = (-math.inf, *edges, math.inf)
+    bins: list[list[TargetFeatureSample]] = [[] for _ in range(len(boundaries) - 1)]
+    for sample in samples:
+        for index, (lower, upper) in enumerate(zip(boundaries, boundaries[1:], strict=False)):
+            if lower <= sample.head_yaw < upper:
+                bins[index].append(sample)
+                break
+
+    center_yaw, center_pitch = float(center_yaw_pitch[0]), float(center_yaw_pitch[1])
+    raw_points: list[PoseCorrectionPoint] = []
+    for members in bins:
+        if len(members) < minimum_bin_samples:
+            continue
+        head_yaws = np.asarray([sample.head_yaw for sample in members], dtype=np.float64)
+        gaze_yaws = np.asarray([sample.gaze_yaw for sample in members], dtype=np.float64)
+        gaze_pitches = np.asarray([sample.gaze_pitch for sample in members], dtype=np.float64)
+        yaw_iqr = float(np.percentile(gaze_yaws, 75) - np.percentile(gaze_yaws, 25))
+        pitch_iqr = float(np.percentile(gaze_pitches, 75) - np.percentile(gaze_pitches, 25))
+        if yaw_iqr > maximum_bin_iqr_deg or pitch_iqr > maximum_bin_iqr_deg:
+            continue
+        raw_points.append(
+            PoseCorrectionPoint(
+                head_yaw_deg=float(np.median(head_yaws)),
+                offset_yaw_deg=float(np.median(gaze_yaws)) - center_yaw,
+                offset_pitch_deg=float(np.median(gaze_pitches)) - center_pitch,
+                sample_count=len(members),
+            )
+        )
+    if len(raw_points) < 2:
+        return None
+
+    raw_points.sort(key=lambda point: point.head_yaw_deg)
+    reference_offset = (0.0, 0.0)
+    if reference_head_yaw_deg is not None and math.isfinite(reference_head_yaw_deg):
+        reference_offset = TargetPoseCorrection(
+            points=tuple(raw_points)
+        ).offset_for(reference_head_yaw_deg)
+
+    def clamp(value: float) -> float:
+        return max(-maximum_offset_deg, min(maximum_offset_deg, value))
+
+    normalized_points = tuple(
+        PoseCorrectionPoint(
+            head_yaw_deg=point.head_yaw_deg,
+            offset_yaw_deg=clamp(point.offset_yaw_deg - reference_offset[0]),
+            offset_pitch_deg=clamp(point.offset_pitch_deg - reference_offset[1]),
+            sample_count=point.sample_count,
+        )
+        for point in raw_points
+    )
+    return TargetPoseCorrection(
+        points=normalized_points,
+        reference_head_yaw_deg=(
+            float(reference_head_yaw_deg)
+            if reference_head_yaw_deg is not None and math.isfinite(reference_head_yaw_deg)
+            else None
+        ),
     )
 
 
 def build_feature_profile(
     samples: list[TargetFeatureSample],
     *,
-    regularization: float = 1.0,
-    head_regularization: float = 64.0,
+    regularization: float = 1e-6,
     threshold_floor: float = 2.5,
     threshold_quantile: float = 0.90,
 ) -> FeatureProfileBuildResult:
     """Build a robust target feature distribution.
 
-    `regularization` is diagonal covariance padding.  The feature vector mixes
-    degrees and normalized face scale, so a small positive diagonal keeps the
-    inverse covariance stable even when the user barely moves during
-    registration.
+    The vector mixes degrees and normalized image coordinates. Per-feature
+    variance floors establish the intended balance; `regularization` only adds
+    numerical stability.
     """
     if not samples:
         raise ValueError("at least one feature sample is required")
@@ -258,7 +633,7 @@ def build_feature_profile(
     center = np.median(matrix, axis=0)
     deviations = np.abs(matrix - center)
     mad = np.median(deviations, axis=0)
-    robust_scale = np.maximum(mad * 1.4826, np.array([1.0, 1.0, 2.0, 2.0, 2.0, 0.01]))
+    robust_scale = np.maximum(mad * 1.4826, FEATURE_STD_FLOORS)
     normalized = deviations / robust_scale
     keep_mask = np.max(normalized, axis=1) <= 4.0
     kept = matrix[keep_mask]
@@ -272,11 +647,16 @@ def build_feature_profile(
     if len(kept) == 1:
         covariance = np.eye(FEATURE_DIMENSION, dtype=np.float64)
     else:
-        covariance = np.cov(kept, rowvar=False)
+        # ``np.cov`` can abort the Windows process when NumPy/MKL and Torch's
+        # OpenMP runtime have both been loaded.  This is the same unbiased
+        # sample-covariance formula, expressed directly for our tiny 8D
+        # matrix, and avoids that separate native code path.
+        centered = kept - mean
+        covariance = np.einsum("ni,nj->ij", centered, centered, optimize=False)
+        covariance /= float(len(kept) - 1)
     covariance = np.asarray(covariance, dtype=np.float64)
+    covariance += np.diag(FEATURE_STD_FLOORS**2)
     covariance += np.eye(FEATURE_DIMENSION, dtype=np.float64) * regularization
-    for index in HEAD_FEATURE_INDICES:
-        covariance[index, index] += head_regularization
     provisional = TargetFeatureProfile(
         mean=tuple(float(value) for value in mean),
         covariance=tuple(tuple(float(value) for value in row) for row in covariance),

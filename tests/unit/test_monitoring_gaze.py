@@ -17,7 +17,7 @@ from jarvis.gaze.classifier import DeviceGazeProfile, TargetClassifier
 from jarvis.gaze.config import GazeConfig
 from jarvis.gaze.engine import GazeTargetingEngine
 from jarvis.gaze.features import FaceObservation
-from jarvis.gaze.feature_profile import TargetFeatureSample
+from jarvis.gaze.feature_profile import TargetAreaProfile, TargetFeatureSample
 from jarvis.gaze.lock import GazeLockState, GazeLockStateMachine
 from jarvis.gaze.smoothing import GazeSmoother
 from jarvis.monitoring.gaze_probe import GazeProbe, evaluate
@@ -57,6 +57,22 @@ def _fresh() -> tuple[GazeSmoother, TargetClassifier, GazeLockStateMachine, Gaze
     return GazeSmoother(config), TargetClassifier(config), GazeLockStateMachine(config), config
 
 
+def test_feature_sample_contains_camera_relative_face_location_and_scale() -> None:
+    smoother, classifier, lock, config = _fresh()
+    snapshot = evaluate(
+        _observation(with_eye_centers=True),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+
+    assert snapshot.feature_sample is not None
+    assert snapshot.feature_sample.face_scale == pytest.approx(0.2)
+    assert snapshot.feature_sample.face_center_x == pytest.approx(0.5)
+    assert snapshot.feature_sample.face_center_y == pytest.approx(0.4)
+
+
 # --- tracking loss ------------------------------------------------------------
 
 def test_tracking_loss_is_surfaced_not_faked() -> None:
@@ -74,6 +90,25 @@ def test_tracking_loss_is_surfaced_not_faked() -> None:
     assert snapshot.smoothed_stability is None
     assert snapshot.target == config.UNKNOWN_TARGET
     assert snapshot.target_estimate.stability == 0.0
+
+
+def test_detected_face_without_usable_iris_starts_with_head_only_vector() -> None:
+    smoother, classifier, lock, config = _fresh()
+    snapshot = evaluate(
+        _observation(yaw=24.0, eyes_open=False),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+
+    assert snapshot.face_detected is True
+    assert snapshot.tracking_lost is False
+    assert snapshot.gaze_unavailable is False
+    assert snapshot.gaze_source == "head-only"
+    assert snapshot.gaze_source_reason == "eyes classified closed"
+    assert snapshot.gaze_direction is not None
+    assert snapshot.gaze_confidence == pytest.approx(config.head_only_confidence_scale)
 
 
 def test_camera_pose_warning_flags_large_roll() -> None:
@@ -156,6 +191,7 @@ def test_short_blink_holds_last_gaze_without_composing_jumpy_raw_vector() -> Non
     assert blink.gaze_direction is None
     assert blink.gaze_confidence is None
     assert blink.smoothed_gaze_direction == first.smoothed_gaze_direction
+    assert blink.gaze_source == "held"
 
 
 def test_blink_holds_previous_classifier_feature_including_head_pose() -> None:
@@ -405,6 +441,38 @@ def test_device_detail_reports_outside_registered_range() -> None:
     assert detail.normalized_distance > 1.0
     assert detail.within_profile_radius is False
     assert detail.range_status == "OUT"
+
+
+def test_unknown_reason_reports_authoritative_traced_area_before_legacy_angle() -> None:
+    smoother, classifier, lock, config = _fresh()
+    classifier.register_profile(
+        DeviceGazeProfile(
+            device_id="monitor",
+            mean_direction=np.array([0.0, 0.0, 1.0]),
+            variance=math.radians(20.0) ** 2,
+        ),
+        area_profile=TargetAreaProfile(
+            center_yaw=20.0,
+            center_pitch=0.0,
+            radius_yaw=2.0,
+            radius_pitch=2.0,
+            sample_count=20,
+        ),
+    )
+
+    snapshot = evaluate(
+        _observation(with_eye_centers=True),
+        smoother=smoother,
+        classifier=classifier,
+        lock=lock,
+        config=config,
+    )
+
+    assert snapshot.target == config.UNKNOWN_TARGET
+    assert snapshot.area_details[0].range_status == "OUT"
+    assert snapshot.device_details[0].range_status == "IN"
+    assert snapshot.reject_reason is not None
+    assert "traced area OUT" in snapshot.reject_reason
 
 
 def test_target_label_uses_registered_display_name() -> None:

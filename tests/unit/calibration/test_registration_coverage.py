@@ -1,0 +1,152 @@
+"""조건 충족식 등록 coverage: 편향된 스윕은 완료되지 않고, 원시 샘플은 저장된다."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from jarvis.calibration.target_registration import (
+    PoseCoverageTracker,
+    RegistrationPhase,
+    TargetRegistrationSession,
+)
+from jarvis.gaze.config import GazeConfig
+from jarvis.gaze.direction import yaw_pitch_to_direction
+from jarvis.gaze.feature_profile import TargetFeatureSample
+from jarvis.gaze.smoothing import SmoothedGaze
+
+
+def _feature(
+    head_yaw: float = 0.0,
+    head_pitch: float = 0.0,
+    face_scale: float = 0.10,
+    gaze_yaw: float = 0.0,
+    gaze_pitch: float = 0.0,
+) -> TargetFeatureSample:
+    return TargetFeatureSample(
+        gaze_yaw=gaze_yaw,
+        gaze_pitch=gaze_pitch,
+        head_yaw=head_yaw,
+        head_pitch=head_pitch,
+        head_roll=0.0,
+        face_scale=face_scale,
+    )
+
+
+def test_tracker_counts_pose_and_scale_conditions() -> None:
+    tracker = PoseCoverageTracker(GazeConfig(), minimum_frames=3)
+    # near/far는 정면 기준 scale(10프레임)이 쌓이기 전에는 세지 않는다.
+    tracker.add(_feature(face_scale=0.12))
+    assert dict((c.key, c.count) for c in tracker.report())["near"] == 0
+    for _ in range(10):
+        tracker.add(_feature(face_scale=0.10))
+    assert tracker.reference_face_scale == pytest.approx(0.10)
+    for _ in range(3):
+        tracker.add(_feature(head_yaw=-25.0))
+        tracker.add(_feature(head_yaw=25.0))
+        tracker.add(_feature(head_pitch=15.0))
+        tracker.add(_feature(head_pitch=-15.0))
+        tracker.add(_feature(face_scale=0.12))   # 1.2x -> near
+        tracker.add(_feature(face_scale=0.085))  # 0.85x -> far
+    assert tracker.complete()
+    assert tracker.missing_labels() == []
+    assert tracker.progress() == pytest.approx(1.0)
+
+
+def test_tracker_reports_missing_conditions() -> None:
+    tracker = PoseCoverageTracker(GazeConfig(), minimum_frames=3)
+    for _ in range(12):
+        tracker.add(_feature())
+    missing = tracker.missing_labels()
+    assert "정면" not in missing
+    assert {"고개 왼쪽", "고개 오른쪽", "고개 위", "고개 아래", "가까이", "멀리"} <= set(missing)
+    assert 0.0 < tracker.progress() < 1.0
+
+
+def _gaze(frame: int) -> SmoothedGaze:
+    return SmoothedGaze(yaw_pitch_to_direction(0.0, 0.0), 1.0, frame * 50, frame)
+
+
+def test_session_blocks_phase2_until_coverage_complete(tmp_path) -> None:
+    session = TargetRegistrationSession(
+        "monitor", "모니터", "DISPLAY", "d1",
+        minimum_valid_frames=3,
+        coverage_min_frames=3,
+        raw_sample_dir=tmp_path,
+    )
+    # 정면만 수집: 시간(20초)이 훌쩍 지나도(프레임 간격 1초) 1단계가 끝나지 않는다.
+    for frame in range(30):
+        assert session.add(
+            SmoothedGaze(yaw_pitch_to_direction(0.0, 0.0), 1.0, frame * 1_000, frame),
+            1.0,
+            feature_sample=_feature(),
+        )
+    assert session.is_elapsed(30 * 1_000) is False
+    assert session.phase == RegistrationPhase.CENTER
+    with pytest.raises(ValueError, match="coverage"):
+        session.start_boundary(31_000)
+
+    frame = 31
+    for sample in (
+        [_feature(head_yaw=-25.0)] * 3
+        + [_feature(head_yaw=25.0)] * 3
+        + [_feature(head_pitch=15.0)] * 3
+        + [_feature(head_pitch=-15.0)] * 3
+        + [_feature(face_scale=0.12)] * 3
+        + [_feature(face_scale=0.085)] * 3
+    ):
+        assert session.add(
+            SmoothedGaze(yaw_pitch_to_direction(0.0, 0.0), 1.0, 31_000 + frame * 50, frame),
+            1.0,
+            face_scale=sample.face_scale,
+            feature_sample=sample,
+        )
+        frame += 1
+    # coverage가 차면 시간과 무관하게 즉시 2단계로 넘어간다.
+    assert session.phase == RegistrationPhase.BOUNDARY
+
+    for index, offset in enumerate(
+        [(2.0, 0.0), (0.0, 2.0), (-2.0, 0.0), (0.0, -2.0), (1.5, 1.5), (-1.5, -1.5)]
+    ):
+        assert session.add(
+            SmoothedGaze(
+                yaw_pitch_to_direction(offset[0], offset[1]),
+                1.0,
+                35_000 + index * 50,
+                frame + index,
+            ),
+            1.0,
+            feature_sample=_feature(gaze_yaw=offset[0], gaze_pitch=offset[1]),
+        )
+    record = session.finalize()
+    assert record.area_profile is not None
+
+    exports = list(tmp_path.glob("monitor_phase1_*.json"))
+    assert len(exports) == 1
+    payload = json.loads(exports[0].read_text(encoding="utf-8"))
+    assert payload["target_id"] == "monitor"
+    assert len(payload["samples"]) == session.center_valid_frame_count
+    assert len(payload["samples"][0]) == 8
+
+
+def test_finalize_rejects_incomplete_coverage() -> None:
+    session = TargetRegistrationSession(
+        "monitor", "모니터", "DISPLAY", "d1", minimum_valid_frames=3, coverage_min_frames=3
+    )
+    for frame in range(12):
+        assert session.add(_gaze(frame), 1.0, feature_sample=_feature())
+    with pytest.raises(ValueError, match="coverage"):
+        session.finalize()
+    assert "coverage_missing" in session.diagnostic_summary()
+
+
+def test_zero_coverage_min_frames_keeps_time_based_flow() -> None:
+    session = TargetRegistrationSession(
+        "monitor", "모니터", "DISPLAY", "d1", minimum_valid_frames=3
+    )
+    assert session.coverage is None
+    for frame in range(3):
+        assert session.add(_gaze(frame), 1.0)
+    session.start_boundary(1_000)  # coverage 없이도 기존 흐름 그대로.
+    assert session.phase == RegistrationPhase.BOUNDARY

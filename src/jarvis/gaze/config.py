@@ -21,6 +21,14 @@ class GazeConfig:
     dwell_time_ms: int = 3000
     """CANDIDATE 상태를 TARGET_LOCKED로 승격하기 전 유지해야 하는 최소 시간."""
 
+    candidate_grace_ms: int = 600
+    """dwell 적립 중 순간 UNKNOWN/저신뢰를 허용하는 유예 시간.
+
+    깜빡임 한 번으로 3초 dwell이 0으로 리셋되면 자연 깜빡임 주기(2~5초)보다
+    dwell이 길어 확정이 영원히 안 된다(2026-07-22 실사용). blink hold(300ms) +
+    recovery(250ms)가 못 덮는 꼬리까지 포함하도록 600ms로 둔다. 유예 구간도
+    dwell 경과 시간에는 포함된다."""
+
     minimum_probability: float = 0.80
     """대상 후보로 인정하거나 Lock을 유지하기 위한 최소 top-1 확률."""
 
@@ -47,15 +55,6 @@ class GazeConfig:
     기기 간 상대 확률만 사용하면 등록 기기가 하나일 때 모든 방향의 확률이 1.0이
     되는 문제를 막는 절대 거리 안전 기준이다.
     """
-
-    personal_gaze_feature_weight: float = 2.0
-    """Priority multiplier for gaze yaw/pitch in the personal target classifier."""
-
-    personal_head_feature_weight: float = 0.4
-    """Context multiplier for head yaw/pitch/roll in the personal classifier."""
-
-    personal_face_scale_feature_weight: float = 0.6
-    """Context multiplier for camera-distance/face-scale evidence."""
 
     # Gaze vector composition (README 7장 "시선 방향 벡터 합성")
     max_eye_offset_deg: float = 45.0
@@ -93,13 +92,25 @@ class GazeConfig:
     """Keep holding briefly after reopening eyes so unstable iris landmarks settle."""
 
     eye_closed_ratio_threshold: float = 0.12
-    """Absolute eyelid-height/eye-width floor used by adaptive blink detection."""
+    """Twice the collapsed-eye guard used by adaptive blink detection.
 
-    blink_close_ratio: float = 0.68
-    """Close when eye openness falls below this fraction of the personal baseline."""
+    Normal eye opening is learned per user even when it is below this value;
+    half this value remains a hard guard against a fully collapsed eyelid.
+    """
 
-    blink_reopen_ratio: float = 0.82
-    """Reopen only above this baseline fraction to avoid rapid open/closed chatter."""
+    blink_close_ratio: float = 0.60
+    """Close when both eyes fall below 60% of their personal open baselines."""
+
+    blink_reopen_ratio: float = 0.75
+    """Reopen above 75% of baseline, balancing recovery speed and chatter."""
+
+    blink_pose_recovery_frames: int = 6
+    """Rebase after this many softly-closed frames caused by a pose change.
+
+    A real bilateral blink normally collapses below the hard eyelid guard.
+    When both eyelids remain visibly above that guard but below an older open
+    baseline, the baseline likely belongs to a different head/eye pose.
+    """
 
     eye_openness_baseline_decay: float = 0.01
     """Per-frame downward adaptation rate of the personal open-eye baseline."""
@@ -113,7 +124,7 @@ class GazeConfig:
     tracking_loss_hold_ms: int = 800
     """Briefly keep the last gaze during full face-landmarker dropouts."""
 
-    small_motion_deadzone_deg: float = 5.0
+    small_motion_deadzone_deg: float = 1.0
     """Ignore tiny smoothed-gaze changes below this angle to reduce jitter."""
 
     UNKNOWN_TARGET: str = "UNKNOWN"
@@ -188,20 +199,56 @@ class GazeConfig:
     registration_max_area_radius_deg: float = 6.0
     """Runtime/storage cap for edge-loop target area radii."""
 
-    target_area_scale_flex: float = 0.25
-    """Allowed fractional target-area radius change from face-scale distance changes."""
+    pose_correction_bin_edges_deg: tuple[float, ...] = (-30.0, -20.0, -10.0, 10.0, 20.0, 30.0)
+    """등록 1단계 샘플을 나누는 head-yaw 구간 경계(도).
 
-    target_motion_alignment_weight: float = 0.35
-    """Velocity-direction bonus for targets in the direction of recent gaze motion."""
+    MediaPipe iris 추정이 |head yaw| 15도 밖에서 포화·역행하는 편향
+    (2026-07-22 diagnose-composition 실측: 중앙 ±10도 R²=0.90, 그 밖 기울기
+    부호 반전)을 자세별로 저장해 되돌리기 위한 bin이다. 경계 밖(<-30, >30)도
+    양끝 open bin으로 수집된다.
+    """
 
-    target_acceleration_alignment_weight: float = 0.15
-    """Acceleration-direction bonus used after the velocity direction bonus."""
+    pose_correction_min_bin_samples: int = 8
+    """이보다 표본이 적은 head-yaw bin은 보정점을 만들지 않는다(지어내지 않는다)."""
 
-    gaze_motion_min_speed_deg_s: float = 6.0
-    """Ignore slower gaze motion when applying a target-direction bonus."""
+    pose_correction_max_offset_deg: float = 10.0
+    """한 bin의 gaze 보정 오프셋 상한(도) — 오염된 등록이 시선을 원거리로
+    순간이동시키지 않도록 막는다. 실측 편향은 head yaw 35도에서 약 4~8도였다."""
 
-    gaze_motion_min_acceleration_deg_s2: float = 80.0
-    """Ignore smaller acceleration as likely landmark/smoothing noise."""
+    registration_coverage_min_frames: int = 30
+    """등록 1단계 자세·거리 coverage 조건별 최소 유효 프레임 수.
+
+    시간제(20초) 등록은 스윕이 한쪽에 치우쳐도 완료돼, 실제로 보정점이
+    오른쪽 2개뿐인 등록이 저장됐다(2026-07-22 실측). 조건 충족식 등록은
+    정면/좌/우/상/하/근/원 각 구간이 이 프레임 수를 채울 때까지 1단계를
+    끝내지 않는다."""
+
+    coverage_yaw_front_threshold_deg: float = 10.0
+    """|head yaw|가 이 값 미만이면 '정면' coverage 구간으로 센다."""
+
+    coverage_yaw_side_threshold_deg: float = 20.0
+    """head yaw가 ±이 값을 넘으면 '좌/우' coverage 구간으로 센다."""
+
+    coverage_pitch_threshold_deg: float = 12.0
+    """head pitch가 ±이 값을 넘으면 '상/하' coverage 구간으로 센다."""
+
+    coverage_scale_near_ratio: float = 1.15
+    """정면 기준 face scale 대비 이 배율 이상이면 '가까이' 구간으로 센다."""
+
+    coverage_scale_far_ratio: float = 0.87
+    """정면 기준 face scale 대비 이 배율 이하면 '멀리' 구간으로 센다."""
+
+    target_settle_alignment_weight: float = 0.55
+    """Overlap bonus for a target in the final settling direction of the iris."""
+
+    gaze_settle_start_speed_deg_s: float = 12.0
+    """Iris angular speed that arms landing-direction detection."""
+
+    gaze_settle_stop_speed_deg_s: float = 4.0
+    """Iris angular speed below which an armed movement is considered settled."""
+
+    gaze_settle_memory_ms: int = 500
+    """How long the landing direction remains available for overlap resolution."""
 
     gaze_motion_max_interval_ms: int = 250
     """Reset motion derivatives after a long gap, blink, or tracking hold."""
@@ -209,15 +256,34 @@ class GazeConfig:
     target_match_tolerance: float = 1.10
     """Accept near-boundary target matches up to this normalized distance."""
 
+    target_context_tolerance: float = 1.35
+    """Soft scale for normalized 8D context distance during candidate ranking."""
+
     def __post_init__(self) -> None:
         if (
             self.dwell_time_ms < 0
             or self.target_lock_ttl_ms <= 0
             or self.confirmed_unknown_timeout_ms <= 0
+            or self.candidate_grace_ms < 0
         ):
             raise ValueError("Gaze timing thresholds are invalid")
+        if self.registration_coverage_min_frames < 0:
+            raise ValueError("registration_coverage_min_frames must be non-negative")
+        if not (
+            0.0
+            < self.coverage_yaw_front_threshold_deg
+            <= self.coverage_yaw_side_threshold_deg
+            <= 90.0
+        ):
+            raise ValueError("coverage yaw thresholds must satisfy 0 < front <= side <= 90")
+        if not 0.0 < self.coverage_pitch_threshold_deg <= 90.0:
+            raise ValueError("coverage_pitch_threshold_deg must be within (0, 90]")
+        if not 0.0 < self.coverage_scale_far_ratio < 1.0 < self.coverage_scale_near_ratio:
+            raise ValueError("coverage scale ratios must satisfy 0 < far < 1 < near")
         if self.blink_hold_ms < 0 or self.blink_recovery_hold_ms < 0:
             raise ValueError("blink hold thresholds must be non-negative")
+        if self.blink_pose_recovery_frames <= 0:
+            raise ValueError("blink_pose_recovery_frames must be positive")
         if self.tracking_loss_hold_ms < 0:
             raise ValueError("tracking_loss_hold_ms must be non-negative")
         if self.smoothing_window_frames <= 0:
@@ -264,13 +330,6 @@ class GazeConfig:
         }.items():
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
-        for name, value in {
-            "personal_gaze_feature_weight": self.personal_gaze_feature_weight,
-            "personal_head_feature_weight": self.personal_head_feature_weight,
-            "personal_face_scale_feature_weight": self.personal_face_scale_feature_weight,
-        }.items():
-            if not math.isfinite(value) or value <= 0.0:
-                raise ValueError(f"{name} must be finite and positive")
         if self.horizontal_axis_sign not in (-1.0, 1.0):
             raise ValueError("horizontal_axis_sign must be either -1.0 or 1.0")
         if not math.isfinite(self.unknown_max_angle_deg) or not 0.0 < self.unknown_max_angle_deg <= 180.0:
@@ -321,35 +380,51 @@ class GazeConfig:
             raise ValueError(
                 "registration_max_area_radius_deg must satisfy min_spread <= area <= max_spread"
             )
+        if (
+            len(self.pose_correction_bin_edges_deg) < 2
+            or not all(math.isfinite(edge) for edge in self.pose_correction_bin_edges_deg)
+            or any(
+                later <= earlier
+                for earlier, later in zip(
+                    self.pose_correction_bin_edges_deg,
+                    self.pose_correction_bin_edges_deg[1:],
+                    strict=False,
+                )
+            )
+        ):
+            raise ValueError(
+                "pose_correction_bin_edges_deg must contain at least two strictly increasing finite edges"
+            )
+        if self.pose_correction_min_bin_samples <= 0:
+            raise ValueError("pose_correction_min_bin_samples must be positive")
+        if (
+            not math.isfinite(self.pose_correction_max_offset_deg)
+            or self.pose_correction_max_offset_deg <= 0.0
+        ):
+            raise ValueError("pose_correction_max_offset_deg must be finite and positive")
         for name, value in {
-            "target_area_scale_flex": self.target_area_scale_flex,
-            "target_motion_alignment_weight": self.target_motion_alignment_weight,
-            "target_acceleration_alignment_weight": self.target_acceleration_alignment_weight,
+            "target_settle_alignment_weight": self.target_settle_alignment_weight,
         }.items():
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and within [0, 1]")
         for name, value in {
-            "gaze_motion_min_speed_deg_s": self.gaze_motion_min_speed_deg_s,
-            "gaze_motion_min_acceleration_deg_s2": self.gaze_motion_min_acceleration_deg_s2,
+            "gaze_settle_start_speed_deg_s": self.gaze_settle_start_speed_deg_s,
+            "gaze_settle_stop_speed_deg_s": self.gaze_settle_stop_speed_deg_s,
         }.items():
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and non-negative")
         if self.gaze_motion_max_interval_ms <= 0:
             raise ValueError("gaze_motion_max_interval_ms must be positive")
+        if self.gaze_settle_stop_speed_deg_s >= self.gaze_settle_start_speed_deg_s:
+            raise ValueError("gaze settle stop speed must be lower than start speed")
+        if self.gaze_settle_memory_ms <= 0:
+            raise ValueError("gaze_settle_memory_ms must be positive")
         if not math.isfinite(self.target_match_tolerance) or not 1.0 <= self.target_match_tolerance <= 2.0:
             raise ValueError("target_match_tolerance must be finite and within [1, 2]")
-
-    @property
-    def personal_feature_weights(self) -> tuple[float, ...]:
-        """Feature scaling used by the standardized personal softmax classifier."""
-        return (
-            self.personal_gaze_feature_weight,
-            self.personal_gaze_feature_weight,
-            self.personal_head_feature_weight,
-            self.personal_head_feature_weight,
-            self.personal_head_feature_weight,
-            self.personal_face_scale_feature_weight,
-        )
-
+        if (
+            not math.isfinite(self.target_context_tolerance)
+            or not 1.0 <= self.target_context_tolerance <= 3.0
+        ):
+            raise ValueError("target_context_tolerance must be finite and within [1, 3]")
 
 DEFAULT_GAZE_CONFIG = GazeConfig()

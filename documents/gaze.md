@@ -67,20 +67,41 @@ FaceObservation (landmarks.py, MediaPipe Face Landmarker)
   화면 위쪽이 양수가 되도록 수정 완료, yaw·roll 최종 확인 필요)
 - [ ] Gesture·Fusion·Runtime과의 실제 통합(코드 조립은 Runtime composition root 몫)
 - [ ] 환경 변화(조명/안경/거리) 조건에서 실측 Target Selection Accuracy 수집
-- [x] 2단계 물체 등록(중앙점 20초 + 경계 16초) + 중앙점 머리 이동 삼각측량
-  3D 위치·유효 반경 추정
-  (`calibration/triangulation.py`, `target_registration.py`)
+- [x] 2단계 테두리 등록(자세·거리별 20초 + 고개 고정 정밀 경계 16초)
+- [x] 8D target profile(gaze/head/face scale/face center) + Mahalanobis 판정
+- [x] 겹침 시 홍채 settle 방향 tie-break
 - [x] 3D geometry ↔ 각도 모드 통합 classifier(`effective_distance_and_variance`) —
   origin 없거나 깊이 퇴화 시 프레임 단위 폴백
 - [x] 모니터링 앱(`gaze_probe.py`/`app.py`) origin 배선 + 재시작 후 3D geometry 보존
-- [ ] 실제 카메라로 삼각측량 baseline/eigenvalue/residual 임계값 재보정(현재는 합성
-  광선으로만 보정한 값)
 
 ## 이슈 / 의사결정 필요 사항
 
 - head yaw/pitch/roll 부호 규약이 실 카메라와 맞는지 아직 확인되지 않음 — Day 1 통합
   테스트에서 확인되면 여기와 models/README.md를 갱신할 것(있으면 [decisions.md](decisions.md)로 옮기기).
-## Device registration update (2026-07-19)
+## Current deterministic target profile (2026-07-21)
+
+현재 런타임에는 MLP, Ridge, Linear-softmax가 없다. 물체별로 다음 8차원 feature의
+평균·공분산·Mahalanobis threshold만 저장한다.
+
+```text
+[gaze_yaw, gaze_pitch, head_yaw, head_pitch, head_roll,
+ face_scale, face_center_x, face_center_y]
+```
+
+1단계(2026-07-22 개정)에서는 물체 **중앙 한 점을 계속 응시한 채** 고개를 좌우
+끝까지·위아래로 돌리고 카메라 거리를 바꿔, 자세·거리 문맥과 자세별 gaze 편향
+(pose correction)을 모은다. 2단계에서는 고개를 고정하고 눈으로 테두리를 한 바퀴
+돌아 최종 area를 확정한다. 2단계 yaw/pitch 경계에서 95퍼센타일 밖 outlier를 제거하고
+convex hull 꼭짓점만 JSON에 저장한다. runtime은 polygon 안 후보만 만들고 8D profile로 검증·
+정렬한다. area 밖 후보는 profile이 가까워도 항상 `UNKNOWN`이다. area 안에서는 head
+pose가 달라도 눈이 보정한 최종 gaze를 우선하며, 8D 문맥은 hard rejection이 아니라
+겹친 후보의 순위와 신뢰도에만 사용한다. 겹침에서는 target
+중심 방향과, 빠른 홍채 이동이 정지할 때 저장한 마지막 이동 방향을 추가 근거로 쓴다.
+
+테두리 ray는 서로 다른 표면점을 향하므로 새 등록에서는 3D 한 점으로 삼각측량하지
+않는다. 기존 JSON의 `position_3d`는 하위 호환으로 읽을 수 있다.
+
+## Historical device registration (superseded on 2026-07-21)
 
 Demo target registration follows README section 7 as two strictly separated phases:
 20 seconds on one center point for MLP/center/3D, followed by 16 seconds tracing
@@ -111,7 +132,7 @@ MVP operating assumptions:
 - `CalibratedGaze` uses a validated residual MLP by default when at least three labeled target directions are available;
   otherwise it falls back to Ridge or the raw geometric vector.
 
-## Residual MLP vector calibration (2026-07-21)
+## Historical residual MLP vector calibration (removed on 2026-07-21)
 
 `src/jarvis/gaze/mlp_calibration.py` implements a NumPy-only `12 → 24 → 12 → 2`
 network. Input is raw yaw/pitch, both iris offsets, head yaw/pitch/roll, face center,
@@ -133,7 +154,7 @@ The debug panel exposes `vector model: mlp/ridge/geometric`, raw yaw/pitch, fina
 yaw/pitch, and whether correction was applied. The checkbox disables correction for
 an immediate A/B comparison without changing or deleting the dataset.
 
-## 3D object position update (2026-07-20)
+## Historical 3D object position update (new registration no longer uses it)
 
 현재 등록 1단계는 중앙의 한 점을 20초 동안 보며 다양한 자세·거리에서 머리
 이동(parallax) 광선을 모아 3D 위치를 삼각측량한다. 2단계 경계 프레임은 서로 다른
@@ -225,36 +246,135 @@ final_pitch_deg =  head_pitch_deg * head_pitch_weight + eye_pitch_offset_deg
 | `iris_jump_threshold` | `0.18` | Frame-to-frame iris-offset jump threshold. |
 | `max_valid_eye_offset` | `0.55` | Reject implausible eye-edge iris offsets. |
 | `tracking_loss_hold_ms` | `800` | Keep last gaze briefly during full face-landmarker dropouts. |
-| `small_motion_deadzone_deg` | `5.0` | Absorb tiny smoothed-gaze changes to reduce jitter. |
+| `small_motion_deadzone_deg` | `1.0` | Absorb only tiny jitter without visually freezing the arrow. |
 
-Debug monitor policy: simple `iris jump` no longer freezes the vector completely; it lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames hold both the previous gaze direction and the complete classifier feature, so head/scale changes during a blink cannot switch the ML target. Eye closure uses an adaptive personal open-eye baseline with reopen hysteresis, not only one absolute threshold.
+Debug monitor policy: simple `iris jump` lowers confidence so the arrow keeps moving while smoothing absorbs the jump. Eye-closed and blink-recovery frames hold the previous gaze for at most `blink_hold_ms`; the deadline is measured from the last real vector, not extended by held frames. If no stable vector exists or the hold expires while the face is still detected, the pipeline emits a low-confidence `head-only` vector. `TRACKING LOST` is reserved for an actual face-landmarker miss. Each eye has its own adaptive open baseline, and both eyes must indicate closure; one foreshortened eye during a head turn no longer freezes the vector. The debug panel exposes the active `gaze source`.
 
-### Gaze-first personal target scoring
+### Deterministic 8D target scoring
 
-The per-user Linear-softmax classifier standardizes all six target features, then
-applies explicit priority multipliers before training and inference:
+The traced yaw/pitch convex hull is the eligibility gate. Radial distance is zero at
+the stored center and one where the center-to-gaze ray intersects the polygon boundary.
+This preserves traced rectangular corners that the previous ellipse discarded. Candidates inside that area are
+ranked with an 8D Mahalanobis soft-context profile: gaze yaw/pitch, head yaw/pitch/
+roll, face scale, and normalized face center x/y. Per-feature covariance floors keep
+gaze more discriminative while preventing degree units from erasing scale/location.
+No learned classifier is trained during registration.
 
-| Feature group | Weight | Role |
-| --- | ---: | --- |
-| gaze yaw/pitch | `2.0` | Primary target evidence. |
-| head yaw/pitch/roll | `0.4` | Pose context; it must not overpower matching gaze. |
-| face scale | `0.6` | Camera-distance context. |
+Overlap intent is armed above the iris start speed, emitted only after speed falls
+below the stop threshold, and retained briefly. Acceleration is diagnostic only:
+during deceleration it points opposite the landing direction and is unsafe as a
+target bonus. Blink, recovery, iris-jump and tracking-loss frames reset settle state.
 
-Scaling alone does not guarantee the learned model will obey the priority because it
-can compensate with larger head coefficients. After fitting, each class therefore
-caps the effective head coefficient norm at 20% of its gaze coefficient norm. If gaze
-contains too little evidence, confidence falls through to the gaze-area matcher rather
-than allowing head pose to decide alone. Legacy model weights are not mixed with the
-new scale. Existing stored registration
-samples are retrained in memory with the current feature weights when the monitor
-loads. A later registration persists the migrated model.
+### Pose-conditioned gaze correction (2026-07-22)
 
-The old per-frame gaze delta remains available for diagnostics and compatibility,
-but live scoring now derives real time-normalized velocity (deg/s) and acceleration
-(deg/s²). Motion toward a registered target center can multiply both the personal
-classifier score and the area score by up to `1 + 0.35 + 0.15 = 1.50`. Opposite
-motion is not rewarded. Blink, recovery, and tracking-hold frames freeze the motion
-history; intervals over 250ms reset derivatives instead of producing a false spike.
+`jarvis-gaze diagnose-composition` 실측(모니터 응시 + 고개 스윕, 유효 494프레임,
+head yaw -38°~+45°)으로 확인한 사실:
+
+- 중앙 |head yaw| ≤ 10°에서는 iris↔head 회귀가 R²=0.90으로 선형이고 implied
+  head_yaw_weight ≈ 0.43이 나온다.
+- ±15°를 넘으면 좌우 모두 회귀 기울기의 부호가 반전된다 — MediaPipe iris 추정이
+  극단 눈 위치에서 포화·역행하므로, 어떤 전역 `head_yaw_weight`로도 자세 불변을
+  만들 수 없다(0.43으로 올리면 중앙은 좋아지고 head yaw 35°는 -4°→-10°로 악화).
+- 클램프(`max_valid_eye_offset`) 포화와 근안(近眼) 우선 가설은 기각(p95 0.38,
+  양쪽 눈 모두 큰 yaw에서 무신호).
+
+이 편향은 전역 수식으로 고칠 수 없지만 자세별로는 반복 가능하므로, 등록 1단계
+샘플을 head-yaw 구간(`pose_correction_bin_edges_deg`)별로 묶어 `bin gaze 중앙값
+− area 중심`을 target별 `TargetPoseCorrection`으로 저장한다(`feature_profile.py`
+`build_pose_correction`). 2단계(고개 고정)의 median head yaw를 기준 자세로 삼아
+그 자세에서 보정이 0이 되게 정규화하고, 런타임에는 classifier의 area 판정
+직전에 현재 head yaw로 보간(piecewise-linear, 양끝 상수)한 오프셋을 gaze에서
+뺀다. 8D Mahalanobis는 원시 샘플 그대로 쓴다(그 분포 자체가 편향 포함 원시
+프레임으로 학습되므로). 표본이 부족한 bin은 만들지 않고, 유효 bin이 2개
+미만이면 보정을 저장하지 않으며, 예전 JSON은 보정 없이(None) 그대로 로드된다.
+기존 등록 target이 보정을 얻으려면 재등록해야 한다. 디버그 패널의 area 거리도
+같은 보정 거리를 쓴다.
+
+**보정은 rescue 전용이다 (2026-07-22 실측).** 재등록 검증에서 자세별 편향이
+세션·순간에 따라 -8°~+4°로 요동해(응시 캡처 두 번은 서로 일치했지만 정지 응시
+실사용과는 부호가 반대), 보정을 양방향으로 적용하면 원시 gaze로는 area 안이던
+프레임을 밖으로 밀어내는 회귀가 실제로 발생했다. 그래서 classifier는 원시
+gaze와 보정 gaze 중 **area 거리가 더 작은 쪽을 채택**한다
+(`TargetClassifier.area_distance_and_gaze`, min 정책) — 보정은 OUT→IN 구조만
+할 수 있고 IN→OUT을 만들 수 없다. |head yaw| > 30° 또는 head pitch > 25°의
+자세는 편향 변동폭이 area 반경(6°)과 같은 규모라 보정으로 구제되지 않는다 —
+데모 배치에서 그 범위의 고개 돌림이 필요 없게 하는 것이 정답이다.
+
+**1단계 데이터는 반드시 중앙 응시 스윕이어야 한다 (2026-07-22 실측).** 첫
+구현은 "테두리를 훑으며 자세를 바꾸는" 기존 1단계 데이터로 오프셋을 배웠는데,
+사람은 보는 방향으로 고개를 돌리므로 bin 중앙값이 센서 편향이 아니라 "그
+자세에서 보던 테두리 위치"를 학습해 부호까지 뒤집혔다(head yaw -25~-30 실제
+편향 -3.4° vs 학습값 0~+3.9°). 그래서 등록 1단계 안내를 "중앙 한 점 응시 +
+고개 스윕"으로 바꿨고, `build_pose_correction`은 bin 안 gaze IQR가
+`maximum_bin_iqr_deg`(기본 4°)보다 넓으면 그 bin을 버린다 — 스윕 실측에서
+|head yaw| ≤ 30° bin은 IQR 1~2°, 그 밖은 9~30°였다.
+
+**재등록-검증 루프는 `jarvis-gaze verify-target`으로 돌린다.** 재등록 직후
+`--label after-registration --output <a.json>`으로 응시 스윕을 1회 재검증하고,
+시간이 지나거나 자세·조명이 바뀐 뒤 `--compare <a.json>`으로 다시 실행하면
+bin별로 "직후부터 OUT(등록 수집 문제)"과 "직후엔 IN이었다가 OUT(세션
+드리프트 — 세션 시작 재보정/온라인 편향 추정 필요)"을 갈라 판정해 준다
+(`target_verification.py`). 판정은 런타임과 동일한 rescue 전용(min) 거리로
+계산하며, 표본 8프레임 미만 bin은 결론에서 제외한다.
+
+**등록 1단계는 시간제가 아니라 조건 충족식이다 (2026-07-22).** 시간제(20초)
+등록은 스윕이 한쪽에 치우쳐도 완료돼, 실제로 오른쪽 bin 2개만 저장된 등록이
+발생했다. `PoseCoverageTracker`(target_registration.py)가 정면/좌/우/상/하/
+근/원 7개 구간의 유효 프레임을 세고, 전 구간이
+`registration_coverage_min_frames`(기본 30)를 채워야 2단계로 넘어가며
+`finalize()`도 미달이면 거부한다. near/far는 정면 기준 face scale 대비
+배율(1.15x/0.87x)로 판정한다. 앱 상태줄이 구간별 `count/required ✓` 현황과
+부족 구간을 실시간 안내한다. 완료 시 1단계 원시 샘플이
+`data/calibration/raw_samples/<target>_phase1_<ts>.json`으로 저장된다.
+
+**Ridge residual 보정은 오프라인 A/B 전용이며 런타임에 연결되지 않았다.**
+`jarvis-gaze ab-residual <raw_samples.json>`이 leave-one-yaw-bin-out으로
+raw / 현재 bin 보정표 / Ridge(자세·문맥 6D → delta) held-out 오차를 비교한다.
+raw gaze는 입력에서 의도적으로 제외한다 — 단일 target 데이터에서 gaze를
+입력에 넣으면 정답이 `delta = center − gaze`라서 모델이 항상 물체 중심만
+출력하는 상수 예측기로 붕괴하고 leave-bin-out으로도 잡히지 않는다(단위
+테스트로 확인). residual MLP·Ridge는 2026-07-21에 제거된 이력이 있고 자세별
+편향이 세션 간 요동하므로(위), **같은 캡처 안의 A/B 통과만으로는 활성화하지
+않고 다른 세션 데이터로 재확인한 뒤 결정한다.**
+
+### Labeled debugging sessions (2026-07-22)
+
+정확도 디버깅이 매번 "raw CSV를 밖에서 재합성"하는 일이 되지 않도록, 모니터링
+앱에 라벨된 세션 레코더를 붙였다.
+
+- 모니터링 앱 실시간 탭에서 **F9**로 녹화 시작/종료. 녹화 중 숫자키로 정답
+  라벨을 표시한다: `0` = 아무것도 안 봄(기대 결과 UNKNOWN), `1`~`9` = 등록
+  target n번. 라벨을 안 고르면 그 구간은 집계에서 제외된다.
+- `data/diagnostics/session_*.jsonl`에 프레임별 파이프라인 전 단계(관측값,
+  raw/smoothed gaze, target별 area 거리·보정 적용 여부, 분류 결과·탈락 사유,
+  lock 상태)가 남는다. v2부터 눈 뜸 비율/사용자 기준선, 얼굴 중심·크기,
+  실제 gaze ray 원점, smoothing 버퍼, 시선 속도·가속도·settle 상태도 함께
+  기록한다. 헤더에 당시 GazeConfig와 target 프로필(보정 테이블 포함)이 통째로
+  들어가므로 세션 파일 하나로 분석이 완결된다. 원본 카메라 이미지는 저장하지
+  않는다.
+- F9로 녹화를 끝내면 같은 실시간 탭 아래의 분석 창에 결과가 자동으로 뜬다.
+  **최근 세션 분석**은 앱을 다시 실행한 뒤 마지막 JSONL을 다시 읽을 때 쓴다.
+- `jarvis-gaze report <session.jsonl>`도 같은 결과를 출력한다. 라벨별 전체
+  정확도와 head-yaw 보정 대조뿐 아니라 head pitch, 등록 대비 얼굴 크기,
+  화면 내 얼굴 x/y 구간별 정확도·UNKNOWN·no-gaze·in-area 비율을 보여 준다.
+  편향이 3도 이상 어긋난 구간, 보정 커버리지 밖, 전체보다 정확도가 20%p 이상
+  낮은 자세/거리 구간은 경고하고, 실패 원인별 대표 프레임을 최대 6개 표시한다.
+- 구현: `monitoring/session_recorder.py`(기록), `gaze/session_report.py`(집계),
+  `AreaProfileDetail.used_gaze_*`(area 판정에 실제 쓰인 보정 전/후 gaze 노출).
+
+권장 측정은 target 하나당 최소 세 구간이다. 각 구간에서 콤보 또는 숫자키로
+정답을 먼저 고른다.
+
+1. 중앙 응시 5초: 정면 자세의 기준 정확도와 blink/no-gaze 비율 확인.
+2. 같은 target 응시 10초: 고개 좌우·상하, 몸의 좌우, 카메라와의 거리를 천천히
+   바꿔 자세/거리별 성능 저하 구간 확인.
+3. `0` 라벨 10초: 등록 물체 사이와 바깥을 보며 false positive 확인.
+
+해석할 때는 숫자 하나를 바로 조정하지 않는다. `in-area%`가 낮으면 gaze/등록
+영역 문제, `in-area%`는 높은데 정확도가 낮으면 후보 순위·confidence 문제,
+`no-gaze%`가 높으면 face/iris/blink 입력 문제다. 얼굴 크기 비율 한 구간에서만
+무너지면 거리 보정, head pitch/yaw 한 구간에서만 무너지면 pose 보정 데이터를
+먼저 다시 수집한다. 대표 실패 프레임 번호로 같은 JSONL의 원시 값을 대조한다.
 
 The personal softmax is now only a ranker for overlapping **current spatial
 candidates**. A target must first pass its saved edge-loop area gate (or its direction
@@ -274,19 +394,18 @@ invalidates legacy/stale rows. Renaming does not change the fingerprint.
 | --- | ---: | --- |
 | `unknown_probability_threshold` | `0.80` | Reject as `UNKNOWN` when top-1 target probability is too low. |
 | `unknown_max_angle_deg` | `25.0` | Reject as `UNKNOWN` when even the nearest registered direction is farther than this. |
-| `target_match_tolerance` | `1.10` | Near-boundary tolerance in normalized distance. Example: `8.5/8.0deg x1.06` is accepted; `26.1/8.0deg x3.26` is rejected. |
+| `target_match_tolerance` | `1.10` | Radial convex-hull boundary tolerance; up to 10% beyond the traced edge is accepted. |
 | `minimum_probability` | `0.80` | Minimum probability for Gaze Lock candidate/hold. |
 | `minimum_margin` | `0.20` | Minimum top-1 vs top-2 margin for confident lock. |
 | `dwell_time_ms` | `3000` | Same target must remain the confident engine result for three continuous seconds before confirmation. |
+| `candidate_grace_ms` | `600` | Momentary UNKNOWN/low-confidence gaps (blinks) shorter than this do not reset the dwell timer; the gap still counts toward elapsed dwell. |
 | `target_lock_ttl_ms` | `1500` | Gesture-wait/input-stream validity window; replacement candidates do not clear the confirmed target. |
 | `confirmed_unknown_timeout_ms` | `2000` | Release the Gaze confirmed target after two continuous seconds of classifier `UNKNOWN`. |
-| `personal_gaze_feature_weight` | `2.0` | Primary gaze contribution to the personal classifier. |
-| `personal_head_feature_weight` | `0.4` | Secondary head-pose context contribution. |
-| `personal_face_scale_feature_weight` | `0.6` | Camera-distance context contribution. |
-| `target_motion_alignment_weight` | `0.35` | Maximum velocity-direction target bonus. |
-| `target_acceleration_alignment_weight` | `0.15` | Maximum acceleration-direction target bonus. |
-| `gaze_motion_min_speed_deg_s` | `6.0` | Ignore slower motion as jitter. |
-| `gaze_motion_min_acceleration_deg_s2` | `80.0` | Ignore smaller acceleration as jitter. |
+| `target_context_tolerance` | `1.35` | Soft scale for normalized 8D Mahalanobis overlap ranking. |
+| `target_settle_alignment_weight` | `0.55` | Maximum overlap bonus in the final iris landing direction. |
+| `gaze_settle_start_speed_deg_s` | `12.0` | Speed that arms eye-movement landing detection. |
+| `gaze_settle_stop_speed_deg_s` | `4.0` | Speed below which the armed movement is considered settled. |
+| `gaze_settle_memory_ms` | `500` | Lifetime of the landing-direction tie-break. |
 | `gaze_motion_max_interval_ms` | `250` | Reset derivatives after longer gaps. |
 
 ### Registration / target profile
@@ -296,14 +415,22 @@ invalidates legacy/stale rows. Renaming does not change the fingerprint.
 | `registration_min_spread_deg` | `4.0` | Minimum angular spread saved for a registered target. Prevents overly tiny target regions. |
 | `registration_max_spread_deg` | `8.0` | Maximum angular spread saved for a registered target. Prevents one target from swallowing too much space. |
 | `registration_max_area_radius_deg` | `6.0` | Runtime cap for edge-loop target area radius, even if an old JSON profile saved a larger area. |
-| `target_area_scale_flex` | `0.25` | Allows the target area radius to flex by ±25% from face-scale changes. If the user is closer than during registration, the apparent target area grows slightly; if farther, it shrinks slightly. |
+| `pose_correction_bin_edges_deg` | `(-30, -20, -10, 10, 20, 30)` | Head-yaw bin boundaries for the pose-conditioned gaze correction learned from phase-1 samples. |
+| `pose_correction_min_bin_samples` | `8` | Bins with fewer phase-1 samples do not produce a correction point. |
+| `pose_correction_max_offset_deg` | `10.0` | Per-bin cap on the stored gaze correction offset. Measured bias was 4~8° at head yaw 35°. |
+| `registration_coverage_min_frames` | `30` | Condition-based phase 1: every pose/scale coverage bucket must reach this many valid frames before phase 2. |
+| `coverage_yaw_front_threshold_deg` / `coverage_yaw_side_threshold_deg` | `10` / `20` | Head-yaw bounds for the front and left/right coverage buckets. |
+| `coverage_pitch_threshold_deg` | `12` | Head-pitch bound for the up/down coverage buckets. |
+| `coverage_scale_near_ratio` / `coverage_scale_far_ratio` | `1.15` / `0.87` | Near/far buckets relative to the front-bucket median face scale. |
 
-### 3D registration diagnostics
+Profiles saved before `boundary_polygon` existed continue to use the legacy ellipse for compatibility. Re-register the target to collect a real hull. The debug heatmap fills and outlines the stored polygon and the target list shows its hull vertex count.
+
+### Legacy 3D profile compatibility
 
 | Setting | Current value | Meaning |
 | --- | ---: | --- |
-| `enable_3d_target_matching` | `False` | Default live matching remains angle-profile based for demo stability. 3D diagnostics/records may still be stored. |
-| `require_3d_target_registration` | `False` | If 3D triangulation fails, registration falls back to angle profile. |
+| `enable_3d_target_matching` | `False` | Existing records can still be loaded, but new boundary registration does not create 3D points. |
+| `require_3d_target_registration` | `False` | Must remain false for boundary-tracing registration. |
 | `minimum_triangulation_baseline_mm` | `40.0` | Minimum head-origin movement during registration. |
 | `minimum_triangulation_eigenvalue` | `0.0025` | Minimum gaze-ray direction diversity. |
 | `maximum_triangulation_residual_mm` | `35.0` | Maximum RMS residual between estimated point and gaze rays. |
@@ -317,7 +444,9 @@ invalidates legacy/stale rows. Renaming does not change the fingerprint.
 - Up/down head motion dominates or flips targets too easily: decrease `head_pitch_weight`.
 - Left/right feels reversed: check `horizontal_axis_sign`.
 - Looking at a target but logs show near-boundary values such as `8.3/8.0deg x1.03 OUT`: check `target_match_tolerance`.
-- If target matching changes mostly when the user moves closer/farther from the camera: check `target_area_scale_flex`.
+- If matching changes with distance or head turn: inspect the 8D face-scale/face-center context; it must not shrink the hard gaze area.
 - Not looking at a target but it is still selected: check duplicate target records, `registration_max_area_radius_deg`, and the saved target profile/area.
 - Blink causes vector spikes: check `blink_hold_ms`, `blink_recovery_hold_ms`, and `iris_jump_threshold`.
 - Vector freezes too much: `iris_jump_threshold` may be too low, or blink-recovery hold may be too aggressive.
+- Target matches at neutral pose but goes `UNKNOWN` when the head turns 20°+ toward it: the target likely has no pose correction (old registration, or phase 1 never reached that head yaw). Re-register with wide head turns during phase 1 and check `pose_correction` in the saved JSON. Beyond ~30° head yaw the bias itself is unstable — fix the demo layout instead.
+- Dwell keeps restarting every few seconds and never confirms: blinking resets the candidate. Check `candidate_grace_ms` (momentary UNKNOWN gaps within it must not reset dwell) and the blink hold settings.

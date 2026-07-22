@@ -18,9 +18,9 @@ from jarvis.gaze.feature_profile import (
     TargetAreaProfile,
     TargetFeatureProfile,
     TargetFeatureSample,
+    build_area_profile,
     build_feature_profile,
 )
-from jarvis.gaze.personal_classifier import PersonalTargetClassifier, PersonalTrainingSample
 
 
 def _unit(vector: list[float]) -> np.ndarray:
@@ -36,16 +36,18 @@ def test_unknown_when_no_devices_registered() -> None:
     assert result.second_best_probability == 0.0
 
 
-def _feature_profile(gaze_yaw: float, head_yaw: float) -> TargetFeatureProfile:
+def _feature_profile(
+    gaze_yaw: float,
+    head_yaw: float,
+    *,
+    face_scale: float = 0.10,
+    face_center_x: float = 0.5,
+) -> TargetFeatureProfile:
     return TargetFeatureProfile(
-        mean=(gaze_yaw, 5.0, head_yaw, 10.0, 0.0, 0.10),
-        covariance=(
-            (4.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-            (0.0, 4.0, 0.0, 0.0, 0.0, 0.0),
-            (0.0, 0.0, 9.0, 0.0, 0.0, 0.0),
-            (0.0, 0.0, 0.0, 9.0, 0.0, 0.0),
-            (0.0, 0.0, 0.0, 0.0, 9.0, 0.0),
-            (0.0, 0.0, 0.0, 0.0, 0.0, 0.01),
+        mean=(gaze_yaw, 5.0, head_yaw, 10.0, 0.0, face_scale, face_center_x, 0.5),
+        covariance=tuple(
+            tuple(float(value) for value in row)
+            for row in np.diag([4.0, 4.0, 9.0, 9.0, 9.0, 0.01, 0.01, 0.01])
         ),
         sample_count=20,
         threshold=2.5,
@@ -66,6 +68,49 @@ def test_feature_profile_selects_nearest_distribution() -> None:
     result = classifier.classify(
         _unit([0.0, 0.0, 1.0]),
         feature_sample=TargetFeatureSample(0.5, 5.0, 1.0, 10.0, 0.0, 0.10),
+    )
+
+    assert result.target == "monitor"
+
+
+def test_overlapping_areas_use_head_scale_and_face_location_context() -> None:
+    classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
+    area = TargetAreaProfile(0.0, 5.0, 8.0, 5.0, 80)
+    classifier.register_profile(
+        DeviceGazeProfile("left_pose", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        feature_profile=_feature_profile(0.0, -15.0, face_scale=0.08, face_center_x=0.35),
+        area_profile=area,
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("right_pose", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        feature_profile=_feature_profile(0.0, 15.0, face_scale=0.12, face_center_x=0.65),
+        area_profile=area,
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(
+            0.0, 5.0, 14.0, 10.0, 0.0, 0.118, 0.64, 0.5
+        ),
+    )
+
+    assert result.target == "right_pose"
+
+
+def test_in_area_gaze_is_not_rejected_by_compensated_head_pose() -> None:
+    """Head context must not veto a gaze that lands in the traced object area."""
+    classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
+    classifier.register_profile(
+        DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        feature_profile=_feature_profile(0.0, 0.0),
+        area_profile=TargetAreaProfile(0.0, 5.0, 6.0, 4.0, 80),
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(
+            5.9, 5.0, 37.0, 10.0, 3.0, 0.10, 0.5, 0.5
+        ),
     )
 
     assert result.target == "monitor"
@@ -102,10 +147,65 @@ def test_area_profile_accepts_gaze_inside_registered_object_boundary() -> None:
 
     result = classifier.classify(
         _unit([0.0, 0.0, 1.0]),
-        feature_sample=TargetFeatureSample(5.0, 5.0, 40.0, 30.0, 0.0, 0.2),
+        feature_sample=TargetFeatureSample(5.0, 5.0, 5.0, 12.0, 0.0, 0.11),
     )
 
     assert result.target == "monitor"
+
+
+def test_convex_hull_accepts_a_traced_rectangular_corner() -> None:
+    area = build_area_profile(
+        [(-6.0, -4.0), (6.0, -4.0), (6.0, 4.0), (-6.0, 4.0)],
+        center_yaw_pitch=(0.0, 0.0),
+        minimum_radius_deg=1.0,
+        maximum_radius_deg=6.0,
+    )
+    classifier = TargetClassifier(
+        GazeConfig(unknown_probability_threshold=0.0, target_match_tolerance=1.1)
+    )
+    classifier.register_profile(
+        DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        area_profile=area,
+    )
+
+    result = classifier.classify(
+        _unit([0.0, 0.0, 1.0]),
+        feature_sample=TargetFeatureSample(5.9, -3.5, 0.0, 0.0, 0.0, 0.1),
+    )
+
+    assert area.normalized_distance(5.9, -3.5) == pytest.approx(5.9 / 6.0)
+    assert result.target == "monitor"
+
+
+def test_convex_hull_rejects_point_outside_traced_shape_but_inside_bounding_box() -> None:
+    area = build_area_profile(
+        [(-4.0, -4.0), (4.0, -4.0), (0.0, 4.0)],
+        center_yaw_pitch=(0.0, 0.0),
+        minimum_radius_deg=1.0,
+        maximum_radius_deg=8.0,
+    )
+
+    assert area.boundary_polygon
+    assert area.contains(0.0, 0.0)
+    assert not area.contains(3.0, 3.0)
+
+
+def test_convex_hull_drops_single_boundary_outlier() -> None:
+    samples = [
+        (5.0 * math.cos(index * math.tau / 40), 3.0 * math.sin(index * math.tau / 40))
+        for index in range(40)
+    ]
+    samples.append((30.0, 30.0))
+
+    area = build_area_profile(
+        samples,
+        center_yaw_pitch=(0.0, 0.0),
+        minimum_radius_deg=1.0,
+        maximum_radius_deg=20.0,
+    )
+
+    assert max(yaw for yaw, _pitch in area.boundary_polygon) < 10.0
+    assert not area.contains(20.0, 20.0)
 
 
 def test_area_profile_runtime_cap_rejects_overwide_registered_area() -> None:
@@ -155,121 +255,6 @@ def test_area_profile_accepts_near_boundary_with_tolerance() -> None:
     assert result.target == "monitor"
 
 
-def test_personal_classifier_ranks_overlapping_spatial_candidates_when_confident() -> None:
-    classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
-    classifier.register_profile(
-        DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.01),
-        area_profile=TargetAreaProfile(
-            center_yaw=0.0,
-            center_pitch=0.0,
-            radius_yaw=8.0,
-            radius_pitch=8.0,
-            sample_count=80,
-        ),
-    )
-    classifier.register_profile(
-        DeviceGazeProfile("speaker", _unit([0.2, 0.0, 0.98]), variance=0.01),
-        area_profile=TargetAreaProfile(
-            center_yaw=4.0,
-            center_pitch=0.0,
-            radius_yaw=8.0,
-            radius_pitch=8.0,
-            sample_count=80,
-        ),
-    )
-    samples = []
-    for i in range(24):
-        samples.append(
-            PersonalTrainingSample.from_feature_sample(
-                "monitor",
-                TargetFeatureSample(0.0 + i * 0.02, 0.0, -2.0, 3.0, 0.0, 0.10),
-            )
-        )
-        samples.append(
-            PersonalTrainingSample.from_feature_sample(
-                "speaker",
-                TargetFeatureSample(0.4 + i * 0.02, 0.0, 25.0, 3.0, 0.0, 0.10),
-            )
-        )
-    model = PersonalTargetClassifier.fit(samples)
-    assert model is not None
-    classifier.set_personal_classifier(model, confidence_threshold=0.60)
-
-    result = classifier.classify(
-        _unit([0.0, 0.0, 1.0]),
-        feature_sample=TargetFeatureSample(0.5, 0.0, 25.0, 3.0, 0.0, 0.10),
-    )
-
-    assert result.target == "speaker"
-
-
-def test_personal_classifier_cannot_select_target_outside_spatial_gate() -> None:
-    config = GazeConfig(unknown_probability_threshold=0.0)
-    classifier = TargetClassifier(config)
-    for device_id, center_yaw in (("monitor", 0.0), ("speaker", 12.0)):
-        classifier.register_profile(
-            DeviceGazeProfile(device_id, _unit([0.0, 0.0, 1.0]), variance=0.01),
-            area_profile=TargetAreaProfile(
-                center_yaw=center_yaw,
-                center_pitch=0.0,
-                radius_yaw=4.0,
-                radius_pitch=4.0,
-                sample_count=80,
-            ),
-        )
-    model = PersonalTargetClassifier(
-        target_ids=["monitor", "speaker"],
-        mean=np.zeros(6, dtype=np.float64),
-        scale=np.ones(6, dtype=np.float64),
-        weights=np.zeros((6, 2), dtype=np.float64),
-        bias=np.asarray([20.0, 0.0], dtype=np.float64),
-        feature_weights=np.asarray(config.personal_feature_weights, dtype=np.float64),
-        sample_count=40,
-    )
-    classifier.set_personal_classifier(model, confidence_threshold=0.60)
-
-    result = classifier.classify(
-        _unit([0.0, 0.0, 1.0]),
-        feature_sample=TargetFeatureSample(30.0, 0.0, 0.0, 0.0, 0.0, 0.10),
-    )
-
-    assert result.target == config.UNKNOWN_TARGET
-
-
-def test_personal_classifier_ignores_model_classes_not_currently_registered() -> None:
-    config = GazeConfig(unknown_probability_threshold=0.0)
-    classifier = TargetClassifier(config)
-    for device_id, center_yaw in (("monitor", 0.0), ("speaker", 2.0)):
-        classifier.register_profile(
-            DeviceGazeProfile(device_id, _unit([0.0, 0.0, 1.0]), variance=0.01),
-            area_profile=TargetAreaProfile(
-                center_yaw=center_yaw,
-                center_pitch=0.0,
-                radius_yaw=6.0,
-                radius_pitch=6.0,
-                sample_count=80,
-            ),
-        )
-    model = PersonalTargetClassifier(
-        target_ids=["monitor", "speaker", "deleted_target"],
-        mean=np.zeros(6, dtype=np.float64),
-        scale=np.ones(6, dtype=np.float64),
-        weights=np.zeros((6, 3), dtype=np.float64),
-        bias=np.asarray([0.0, 1.0, 100.0], dtype=np.float64),
-        feature_weights=np.asarray(config.personal_feature_weights, dtype=np.float64),
-        sample_count=60,
-    )
-    classifier.set_personal_classifier(model, confidence_threshold=0.60)
-    sample = TargetFeatureSample(1.0, 0.0, 0.0, 0.0, 0.0, 0.10)
-
-    prediction = classifier.predict_personal(sample)
-    result = classifier.classify(_unit([0.0, 0.0, 1.0]), feature_sample=sample)
-
-    assert prediction is not None
-    assert prediction.target_id == "speaker"
-    assert result.target == "speaker"
-
-
 def test_area_profile_inside_boundary_overrides_low_softmax_probability() -> None:
     classifier = TargetClassifier(
         GazeConfig(
@@ -308,13 +293,12 @@ def test_area_profile_inside_boundary_overrides_low_softmax_probability() -> Non
     assert result.probability < 0.95
 
 
-def test_area_profile_flexes_with_face_scale_for_apparent_target_size() -> None:
+def test_face_scale_does_not_shrink_a_valid_traced_area() -> None:
     classifier = TargetClassifier(
         GazeConfig(
             unknown_probability_threshold=0.0,
             registration_max_area_radius_deg=6.0,
-            target_match_tolerance=1.0,
-            target_area_scale_flex=0.25,
+            target_match_tolerance=1.1,
         )
     )
     classifier.register_profile(
@@ -333,19 +317,13 @@ def test_area_profile_flexes_with_face_scale_for_apparent_target_size() -> None:
         ),
     )
 
-    far_without_scale_flex = classifier.classify(
+    result = classifier.classify(
         _unit([0.0, 0.0, 1.0]),
-        feature_sample=TargetFeatureSample(7.0, 0.0, 0.0, 0.0, 0.0, 0.10),
-        current_face_scale=0.10,
-    )
-    closer_with_larger_apparent_target = classifier.classify(
-        _unit([0.0, 0.0, 1.0]),
-        feature_sample=TargetFeatureSample(7.0, 0.0, 0.0, 0.0, 0.0, 0.125),
-        current_face_scale=0.125,
+        feature_sample=TargetFeatureSample(6.0, 0.0, 0.0, 0.0, 0.0, 0.075),
+        current_face_scale=0.075,
     )
 
-    assert far_without_scale_flex.target == GazeConfig().UNKNOWN_TARGET
-    assert closer_with_larger_apparent_target.target == "screen"
+    assert result.target == "screen"
 
 
 def test_overlapping_area_profiles_prefer_gaze_aligned_center() -> None:
@@ -386,12 +364,12 @@ def test_overlapping_area_profiles_prefer_gaze_aligned_center() -> None:
     assert result.target == "aimed_area"
 
 
-def test_overlapping_area_profiles_use_recent_gaze_motion_as_tiebreaker() -> None:
+def test_overlapping_area_profiles_use_iris_settle_direction_as_tiebreaker() -> None:
     classifier = TargetClassifier(
         GazeConfig(
             unknown_probability_threshold=0.0,
             target_match_tolerance=1.1,
-            target_motion_alignment_weight=0.5,
+            target_settle_alignment_weight=0.5,
         )
     )
     classifier.register_profile(
@@ -418,59 +396,10 @@ def test_overlapping_area_profiles_use_recent_gaze_motion_as_tiebreaker() -> Non
     result = classifier.classify(
         _unit([0.0, 0.0, 1.0]),
         feature_sample=TargetFeatureSample(0.0, 0.0, 0.0, 0.0, 0.0, 0.1),
-        gaze_motion_delta_deg=(1.0, 0.0),
+        gaze_settle_velocity_deg_s=(20.0, 0.0),
     )
 
     assert result.target == "right"
-
-
-def test_velocity_and_acceleration_bonus_reaches_personal_classifier() -> None:
-    config = GazeConfig(
-        unknown_probability_threshold=0.0,
-        target_motion_alignment_weight=0.35,
-        target_acceleration_alignment_weight=0.15,
-    )
-    classifier = TargetClassifier(config)
-    for device_id, center_yaw in (("left", -2.0), ("right", 2.0)):
-        classifier.register_profile(
-            DeviceGazeProfile(device_id, _unit([0.0, 0.0, 1.0]), variance=0.01),
-            area_profile=TargetAreaProfile(
-                center_yaw=center_yaw,
-                center_pitch=0.0,
-                radius_yaw=6.0,
-                radius_pitch=6.0,
-                sample_count=120,
-            ),
-        )
-    model = PersonalTargetClassifier(
-        target_ids=["left", "right"],
-        mean=np.zeros(6, dtype=np.float64),
-        scale=np.ones(6, dtype=np.float64),
-        weights=np.zeros((6, 2), dtype=np.float64),
-        bias=np.zeros(2, dtype=np.float64),
-        feature_weights=np.asarray(config.personal_feature_weights, dtype=np.float64),
-        sample_count=40,
-    )
-    classifier.set_personal_classifier(model, confidence_threshold=0.55)
-    sample = TargetFeatureSample(0.0, 0.0, 0.0, 0.0, 0.0, 0.1)
-
-    prediction = classifier.predict_personal(
-        sample,
-        gaze_motion_velocity_deg_s=(10.0, 0.0),
-        gaze_motion_acceleration_deg_s2=(100.0, 0.0),
-    )
-    result = classifier.classify(
-        _unit([0.0, 0.0, 1.0]),
-        feature_sample=sample,
-        gaze_motion_velocity_deg_s=(10.0, 0.0),
-        gaze_motion_acceleration_deg_s2=(100.0, 0.0),
-    )
-
-    assert prediction is not None
-    assert prediction.target_id == "right"
-    assert prediction.confidence == pytest.approx(0.6)
-    assert result.target == "right"
-    assert result.probability == pytest.approx(0.6)
 
 
 def test_built_feature_profile_tolerates_head_pose_when_gaze_matches() -> None:

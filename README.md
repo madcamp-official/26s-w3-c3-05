@@ -147,36 +147,31 @@ JARVIS가 해결하려는 문제는 다음과 같다.
 JARVIS 실행
 → 카메라 위치 고정
 → 기기 추가
-→ 1/2 중앙점 보정(20초)
-   → 물체 중앙의 한 점만 계속 응시
-   → 시선은 고정한 채 얼굴·몸을 대각선과 앞뒤로 이동
-   → 중앙 방향·MLP 정답·3D 시선 광선 수집
-→ 2/2 물체 영역 확정(16초)
+→ 1/2 자세·거리별 테두리 수집(20초)
+   → 물체 테두리를 계속 훑음
+   → 얼굴·몸을 대각선과 앞뒤로 이동
+   → gaze/head/face scale/face center의 target 분포 수집
+→ 2/2 정밀 물체 영역 확정(16초)
    → 고개·몸은 고정
    → 눈으로 왼쪽 위 모서리부터 네 변을 한 바퀴 순서대로 추적
-   → 물체의 각도 영역·spread 수집
-→ 중앙점 단계의 머리 이동(parallax)으로 물체의 3D 위치·유효 반경 삼각측량 시도
-   → 성공: 위치+반경 저장
-   → 실패(머리 이동 부족 등): 시선 방향 벡터 + 각도 분산으로 대체 저장
+   → 물체의 최종 각도 영역·spread 확정
 → 제어 capability 등록
 ```
 
-중앙과 경계를 한 번에 수집하면 테두리 시선까지 모두 중앙점 MLP 정답으로 붙어
-보정 모델이 오염된다. 따라서 중앙점 단계와 경계 단계를 분리한다. 중앙점 단계에서
-고개를 크게 움직이며 같은 한 점을 봐야 서로 다른 위치에서 나온
-시선 광선들이 한 점(물체의 3D 위치)에서 수렴해 삼각측량이 가능해진다. 머리
-움직임이 부족하거나 광선이 잘 수렴하지 않으면(물체가 너무 멀어 광선이 거의
-평행한 경우 등) 항상 검증된 방향+분산 방식으로 조용히 대체된다 — 실패를 성공
-으로 포장하지 않는다. 각 단계는 최소 30개 유효 프레임도 함께 요구하므로 눈 감김·
+두 단계를 모두 테두리 응시로 구성한다. 1단계는 사용자 자세·거리·카메라 안 얼굴
+위치가 달라져도 같은 물체로 인식할 범위를 모으고, 2단계는 고개를 고정해 물체의
+시선 영역을 더 정확하게 확정한다. 서로 다른 표면점을 향하는 테두리 ray를 한 점으로
+삼각측량하면 가짜 3D 좌표가 생기므로 새 등록에서는 3D 중심을 만들지 않는다. 각
+단계는 최소 30개 유효 프레임도 함께 요구하므로 눈 감김·
 추적 손실이 많으면 타이머가 끝난 뒤에도 필요한 프레임을 채울 때까지 연장된다.
 
 예:
 
 ```
 [전구 등록 시작]
-1/2 중앙점 보정: 중앙의 한 점을 보며 얼굴을 왼쪽 위로 이동하세요
+1/2 자세·거리별 테두리: 테두리를 훑으며 얼굴을 왼쪽 위로 이동하세요
 2/2 영역 확정: 고개를 고정하고 윗변을 왼쪽→오른쪽으로 따라 보세요
-전구 2단계 등록 완료 (중앙 420 frames, 경계 335 frames)
+전구 2단계 등록 완료 (자세별 테두리 420 frames, 정밀 테두리 335 frames)
 ```
 
 ## 5.2 기기 선택
@@ -287,7 +282,9 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 시선 방향 벡터 = 머리 회전(yaw, pitch) ⊕ 눈-머리 상대 오프셋
 ```
 
-이렇게 합성하면 고개를 많이 돌리고 눈은 거의 안 움직여서 만든 방향이든, 고개는 그대로 두고 눈만 움직여서 만든 방향이든, 물리적으로 같은 곳을 본 것이라면 거의 같은 벡터가 나온다. 이 성질 덕분에 등록 1단계에서 고개를 크게 움직여도(5.1절의 중앙점 3D 등록) 방향 자체는 실사용(눈짓 위주)과 여전히 일치한다 — 오히려 등록 중 머리를 크게 움직여야 서로 다른 위치에서 나온 시선 광선들이 물체의 실제 3D 위치로 수렴하는 삼각측량이 가능해진다(7장 "기기 등록 방식" 참고).
+합성 벡터는 물체 영역의 1차 좌표다. 다만 실제 단안 landmark에서는 자세에 따라
+오차가 달라지므로, 최종 판정은 합성 벡터만 쓰지 않고 head pose·face scale·카메라
+안 face center를 함께 저장한 8차원 target 분포로 보완한다.
 
 ## 입력 신호 → 시선 방향 벡터
 
@@ -301,9 +298,12 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 눈 추적 confidence
 ```
 
-위 신호들을 합성해 얻은 시선 방향 단위 벡터만 기기 등록·Target 추정에 사용한다. 원본 신호(홍채 위치, 머리 각도)는 합성 입력으로만 쓰고 그 자체를 등록·비교에 직접 사용하지 않는다.
+위 신호로 만든 시선 방향 벡터를 1차 영역 판정에 사용하고, 최종 target 순위에는
+`[gaze yaw/pitch, head yaw/pitch/roll, face scale, face center x/y]` 8차원 등록
+분포를 함께 사용한다. 별도 MLP·Linear-softmax 학습은 없으며 등록 프레임의 평균·
+공분산과 Mahalanobis distance만 계산한다.
 
-## 현재 구현 튜닝값 (2026-07-20)
+## 현재 구현 튜닝값 (2026-07-21)
 
 현재 데모/디버깅 기준값은 `src/jarvis/gaze/config.py`가 단일 기준이다.
 
@@ -318,50 +318,58 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
 | `ema_min_alpha` / `ema_max_alpha` | `0.15` / `0.65` | 낮은/높은 confidence 프레임의 EMA 반영률 |
 | `blink_hold_ms` | `300` | 짧은 눈 감김 동안 마지막 안정 gaze 유지 시간 |
 | `blink_recovery_hold_ms` | `250` | 눈을 다시 뜬 직후 홍채 landmark 안정화 hold 시간 |
+| `tracking_loss_hold_ms` | `800` | 실제 얼굴 landmark 손실 동안 마지막 gaze를 유지하는 시간 |
 | `eye_closed_ratio_threshold` | `0.12` | 눈꺼풀 높이/눈 너비의 절대 눈 감김 하한 |
 | `blink_close_ratio` / `blink_reopen_ratio` | `0.68` / `0.82` | 사용자별 평소 눈 뜬 높이에 대한 감김/재개방 hysteresis 비율 |
 | `eye_openness_baseline_decay` | `0.01` | 자세 변화에 맞춰 평소 눈 뜬 높이를 천천히 낮추는 프레임당 비율 |
 | `iris_jump_threshold` | `0.18` | 프레임 간 홍채 offset jump 감지 기준 |
 | `max_valid_eye_offset` | `0.55` | 비현실적인 눈 가장자리 홍채 offset reject 기준 |
-| `small_motion_deadzone_deg` | `5.0` | 미세한 smoothed gaze 흔들림 흡수 각도 |
-| `personal_gaze_feature_weight` | `2.0` | 개인 target classifier에서 gaze yaw/pitch 우선도 |
-| `personal_head_feature_weight` | `0.4` | 개인 target classifier에서 head yaw/pitch/roll 보조 비중 |
-| `personal_face_scale_feature_weight` | `0.6` | 사용자-카메라 거리 문맥 비중 |
-| `target_motion_alignment_weight` | `0.35` | target 중심 방향과 같은 gaze 속도에 주는 최대 보너스 |
-| `target_acceleration_alignment_weight` | `0.15` | 같은 방향 gaze 가속도에 주는 추가 최대 보너스 |
+| `small_motion_deadzone_deg` | `1.0` | 미세한 smoothed gaze 흔들림만 흡수하는 각도 |
+| `target_context_tolerance` | `1.35` | 테두리 안 후보의 8D Mahalanobis soft-context 점수 스케일 |
+| `target_settle_alignment_weight` | `0.55` | 겹친 영역에서 마지막 홍채 감속 방향에 주는 최대 보너스 |
+| `gaze_settle_start_speed_deg_s` | `12.0` | 홍채 이동을 시작으로 간주하는 각속도 |
+| `gaze_settle_stop_speed_deg_s` | `4.0` | 홍채가 멈췄다고 간주하는 각속도 |
+| `gaze_settle_memory_ms` | `500` | 마지막 감속 방향을 겹침 판정에 유지하는 시간 |
 | `gaze_motion_max_interval_ms` | `250` | blink/추적 공백 뒤 잘못된 속도·가속도를 막는 최대 차분 간격 |
 | `unknown_probability_threshold` | `0.80` | target top-1 확률이 낮을 때 `UNKNOWN` reject |
 | `unknown_max_angle_deg` | `25.0` | 가장 가까운 등록 방향과도 너무 멀 때 `UNKNOWN` reject |
 | `target_match_tolerance` | `1.10` | 등록 반경 경계값을 살짝 넘는 gaze를 허용하는 정규화 거리 상한 |
 | `registration_min_spread_deg` / `registration_max_spread_deg` | `4.0` / `8.0` | 등록 target의 각도 profile spread 하한/상한 |
 | `registration_max_area_radius_deg` | `6.0` | edge-loop target area가 과하게 커졌을 때 런타임에서 적용하는 반경 cap |
-| `target_area_scale_flex` | `0.25` | 등록 당시 대비 얼굴 scale 변화에 따라 target area 반경을 ±25%까지 유동 조정 |
-| `minimum_triangulation_baseline_mm` | `40.0` | 3D 등록 시 머리 origin 이동량 최소 기준 |
-| `minimum_triangulation_eigenvalue` | `0.0025` | 3D 등록 시 gaze ray 방향 다양성 최소 기준 |
-| `maximum_triangulation_residual_mm` | `35.0` | 3D 등록 시 ray-교차 residual RMS 상한 |
-| `minimum_triangulation_frames` | `20` | 3D 등록 시 필요한 최소 유효 ray/frame 수 |
-| `target_radius_floor_mm` | `20.0` | 3D target 허용 반경이 비현실적으로 작아지지 않도록 하는 하한 |
-| `target_minimum_angular_variance_deg` | `4.0` | 3D 반경을 각도 분산으로 바꿀 때의 최소 각도 반경 |
+
+`TRACKING LOST`는 MediaPipe가 얼굴 landmark를 반환하지 않은 경우에만 표시한다.
+얼굴은 검출됐지만 blink/recovery로 홍채를 잠시 못 쓰면 300ms 동안 마지막 gaze를
+유지하고, 안정된 이전 gaze가 없거나 hold가 끝나면 confidence `0.45`의 head-only
+벡터로 전환한다. 디버깅 화면의 `gaze source`가 `head+iris`, `held`, `head-only`,
+`tracking-hold`, `tracking-lost` 중 현재 경로를 표시한다.
+
+정확도 문제는 실시간 탭의 라벨된 진단 세션으로 재현한다. F9로 녹화를 시작하고
+`0`(응시 대상 없음) 또는 `1`~`9`(등록 순서의 target)로 실제 정답을 표시한 뒤
+F9로 끝내면, 앱 안에 head pose·얼굴 위치·등록 대비 얼굴 크기별 정확도와 대표
+실패 프레임이 자동으로 표시된다. 세션 숫자값은 `data/diagnostics/session_*.jsonl`
+에 저장되며 이미지 프레임은 저장하지 않는다. CLI에서는
+`jarvis-gaze report <session.jsonl>`로 같은 분석을 다시 볼 수 있다.
 
 실험 중 조정 우선순위는 다음과 같다.
 
 1. 위/아래 고개 움직임이 덜 반영되면 `head_pitch_weight`를 조정한다.
 2. 좌/우 고개 움직임이 과하거나 부족하면 `head_yaw_weight`를 조정한다.
-3. 등록 target을 보고 있는데 경계에서 자주 `UNKNOWN`이 되면 `target_match_tolerance`를 조정한다.
-4. 사용자-카메라 거리가 바뀔 때만 target이 빡빡하거나 넓어지면 `target_area_scale_flex`를 조정한다.
-5. 안 보고 있는데 target으로 빨려 들어가면 `registration_max_area_radius_deg` 또는 등록 profile 자체를 다시 확인한다.
+3. 겹친 후보가 자세·거리 문맥과 다르게 선택되면 `target_context_tolerance`를 조정한다.
+4. 경계에서만 `UNKNOWN`이면 `target_match_tolerance`를 조금 올린다.
+5. 겹친 물체가 반대로 선택되면 settle start/stop 속도와 `target_settle_alignment_weight`를 조정한다.
+6. 안 보고 있는데 target으로 빨려 들어가면 `registration_max_area_radius_deg`를 낮추거나 다시 등록한다.
 
 ## 기기 등록 방식
 
-기기 등록은 중앙점 20초와 경계 16초의 두 단계로 나뉜다. 중앙점 단계에서는 한 점을
-계속 바라보며 자세를 바꿔 시선 방향 벡터와 그 원점이 되는 머리의 카메라 기준 3D
-위치를 모은다. 이 프레임만 residual MLP 학습 정답과 3D 삼각측량에 사용한다. 경계
-단계에서는 고개를 고정한 채 눈으로 네 변을 순서대로 훑고, 이 프레임만 물체의
-각도 영역과 spread 계산에 사용한다. 두 단계의 feature는 target classifier 분포에는
-함께 들어간다. 중앙점 등록 중 머리가 충분히 움직였다면(parallax) 그 광선들을 삼각측량해 물체의 실제
-3D 위치와 유효 반경을 추정하고, 그렇지 않으면(머리 이동 부족, 광선이 거의
-평행, 잔차 과다) 기존의 평균 방향 + 각도 분산 방식으로 조용히 대체한다(raw
-프레임은 두 경우 모두 계산 후 버림).
+기기 등록은 자세·거리별 테두리 20초와 정밀 테두리 16초의 두 단계로 나뉜다.
+1단계에서는 테두리를 훑는 동안 얼굴·몸을 네 대각선과 앞뒤로 움직여 gaze/head/
+face scale/face center가 함께 변하는 분포를 수집한다. 2단계에서는 고개를 고정한
+채 눈으로 네 변을 순서대로 훑어 최종 yaw/pitch 영역을 확정한다. 두 단계의 유효
+프레임은 8차원 target feature profile에 함께 들어가며, 2단계 경계의 중앙값이
+target 중심이 된다. 프레임 이미지는 저장하지 않고 숫자 feature의 평균·공분산만
+JSON에 저장한다. 2단계 경계 샘플은 95퍼센타일 밖의 jump/outlier를 제외한 뒤
+convex hull로 축약한다. 따라서 사각 물체의 모서리를 타원처럼 잘라내지 않고,
+hull 내부 전체를 물체 영역으로 판정한다.
 
 ```
 {
@@ -370,17 +378,23 @@ MediaPipe Face Landmarker는 얼굴 랜드마크와 얼굴 transformation matrix
     "mean_direction": [0.12,-0.04,0.99],
     "variance": 0.015
   },
-  "position_3d": {
-    "center_mm": [180.0, -40.0, 2100.0],
-    "radius_mm": 32.0
+  "feature_profile": {
+    "mean": [1.2, 4.0, -3.0, 6.0, 0.5, 0.09, 0.51, 0.43],
+    "covariance": [["8 x 8 covariance"]],
+    "threshold": 2.5
+  },
+  "area_profile": {
+    "center_yaw": -2.8,
+    "center_pitch": 7.4,
+    "radius_yaw": 6.0,
+    "radius_pitch": 4.0,
+    "boundary_polygon": [[-8.8,3.4],[3.2,3.4],[3.2,11.4],[-8.8,11.4]]
   }
 }
 ```
 
-`mean_direction`은 중앙점 단계의 단위 벡터 중앙값이다. 각도 `spread`/area는 경계
-단계에서 얻지만, `position_3d.radius_mm`은 여전히 물체의 실측 크기가 아니라 중앙점
-광선의 삼각측량 잔차에서 유도한 판정 허용 오차다 — 단안 웹캠으로 실측한 물리 크기인
-것처럼 표시하지 않는다.
+기존 JSON의 `position_3d`는 하위 호환으로 읽을 수 있지만 새 테두리 등록에서는 만들지
+않는다. 테두리 ray는 서로 다른 표면점을 향하므로 한 점으로 삼각측량할 수 없기 때문이다.
 
 ## Target 추정
 
@@ -397,9 +411,16 @@ Baseline:
 ```
 최근 시선 방향 시퀀스
 → Temporal smoothing
-→ Device classifier (유사도 + 등록 시 분산으로 정규화)
-→ Unknown rejection (최고 유사도가 임계값 미만이면 무기기)
+→ 정밀 테두리 convex hull 안 target만 후보 생성
+→ 8D Mahalanobis 문맥(gaze/head/scale/face center)으로 후보 순위·신뢰도 조정
+→ 겹친 후보는 gaze 중심 점수 + 홍채 settle 방향으로 결정
+→ area 밖이면 UNKNOWN
 ```
+
+polygon 정규화 거리는 target 중심에서 현재 gaze 방향으로 ray를 뻗어 hull 경계와
+만나는 지점을 `1.0`으로 둔다. `target_match_tolerance=1.10`은 이 경계를 방사형으로
+10% 넘는 작은 측정 오차까지만 허용한다. `boundary_polygon`이 없는 과거 JSON은
+하위 호환을 위해 기존 타원 거리로 읽으며, 실제 hull을 사용하려면 위치를 다시 등록한다.
 
 `position_3d`가 등록된 기기는 Device classifier 단계에서 "유사도"를 다르게
 얻는다 — 등록 시 저장한 고정 방향과 비교하는 대신, 현재 머리 위치에서 그
@@ -421,21 +442,10 @@ Baseline:
 }
 ```
 
-개인별 벡터 보정은 raw head+iris 기하 벡터에 residual MLP
-`12 → 24 → 12 → 2(delta_yaw, delta_pitch)`를 적용한다. 최소 3개 target 방향과
-60개 유효 샘플이 필요하며, held-out 오차가 raw vector보다 좋아진 경우에만 기본
-보정기로 활성화한다. 새 물체 등록 또는 위치 재등록이 끝나면 저장된 target별
-샘플 전체로 재학습하고, 실시간 추론 중에는 학습하지 않는다. 데이터와 모델은
-`data/calibration/gaze_regressor.json`에 함께 저장한다.
-
-별도의 개인 target Linear-softmax classifier는 표준화된
-`[gaze_yaw, gaze_pitch, head_yaw, head_pitch, head_roll, face_scale]`을 사용한다.
-현재 기본 우선도는 gaze `2.0`, head `0.4`, face scale `0.6`이며, 학습 후에도 각
-class의 head 유효 가중치가 gaze의 20%를 넘지 못하게 제한한다. 저장된 과거 샘플도
-실행 시 이 정책으로 메모리에서 다시 학습한다. gaze 속도·가속도가 등록 target 중심을
-향하면 각각 최대 `+0.35`, `+0.15`의 배율 보너스를 Linear classifier와 area matcher에
-동일하게 적용한다. 눈을 감거나 blink recovery/추적 hold 중에는 derivative history를
-갱신하지 않으며 250ms보다 긴 공백 뒤에는 속도·가속도를 초기화한다.
+MLP·Ridge·Linear-softmax 모델은 사용하지 않는다. 겹침 tie-break는 홍채가 빠르게
+이동한 뒤 정지 임계값 아래로 감속할 때 마지막 유효 속도 방향을 저장해 사용한다.
+가속도는 감속 시 이동 반대를 가리킬 수 있어 target 보너스에 쓰지 않는다. blink,
+recovery, iris jump, 추적 손실 프레임은 settle history를 즉시 초기화한다.
 
 이 Linear classifier는 등록 영역을 대신하는 최종 판정기가 아니라, **현재 등록된
 영역이 겹칠 때의 순위기**로만 사용한다. 먼저 현재 gaze가 각 target의 edge-loop

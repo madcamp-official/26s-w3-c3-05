@@ -50,6 +50,7 @@ class GazeLockStateMachine:
         self._lock_expires_at_ms: int | None = None
         self._unknown_started_at_ms: int | None = None
         self._unknown_elapsed_ms = 0
+        self._candidate_gap_started_at_ms: int | None = None
 
     @property
     def state(self) -> GazeLockState:
@@ -105,6 +106,7 @@ class GazeLockStateMachine:
         self._candidate_started_at_ms = None
         self._candidate_elapsed_ms = 0
         self._lock_expires_at_ms = None
+        self._candidate_gap_started_at_ms = None
         self._clear_unknown_timer()
 
     def update(self, timestamp_ms: int, classification: ClassificationResult) -> GazeLockState:
@@ -136,8 +138,19 @@ class GazeLockStateMachine:
 
         if self._state == GazeLockState.CANDIDATE:
             if not confident:
-                self.reset()
+                # 깜빡임·회복 프레임의 순간 UNKNOWN 한 번으로 3초 dwell을 0으로
+                # 되돌리면 자연 깜빡임 주기(2~5초)보다 dwell이 길어 영원히 확정되지
+                # 않는다(2026-07-22 실사용). blink hold(300ms)가 못 덮는 꼬리를
+                # candidate_grace_ms까지 유예하고, 그 이상 지속될 때만 리셋한다.
+                if self._candidate_gap_started_at_ms is None:
+                    self._candidate_gap_started_at_ms = timestamp_ms
+                if (
+                    timestamp_ms - self._candidate_gap_started_at_ms
+                    > self._config.candidate_grace_ms
+                ):
+                    self.reset()
                 return self._state
+            self._candidate_gap_started_at_ms = None
             if classification.target != self._candidate_device:
                 self._candidate_device = classification.target
                 self._candidate_started_at_ms = timestamp_ms
