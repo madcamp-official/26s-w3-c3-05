@@ -35,6 +35,7 @@ from jarvis.gesture_fusion import (
 )
 from jarvis.gesture_fusion.model_protocol import (
     EXPECTED_INPUT_FPS,
+    INFERENCE_WINDOW_FRAMES,
     FrameRateLimiter,
     GestureModel,
     ModelConfig,
@@ -89,7 +90,9 @@ class GestureProbe:
         spotter_config: SpotterConfig = DEFAULT_SPOTTER_CONFIG,
         model: GestureModel | None = None,
         target_fps: float | None = EXPECTED_INPUT_FPS,
+        window_size: int | None = INFERENCE_WINDOW_FRAMES,
     ) -> None:
+        self._requested_window_size = window_size
         self._config = gesture_config or DEFAULT_GESTURE_CONFIG
         self._model_asset_path = model_asset_path
         self._injected_model = model
@@ -143,12 +146,27 @@ class GestureProbe:
                 return False
         self._model = model
         self._window = SlidingFeatureWindow(
-            window_size=model.window_size, feature_dim=feature_dimension(self._config)
+            window_size=self._resolve_window_size(model),
+            feature_dim=feature_dimension(self._config),
         )
         self._available = True
         trained = "학습됨" if getattr(model, "metadata", None) and model.metadata.trained else "미학습(랜덤 label)"  # type: ignore[attr-defined]
         self._status_text = f"LIVE · {self._model_asset_path.name} · {trained}"
         return True
+
+    def _resolve_window_size(self, model: GestureModel) -> int:
+        """모델에 넣을 윈도우 길이. 기본은 `INFERENCE_WINDOW_FRAMES`(receptive field보다 짧음).
+
+        receptive field보다 긴 값은 의미가 없다 — `_pad_to_window`가 어차피 뒤에서
+        잘라내므로, 상한을 여기서 명시해 "설정한 값"과 "실제 쓰이는 값"이 갈리지 않게
+        한다. None이면 모델이 요구하는 최소 길이(=receptive field)를 그대로 쓴다
+        (짧은 윈도우를 끄고 종전 동작으로 되돌리는 경로).
+        """
+        if self._requested_window_size is None:
+            return model.window_size
+        if self._requested_window_size < 1:
+            raise ValueError("window_size must be at least 1")
+        return min(self._requested_window_size, model.window_size)
 
     def _build_default_model(self) -> GestureModel:
         from jarvis.gesture_fusion.model import CausalTCNGestureModel
@@ -168,7 +186,8 @@ class GestureProbe:
             return False
         self._model = model
         self._window = SlidingFeatureWindow(
-            window_size=model.window_size, feature_dim=feature_dimension(self._config)
+            window_size=self._resolve_window_size(model),
+            feature_dim=feature_dimension(self._config),
         )
         self._available = True
         meta = getattr(model, "metadata", None)

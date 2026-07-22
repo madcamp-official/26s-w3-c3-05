@@ -271,3 +271,55 @@ def test_load_trained_gesture_model_prefers_finetuned(tmp_path: Path) -> None:
     model = load_trained_gesture_model(tmp_path)
     assert model is not None
     assert model.metadata.version == "finetune-v1"  # type: ignore[attr-defined]
+
+
+# --- 추론 윈도우 길이: 모델의 '기억'을 재학습 없이 줄이는 런타임 노브 ---
+
+
+def test_window_defaults_shorter_than_receptive_field() -> None:
+    """기본 추론 윈도우는 receptive field보다 짧다 — 이전 동작 잔류를 줄이기 위함.
+
+    가중치 shape은 시퀀스 길이에 의존하지 않고 `_pad_to_window`가 짧은 입력의 앞을
+    0으로 채우므로, 이 축소에는 재학습이 필요 없다.
+    """
+    from jarvis.gesture_fusion.model_protocol import INFERENCE_WINDOW_FRAMES
+
+    model = _FakeModel(GesturePhase.ACTIVE)
+    probe = GestureProbe(model_asset_path=None, model=model)  # type: ignore[arg-type]
+    assert INFERENCE_WINDOW_FRAMES < 29  # 현행 아키텍처의 receptive field
+    # _FakeModel.window_size(4)가 더 작으므로 그쪽이 상한이 된다.
+    assert probe._resolve_window_size(model) == min(INFERENCE_WINDOW_FRAMES, 4)  # type: ignore[arg-type]
+
+
+def test_window_never_exceeds_model_receptive_field() -> None:
+    """설정값이 receptive field보다 크면 잘라 맞춘다.
+
+    `_pad_to_window`가 어차피 뒤에서 자르므로, "설정한 값"과 "실제 쓰이는 값"이
+    갈리지 않게 여기서 상한을 명시한다.
+    """
+    model = _FakeModel(GesturePhase.ACTIVE)  # window_size=4
+    probe = GestureProbe(model_asset_path=None, model=model, window_size=999)  # type: ignore[arg-type]
+    assert probe._resolve_window_size(model) == 4  # type: ignore[arg-type]
+
+
+def test_window_none_falls_back_to_model_requirement() -> None:
+    """None이면 종전 동작(= receptive field 전체)으로 되돌아간다."""
+    model = _FakeModel(GesturePhase.ACTIVE)
+    probe = GestureProbe(model_asset_path=None, model=model, window_size=None)  # type: ignore[arg-type]
+    assert probe._resolve_window_size(model) == model.window_size  # type: ignore[arg-type]
+
+
+def test_window_rejects_non_positive() -> None:
+    model = _FakeModel(GesturePhase.ACTIVE)
+    probe = GestureProbe(model_asset_path=None, model=model, window_size=0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        probe._resolve_window_size(model)  # type: ignore[arg-type]
+
+
+def test_headless_activation_uses_the_shortened_window() -> None:
+    """관측값 재사용 경로(모니터 실사용 경로)에도 같은 윈도우가 적용된다."""
+    model = _FakeModel(GesturePhase.ACTIVE)
+    probe = GestureProbe(model_asset_path=None, model=model, window_size=3)  # type: ignore[arg-type]
+    assert probe.activate_headless() is True
+    assert probe._window is not None
+    assert probe._window.window_size == 3
