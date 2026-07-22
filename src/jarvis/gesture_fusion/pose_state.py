@@ -44,8 +44,10 @@ INDEX_MCP, INDEX_TIP, MIDDLE_MCP, MIDDLE_TIP = 5, 8, 9, 12
 # 자세별 진입 유지 시간(ms). 핀치 클릭류만 빠른 반응이 중요해 짧게(60) 명시하고,
 # 그 외 자세(index_point·two_fingers·open_palm·fist)는 모두 기본값(120)을 쓴다.
 DWELL_MS: dict[str, int] = {
-    "pinch_index": 60,
-    "pinch_middle": 60,
+    "pinch_index": 30,
+    "pinch_middle": 30,
+    # 검지 포즈(커서)는 반응이 빨라야 해 기본(120)보다 짧게 잡는다.
+    "index_point": 60,
     # 탭 닫기는 되돌리기 어려운 파괴적 동작이라, 전환 중 스치는 중지 포즈로 오발동하지
     # 않도록 기본(120)보다 훨씬 길게(500ms) 잡아 명확한 의도만 통과시킨다.
     "middle_point": 500,
