@@ -201,6 +201,23 @@ class WizAdapter:
         except _Failure as failure:
             return failure.result
 
+    def read_state(self, device_id: str) -> Mapping[str, object] | None:
+        """실물 전구의 현재 ``getPilot`` 상태 조회. 명령을 보내지 않는 순수 읽기다.
+
+        `execute()`와 달리 검증된 `Command`가 필요 없다 — 화면이 "실물이 지금 무슨
+        색인가"를 직접 물어볼 때 쓴다. 설정 없음·대상 미매핑·통신 실패는 전부
+        ``None``(모른다)이며, 마지막으로 보낸 명령을 대신 지어내 보이지 않는다.
+        """
+        if self._config is None:
+            return None
+        target = self._config.device_targets.get(device_id)
+        if not target:
+            return None
+        try:
+            return self._read_state(target)
+        except _Failure:
+            return None
+
     # -- power ---------------------------------------------------------------
 
     def _apply_power(self, target: str, command: Command) -> AdapterResult:

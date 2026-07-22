@@ -143,7 +143,7 @@ def test_recorder_writes_self_contained_session(tmp_path: Path) -> None:
 
     assert footer["frames"] == 12
     session = load_session(path)
-    assert session.header["config"]["target_match_tolerance"] == pytest.approx(1.10)
+    assert session.header["config"]["target_match_tolerance"] == pytest.approx(1.30)
     assert session.target_names == {TARGET_ID: "monitor"}
     stored = session.target_record(TARGET_ID)
     assert stored is not None

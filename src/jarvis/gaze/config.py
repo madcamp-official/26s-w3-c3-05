@@ -224,8 +224,14 @@ class GazeConfig:
     한다.
     """
 
-    registration_max_area_radius_deg: float = 6.0
-    """Runtime/storage cap for edge-loop target area radii."""
+    registration_max_area_radius_deg: float = 4.5
+    """Runtime/storage cap for edge-loop target area radii.
+
+    2026-07-22 실사용 조정: 6.0도에서 낮췄다. 모니터처럼 카메라에 가깝고 큰
+    물체는 테두리 트레이싱이 이 상한에 그대로 붙어(6.0도 그대로 저장) 등록
+    영역이 필요 이상으로 넓어졌고, 근처에 다른 target(전구)이 있을 때 그 여유가
+    시야각을 잠식하는 것처럼 느껴졌다(사용자 관찰). 하한(`registration_min_spread_deg`
+    4.0)보다는 위, 기존 상한(`registration_max_spread_deg` 8.0)보다는 아래로 둔다."""
 
     pose_correction_bin_edges_deg: tuple[float, ...] = (-30.0, -20.0, -10.0, 10.0, 20.0, 30.0)
     """등록 1단계 샘플을 나누는 head-yaw 구간 경계(도).
@@ -266,10 +272,15 @@ class GazeConfig:
     """head pitch가 ±이 값을 넘으면 '상/하' coverage 구간으로 센다."""
 
     coverage_scale_near_ratio: float = 1.15
-    """정면 기준 face scale 대비 이 배율 이상이면 '가까이' 구간으로 센다."""
+    """정면 기준 face scale 대비 이 배율 이상이면 '가까이' 구간으로 센다.
+
+    완료 판정은 가까이/멀리 중 한쪽만 요구한다(2026-07-22 3차 실측: 물체가
+    카메라에서 멀리 있으면 "가까이"를 채우려 카메라 쪽으로 기울이는 동안
+    물체를 향한 시선 각이 급격히 커져 구조적으로 못 채우는 경우가 있다)."""
 
     coverage_scale_far_ratio: float = 0.87
-    """정면 기준 face scale 대비 이 배율 이하면 '멀리' 구간으로 센다."""
+    """정면 기준 face scale 대비 이 배율 이하면 '멀리' 구간으로 센다(가까이와
+    한 쌍 — 위 docstring 참고)."""
 
     target_settle_alignment_weight: float = 0.55
     """Overlap bonus for a target in the final settling direction of the iris."""
@@ -286,8 +297,13 @@ class GazeConfig:
     gaze_motion_max_interval_ms: int = 250
     """Reset motion derivatives after a long gap, blink, or tracking hold."""
 
-    target_match_tolerance: float = 1.10
-    """Accept near-boundary target matches up to this normalized distance."""
+    target_match_tolerance: float = 1.30
+    """Accept near-boundary target matches up to this normalized distance.
+
+    1.10(10% 여유)이었을 때 물체를 정면으로 보고 있어도 `x1.28 > x1.10`처럼
+    등록된 traced area 바로 바깥으로 밀려나 `실시간=응시대상 없음`이 되는
+    사례가 실측됐다(2026-07-22) — 특히 물체가 카메라에서 멀어 2단계 경계
+    추적이 자연스럽게 퍼지는 경우. 30%로 늘려 그 여유를 흡수한다."""
 
     target_context_tolerance: float = 1.35
     """Soft scale for normalized 8D context distance during candidate ranking."""

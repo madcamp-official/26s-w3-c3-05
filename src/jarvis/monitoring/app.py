@@ -114,18 +114,20 @@ from jarvis.monitoring.demo_bridge import (
     describe_decision,
     describe_outcome,
 )
+from jarvis.monitoring.bulb_poller import BulbPoller
 from jarvis.monitoring.demo_panel import DemoPanel, TargetChoice
 from jarvis.monitoring.execute_worker import ExecuteWorker
 from jarvis.monitoring.pipeline_status import StageState, StageStatus, detect_pipeline_status
 from jarvis.monitoring.pose_control import PoseControlBridge, default_input_sink
 from jarvis.monitoring.virtual_bulb import VirtualBulbState
 from jarvis.runtime.devices import (
+    BULB_ADAPTER,
     build_default_adapters,
     build_default_capability_map,
     build_default_registry,
 )
 from jarvis.runtime.executor import ExecutionOutcome, ExecutionStage, IntentExecutor
-from jarvis.runtime_protocol.adapters.wiz import WizConfig
+from jarvis.runtime_protocol.adapters.wiz import WizAdapter, WizConfig
 from jarvis.runtime_protocol.capture.clock import RuntimeClock
 from jarvis.runtime_protocol.config import read_env_file
 from jarvis.runtime_protocol.protocol.engine import ProtocolEngine
@@ -963,10 +965,11 @@ def _target_names(raw: str) -> list[str]:
 class VideoView(QLabel):
     """Displays webcam frames scaled to the widget, with a HUD and gaze overlay.
 
-    `show_overlay=False`는 관객이 보는 화면(시연 탭)용이다 — HUD·gaze 벡터·등록
-    가이드를 끈다. 다만 시연에서 손 검출과 제스처 입력을 확인해야 하므로
-    `show_hand_overlay=True`를 별도로 줄 수 있다. 실시간·손 추적 탭은 기본값으로
-    모든 디버그 정보를 계속 보여준다.
+    `show_overlay=False`는 관객이 보는 화면(시연 탭)용이다 — HUD·gaze 벡터를 끈다.
+    다만 시연에서 손 검출과 제스처 입력을 확인해야 하므로 `show_hand_overlay=True`를
+    별도로 줄 수 있고, 시연 탭에서도 물체 등록을 그대로 진행할 수 있어야 하므로
+    등록 가이드는 `show_registration_guidance=True`로 따로 켜 둔다. 실시간·손 추적
+    탭은 기본값으로 모든 디버그 정보를 계속 보여준다.
     """
 
     def __init__(
@@ -975,6 +978,7 @@ class VideoView(QLabel):
         show_overlay: bool = True,
         show_hand_overlay: bool | None = None,
         show_hand_details: bool = True,
+        show_registration_guidance: bool | None = None,
     ) -> None:
         super().__init__()
         self.setMinimumSize(480, 360)
@@ -983,6 +987,9 @@ class VideoView(QLabel):
         self._show_overlay = show_overlay
         self._show_hand_overlay = show_overlay if show_hand_overlay is None else show_hand_overlay
         self._show_hand_details = show_hand_details
+        self._show_registration_guidance = (
+            show_overlay if show_registration_guidance is None else show_registration_guidance
+        )
         self._fps_times: deque[float] = deque(maxlen=30)
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
@@ -1033,14 +1040,14 @@ class VideoView(QLabel):
                 if self._show_target_heatmap:
                     draw_target_heatmap(display, self._gaze, mirror=True)
                 draw_gaze_overlay(display, self._gaze, mirror=True)
-            if self._registration_guide is not None:
-                title, instruction, progress = self._registration_guide
-                draw_registration_guidance(
-                    display,
-                    title=title,
-                    instruction=instruction,
-                    progress=progress,
-                )
+        if self._show_registration_guidance and self._registration_guide is not None:
+            title, instruction, progress = self._registration_guide
+            draw_registration_guidance(
+                display,
+                title=title,
+                instruction=instruction,
+                progress=progress,
+            )
         if self._show_hand_overlay and self._hand is not None:
             draw_hand_overlay(
                 display,
@@ -1240,7 +1247,7 @@ def _build_clip_recorder() -> _ClipRecorder | None:
     return cast("_ClipRecorder", recorder)
 
 
-def _build_demo_executor(env: dict[str, str]) -> IntentExecutor | None:
+def _build_demo_executor(env: dict[str, str]) -> tuple[IntentExecutor, WizAdapter] | None:
     """시연용 `IntentExecutor` — Fusion 커밋을 실제 기기 명령까지 잇는 실행기.
 
     `build_laptop_only_executor()`는 전구 설정을 받지 않으므로 공개 빌더로 직접
@@ -1250,18 +1257,25 @@ def _build_demo_executor(env: dict[str, str]) -> IntentExecutor | None:
 
     이 OS에 입력 어댑터가 없으면(`default_input_sink()`가 raise) None을 돌려
     시연 실행 자체를 끈다 — 제어를 흉내내지 않는다.
+
+    WiZ adapter도 함께 돌려준다 — `BulbPoller`가 명령과 별개로 실물 색을 직접
+    조회하려면 같은 adapter 인스턴스가 필요하다(MAC→IP 탐색 캐시를 공유해야
+    DHCP 주소 변경 흡수가 명령 경로와 어긋나지 않는다).
     """
     try:
         adapters = build_default_adapters(wiz_config=WizConfig.from_env(env))
     except Exception:  # noqa: BLE001 - 미지원 OS·어댑터 부재는 정직하게 off
         return None
     registry = build_default_registry()
-    return IntentExecutor(
+    executor = IntentExecutor(
         engine=ProtocolEngine(registry, RuntimeClock()),
         registry=registry,
         adapters=adapters,
         capability_map=build_default_capability_map(),
     )
+    wiz_adapter = adapters[BULB_ADAPTER]
+    assert isinstance(wiz_adapter, WizAdapter)
+    return executor, wiz_adapter
 
 
 class FinetuneRecordingPanel(QWidget):
@@ -1456,14 +1470,22 @@ class MainWindow(QMainWindow):
         self._pose_suppressed = False
         self._virtual_bulb = VirtualBulbState()
         self._last_bulb_badge = ("미설정", False)
-        executor = _build_demo_executor(self._env)
+        built = _build_demo_executor(self._env)
         self._execute_worker: ExecuteWorker | None = None
-        if executor is not None:
+        self._bulb_poller: BulbPoller | None = None
+        if built is not None:
+            executor, wiz_adapter = built
             self._execute_worker = ExecuteWorker(executor)
             self._execute_worker.outcome_ready.connect(self._on_execution_outcome)
             self._execute_worker.failed.connect(self._on_execution_failed)
             self._execute_worker.dropped.connect(self._on_execution_failed)
             self._execute_worker.start()
+            # 명령과 별개로 실물 색을 직접 주기 조회한다 — 전구 화면(BulbView)이
+            # "보낸 명령"이 아니라 실측을 그리려면 명령 응답만으로는 부족하다
+            # (아무도 조작하지 않는 동안에도 실물 색이 바뀔 수 있다: 다른 앱·타이머).
+            self._bulb_poller = BulbPoller(wiz_adapter, BULB_DEVICE_ID)
+            self._bulb_poller.state_ready.connect(self._on_bulb_state_ready)
+            self._bulb_poller.start()
 
         tabs = QTabWidget()
         tabs.addTab(self._build_live_tab(), "실시간")
@@ -1779,18 +1801,23 @@ class MainWindow(QMainWindow):
         (순환 import) — `_build_live_tab`이 인식 패널을 붙이는 방식과 같이 여기서 잇는다.
         """
         # 관객용 화면에서는 gaze/HUD 디버그는 숨기되, 실제 MediaPipe 손 입력과
-        # 제스처 판정을 사용자가 확인할 수 있도록 손 스켈레톤만 남긴다.
+        # 제스처 판정을 사용자가 확인할 수 있도록 손 스켈레톤만 남긴다. 등록 가이드는
+        # 별도로 켠다 — 이 탭에서도 물체 등록을 그대로 진행할 수 있어야 한다.
         self._demo_video = VideoView(
             show_overlay=False,
             show_hand_overlay=True,
             show_hand_details=False,
+            show_registration_guidance=True,
         )
         self._demo_panel = DemoPanel(
-            on_mapping_changed=self._on_demo_mapping_changed,
             on_fallback_changed=self._on_demo_fallback_changed,
             on_preset_changed=self._on_demo_preset_changed,
             on_execution_toggled=self._on_demo_execution_toggled,
-            on_open_registration=self._open_gaze_registration_tab,
+            on_register_target=self._start_target_registration,
+            on_reregister_target=self._reregister_target_by_id,
+            on_rename_target=self._rename_target_by_id,
+            on_delete_target=self._delete_target_by_id,
+            on_cancel_registration=self._cancel_target_registration,
         )
         self._refresh_demo_targets()
         self._refresh_bulb_badge()
@@ -1805,8 +1832,16 @@ class MainWindow(QMainWindow):
                 "실행기 없음 — 이 플랫폼에 입력 어댑터가 없어 기기 명령을 실행할 수 없습니다",
                 ok=False,
             )
+        # 웹캠 밑에 판정·실행 로그를 둔다(사용자 지시, 2026-07-22) — 우측 패널은
+        # 상태·설정·물체 관리에 집중한다.
+        video_column = QWidget()
+        video_layout = QVBoxLayout(video_column)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.addWidget(self._demo_video, 1)
+        video_layout.addWidget(_header("판정·실행 로그"))
+        video_layout.addWidget(self._demo_panel.log_widget)
         split = QSplitter(Qt.Orientation.Horizontal)
-        split.addWidget(self._demo_video)
+        split.addWidget(video_column)
         split.addWidget(self._demo_panel)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 0)
@@ -1816,7 +1851,7 @@ class MainWindow(QMainWindow):
         return container
 
     def _refresh_demo_targets(self) -> None:
-        """등록 물체 목록을 매핑 표에 반영한다(등록·삭제·이름 변경 후)."""
+        """등록 물체 목록을 시연 탭의 물체 관리 목록에 반영한다(등록·삭제·이름 변경 후)."""
         if not hasattr(self, "_demo_panel"):
             return  # 시연 탭이 아직 만들어지기 전(등록 탭이 먼저 빌드된다)
         choices = [
@@ -1827,7 +1862,7 @@ class MainWindow(QMainWindow):
             )
             for record in self._target_registry.records
         ]
-        self._demo_panel.set_targets(choices, self._device_mapping.mapping)
+        self._demo_panel.set_targets(choices)
 
     def _ensure_demo_mappings(self) -> None:
         """등록 시 선택한 기종을 실제 런타임 기기에 한 번만 자동 연결한다.
@@ -1843,27 +1878,11 @@ class MainWindow(QMainWindow):
             if device_id is not None:
                 self._device_mapping.set_default(record.target_id, device_id)
 
-    def _open_gaze_registration_tab(self) -> None:
-        """시연 탭에서 복잡한 등록 UI를 복제하지 않고 원본 탭으로 이동한다."""
-        for index in range(self._tabs.count()):
-            if self._tabs.tabText(index) == "시선 인식":
-                self._tabs.setCurrentIndex(index)
-                self._register_target_button.setFocus()
-                return
-
     def _refresh_bulb_badge(self) -> None:
         configured = WizConfig.from_env(self._env) is not None
         badge = "설정됨 · 명령 대기" if configured else "미설정 (WIZ_DEVICE_TARGETS 없음)"
         self._last_bulb_badge = (badge, configured)
         self._demo_panel.set_bulb(self._virtual_bulb, badge=badge, ok=configured)
-
-    def _on_demo_mapping_changed(self, target_id: str, device_id: str | None) -> None:
-        self._device_mapping.set(target_id, device_id)
-        # 매핑이 바뀌면 이전 대상으로 쌓인 lock을 이어받으면 안 된다.
-        self._demo_bridge.reset()
-        label = device_id or "연결 안 함"
-        self._log.info(f"시연 기기 매핑: {target_id} → {label}")
-        self._demo_panel.append_line(f"매핑 변경 {target_id} → {label}", ok=device_id is not None)
 
     def _on_demo_fallback_changed(self, device_id: str | None) -> None:
         self._demo_bridge.set_fallback(device_id)
@@ -1923,6 +1942,12 @@ class MainWindow(QMainWindow):
         self._log.error(message)
         self._demo_panel.append_line(message, ok=False)
 
+    def _on_bulb_state_ready(self, pilot: object) -> None:
+        """`BulbPoller`가 읽어온 실물 상태(GUI 스레드에서 수신). 원 그림만 갱신한다."""
+        if not hasattr(self, "_demo_panel"):
+            return  # 시연 탭이 아직 만들어지기 전에 폴러가 먼저 응답한 경우
+        self._demo_panel.set_bulb_live(pilot)  # type: ignore[arg-type]
+
     def _update_demo_state(self, gesture: str) -> None:
         self._last_demo_gesture = gesture
         # "실시간 시선"은 이번 gaze 프레임의 원시 classifier 결과를 그대로
@@ -1971,10 +1996,6 @@ class MainWindow(QMainWindow):
             self._log.warn("이 플랫폼에는 입력 어댑터가 없어 제어를 실행할 수 없습니다")
         else:
             self._log.info(f"손동작 제어 {'켜짐' if enabled else '꺼짐'}")
-
-    def _demo_tab_active(self) -> bool:
-        """시연 탭에서는 정적 pose 제어 대신 TCN→Fusion 명령 경로만 사용한다."""
-        return self._tabs.tabText(self._tabs.currentIndex()) == "시연"
 
     def _handle_commit_decision(self, decision: CommitDecision) -> None:
         """Fusion 커밋 판정 하나를 화면에 남기고, 통과하면 실행 워커로 넘긴다.
@@ -2134,6 +2155,36 @@ class MainWindow(QMainWindow):
         records = self._target_registry.records
         return records[row] if 0 <= row < len(records) else None
 
+    def _find_target_record(self, target_id: str) -> TargetRecord | None:
+        for record in self._target_registry.records:
+            if record.target_id == target_id:
+                return record
+        return None
+
+    def _set_registration_guidance_all(self, title: str, instruction: str, progress: float) -> None:
+        """등록 가이드를 '시선 인식'·'시연' 두 웹캠 뷰에 함께 그린다.
+
+        시연 탭에서 등록을 시작해도 진행 상황을 보려고 탭을 옮길 필요가 없게 한다.
+        """
+        self._gaze_video.set_registration_guidance(title, instruction, progress)
+        self._demo_video.set_registration_guidance(title, instruction, progress)
+
+    def _clear_registration_guidance_all(self) -> None:
+        self._gaze_video.clear_registration_guidance()
+        self._demo_video.clear_registration_guidance()
+
+    def _set_registration_status_text(self, text: str, *, active: bool) -> None:
+        """등록 상태 문구를 '시선 인식' 탭 라벨과 시연 패널에 함께 반영한다."""
+        self._registration_status.setText(text)
+        self._registration_status.setStyleSheet(
+            "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
+            " border-radius:6px; padding:8px; font-weight:700;"
+            if active
+            else "background:#161b22; color:#8b949e; border:1px solid #30363d;"
+            " border-radius:6px; padding:8px; font-weight:600;"
+        )
+        self._demo_panel.set_registration_status(text, active=active)
+
     def _start_target_registration(self) -> None:
         name, ok = QInputDialog.getText(self, "물체 등록", "물체 이름")
         if not ok or not name.strip():
@@ -2204,19 +2255,17 @@ class MainWindow(QMainWindow):
         self._registration_step.setText("1/2 중앙 응시 + 고개 스윕 · 조건 충족까지")
         self._registration_progress.setValue(0)
         self._registration_progress.setFormat("1/2 중앙 응시 + 고개 스윕  %p%")
-        self._registration_status.setText(
-            f"'{name}' ({device_type}) 중앙 한 점에서 눈을 떼지 마세요. 안내에 따라 고개를 "
-            "좌우 끝까지·위아래로 돌리고 카메라 거리를 바꿔 자세별 편향을 수집합니다."
-        )
-        self._registration_status.setStyleSheet(
-            "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
-            " border-radius:6px; padding:8px; font-weight:700;"
+        self._set_registration_status_text(
+            f"1/2 중앙 응시 + 고개 스윕 — '{name}' ({device_type}) 중앙 한 점에서 눈을 떼지 "
+            "마세요. 안내에 따라 고개를 좌우 끝까지·위아래로 돌리고 카메라 거리를 바꿔 자세별 "
+            "편향을 수집합니다.",
+            active=True,
         )
         self._log.info(
             f"'{name}' ({device_type}) 2단계 등록 시작 — 1/2 중앙 응시 + 고개 스윕: "
             "물체 중앙 한 점을 계속 응시하면서 고개를 좌우 끝까지·위아래로 돌리고 거리 변경"
         )
-        self._gaze_video.set_registration_guidance(
+        self._set_registration_guidance_all(
             "REGISTRATION 1/2 - POSE SWEEP",
             "FIX CENTER, TURN HEAD",
             0.0,
@@ -2227,12 +2276,13 @@ class MainWindow(QMainWindow):
         if self._registration.started_at_ms is None:
             reason = self._registration.last_rejection_reason
             reason_text = reason or "waiting for the first valid face + iris frame"
-            self._registration_status.setText(
+            self._set_registration_status_text(
                 "등록 대기: 첫 유효 시선 프레임을 기다리는 중 · "
                 f"현재 차단 원인: {reason_text} · "
-                f"{self._registration.diagnostic_summary()}"
+                f"{self._registration.diagnostic_summary()}",
+                active=True,
             )
-            self._gaze_video.set_registration_guidance(
+            self._set_registration_guidance_all(
                 "REGISTRATION WAITING",
                 f"BLOCKED: {reason_text.upper()}",
                 0.0,
@@ -2243,7 +2293,7 @@ class MainWindow(QMainWindow):
             self._registration_step.setText("2/2 물체 영역 확정 완료")
             self._registration_progress.setValue(1000)
             self._registration_progress.setFormat("등록 데이터 처리 중  %p%")
-            self._gaze_video.set_registration_guidance(
+            self._set_registration_guidance_all(
                 "REGISTRATION COMPLETE", "BUILDING TARGET PROFILE", 1.0
             )
             return
@@ -2303,8 +2353,8 @@ class MainWindow(QMainWindow):
         self._registration_step.setText(step)
         self._registration_progress.setValue(round(progress * 1000))
         self._registration_progress.setFormat(f"{step}  %p%")
-        self._registration_status.setText(status)
-        self._gaze_video.set_registration_guidance(title, video_label, progress)
+        self._set_registration_status_text(f"{step} — {status}", active=True)
+        self._set_registration_guidance_all(title, video_label, progress)
         marker = (phase, phase_index)
         if marker != self._registration_phase_marker:
             previous_phase = (
@@ -2380,6 +2430,7 @@ class MainWindow(QMainWindow):
         ):
             button.setEnabled(not active)
         self._cancel_registration_button.setEnabled(active)
+        self._demo_panel.set_registration_active(active=active)
 
     def _clear_registration_state(self) -> None:
         self._registration = None
@@ -2388,18 +2439,35 @@ class MainWindow(QMainWindow):
         self._registration_step.setText("2단계 물체 등록: 대기")
         self._registration_progress.setValue(0)
         self._registration_progress.setFormat("등록 대기")
-        self._registration_status.setText(
+        self._set_registration_status_text(
             "1단계에서는 물체 중앙 한 점을 응시한 채 고개·거리만 바꾸고, "
-            "2단계에서는 고개를 고정한 채 눈으로 테두리를 정밀하게 따라갑니다."
+            "2단계에서는 고개를 고정한 채 눈으로 테두리를 정밀하게 따라갑니다.",
+            active=False,
         )
-        self._registration_status.setStyleSheet(
-            "background:#161b22; color:#8b949e; border:1px solid #30363d;"
-            " border-radius:6px; padding:8px; font-weight:600;"
-        )
-        self._gaze_video.clear_registration_guidance()
+        self._clear_registration_guidance_all()
 
     def _reregister_selected_target(self) -> None:
         record = self._selected_target()
+        if record is None:
+            self._log.warn("위치를 다시 등록할 기기를 선택하세요")
+            return
+        self._reregister_target_by_id(record.target_id)
+
+    def _rename_selected_target(self) -> None:
+        record = self._selected_target()
+        if record is None:
+            return
+        self._rename_target_by_id(record.target_id)
+
+    def _delete_selected_target(self) -> None:
+        record = self._selected_target()
+        if record is None:
+            return
+        self._delete_target_by_id(record.target_id)
+
+    def _reregister_target_by_id(self, target_id: str) -> None:
+        """'시선 인식'·'시연' 두 탭의 재등록 버튼이 공유하는 진입점."""
+        record = self._find_target_record(target_id)
         if record is None:
             self._log.warn("위치를 다시 등록할 기기를 선택하세요")
             return
@@ -2411,8 +2479,8 @@ class MainWindow(QMainWindow):
             requires_nod_gate=record.requires_nod_gate,
         )
 
-    def _rename_selected_target(self) -> None:
-        record = self._selected_target()
+    def _rename_target_by_id(self, target_id: str) -> None:
+        record = self._find_target_record(target_id)
         if record is None:
             return
         name, ok = QInputDialog.getText(self, "이름 변경", "표시 이름", text=record.name)
@@ -2429,8 +2497,8 @@ class MainWindow(QMainWindow):
             )
             self._refresh_targets()
 
-    def _delete_selected_target(self) -> None:
-        record = self._selected_target()
+    def _delete_target_by_id(self, target_id: str) -> None:
+        record = self._find_target_record(target_id)
         if record is None:
             return
         if (
@@ -2622,10 +2690,7 @@ class MainWindow(QMainWindow):
         # release()는 **억제로 들어가는 전이에서 한 번만** 부른다. 매 프레임 부르면
         # macOS sink의 restore_dock()이 초당 30번 호출된다(Windows sink엔 없어 무해하지만
         # 플랫폼에 기대지 않는다).
-        # 시연 탭은 동적 TCN 명령 하나만 실제 실행 경로로 쓴다. 여기서 정적 pose
-        # 제어까지 함께 실행하면 노트북 대상 slide가 pose scroll + Intent scroll로
-        # 중복 작동한다. 손 스켈레톤·pose 판정은 계속 그리되 OS 입력만 막는다.
-        suppressed = self._demo_tab_active() or self._demo_bridge.should_suppress_pose
+        suppressed = self._demo_bridge.should_suppress_pose
         if suppressed:
             if not self._pose_suppressed:
                 self._pose_control.release()
@@ -2633,10 +2698,10 @@ class MainWindow(QMainWindow):
             self._pose_control.apply(list(snapshot.pose_events))
         self._pose_suppressed = suppressed
         self._video.set_control(self._pose_control.last_action, self._pose_control.enabled)
-        self._demo_video.set_control(
-            "TCN 판정 대기",
-            self._demo_bridge.execution_enabled,
-        )
+        # 시연 탭도 실시간 탭과 같은 정적 pose 제어를 쓰므로(2026-07-22) 웹캠 오버레이도
+        # 같은 실제 값을 보여준다 — "TCN 판정 대기"로 고정돼 있으면 정적 제스처가 실제로
+        # 뭘 하고 있는지 화면에서 확인할 수 없다.
+        self._demo_video.set_control(self._pose_control.last_action, self._pose_control.enabled)
         self._demo_panel.set_hand_status(
             snapshot,
             execution_enabled=self._demo_bridge.execution_enabled,
@@ -2716,6 +2781,8 @@ class MainWindow(QMainWindow):
         # 실행 워커를 확실히 접는다 — 진행 중인 명령 하나는 끝까지 보내고 종료한다.
         if self._execute_worker is not None:
             self._execute_worker.stop()
+        if self._bulb_poller is not None:
+            self._bulb_poller.stop()
         super().closeEvent(event)  # type: ignore[arg-type]
 
 

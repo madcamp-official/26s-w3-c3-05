@@ -107,7 +107,7 @@ EARLY_DISPATCH_GESTURES: frozenset[str] = frozenset(
 # 시연 기본은 "느슨" — 위양성을 늘리더라도 진양성을 잡는 방향(이 프로젝트의 기존
 # 튜닝 방침)이고, 차단 사유 로그가 있어 오발이 나도 왜 났는지 그 자리에서 보인다.
 PRESET_LOOSE = DemoPreset(
-    label="느슨 (시연 기본)",
+    label="느슨",
     fusion=FusionConfig(
         commit_threshold=0.20,
         min_target_confidence=0.55,
@@ -157,7 +157,7 @@ PRESET_NORMAL = DemoPreset(
     ),
 )
 PRESET_STRICT = DemoPreset(
-    label="빡빡 (기본값)",
+    label="빡빡",
     fusion=DEFAULT_FUSION_CONFIG,
     alignment=DEFAULT_ALIGNMENT_CONFIG,
 )

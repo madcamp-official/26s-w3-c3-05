@@ -99,7 +99,9 @@ def test_overlapping_areas_use_head_scale_and_face_location_context() -> None:
 
 def test_in_area_gaze_is_not_rejected_by_compensated_head_pose() -> None:
     """Head context must not veto a gaze that lands in the traced object area."""
-    classifier = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
+    classifier = TargetClassifier(
+        GazeConfig(unknown_probability_threshold=0.0, registration_max_area_radius_deg=6.0)
+    )
     classifier.register_profile(
         DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.01),
         feature_profile=_feature_profile(0.0, 0.0),
@@ -161,7 +163,11 @@ def test_convex_hull_accepts_a_traced_rectangular_corner() -> None:
         maximum_radius_deg=6.0,
     )
     classifier = TargetClassifier(
-        GazeConfig(unknown_probability_threshold=0.0, target_match_tolerance=1.1)
+        GazeConfig(
+            unknown_probability_threshold=0.0,
+            target_match_tolerance=1.1,
+            registration_max_area_radius_deg=6.0,
+        )
     )
     classifier.register_profile(
         DeviceGazeProfile("monitor", _unit([0.0, 0.0, 1.0]), variance=0.01),

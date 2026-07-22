@@ -587,21 +587,6 @@ def test_pose_control_suppressed_while_locked_to_bulb(tmp_path: Path) -> None:
         app.processEvents()
 
 
-def test_demo_mapping_change_persists_and_resets_lock(tmp_path: Path) -> None:
-    from jarvis.monitoring.demo_bridge import BULB_DEVICE_ID, DeviceMappingStore
-
-    app = QApplication.instance() or QApplication([])
-    window = _demo_window(tmp_path)
-    try:
-        window._on_demo_mapping_changed("target_001", BULB_DEVICE_ID)
-        stored = DeviceMappingStore(tmp_path / "demo_device_map.json")
-        assert stored.get("target_001") == BULB_DEVICE_ID
-        assert window._demo_bridge.resolve_target("target_001") == BULB_DEVICE_ID
-    finally:
-        window.close()
-        app.processEvents()
-
-
 def test_demo_raw_target_reflects_latest_gaze_and_fallback(tmp_path: Path) -> None:
     """실시간 시선(원시 classifier 결과)은 push_target()이 실제로 쓰는 값과
     항상 일치해야 한다 — 특히 타깃 고정(fallback)이 켜져 있으면 push_target()은
@@ -614,7 +599,7 @@ def test_demo_raw_target_reflects_latest_gaze_and_fallback(tmp_path: Path) -> No
     app = QApplication.instance() or QApplication([])
     window = _demo_window(tmp_path)
     try:
-        window._on_demo_mapping_changed("target_001", BULB_DEVICE_ID)
+        window._device_mapping.set("target_001", BULB_DEVICE_ID)
 
         # 기본값(laptop 고정)이 켜져 있는 동안은 원시 시선과 무관하게 고정
         # 기기를 보여준다 — push_target()이 실제로 쓰는 합성값과 일치해야 한다.
@@ -803,7 +788,45 @@ def test_demo_tab_video_keeps_only_hand_overlay(tmp_path: Path) -> None:
         app.processEvents()
 
 
-def test_demo_registration_button_opens_gaze_registration_tab(tmp_path: Path) -> None:
+def test_demo_video_shows_registration_guidance_despite_hidden_overlay(tmp_path: Path) -> None:
+    """시연 탭 웹캠은 HUD/gaze는 숨겨도 등록 가이드는 그린다(등록을 그 탭에서 끝낼 수 있게)."""
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        samples_path=tmp_path / "samples.json",
+        gesture_models_dir=tmp_path,
+        profiles_path=tmp_path / "profiles.json",
+    )
+    try:
+        assert window._demo_video._show_overlay is False
+        assert window._demo_video._show_registration_guidance is True
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def _upsert_test_target(window: object, target_id: str = "target_001", name: str = "전구") -> None:
+    """등록 흐름 전체를 거치지 않고 registry에 최소 TargetRecord 하나를 직접 넣는다."""
+    from jarvis.calibration.registry import TargetDirection, TargetRecord, TargetSpread
+
+    window._target_registry.upsert(  # type: ignore[attr-defined]
+        TargetRecord(
+            target_id=target_id,
+            name=name,
+            device_type="electric bulb",
+            direction=TargetDirection(yaw=10.0, pitch=0.0),
+            spread=TargetSpread(yaw=5.0, pitch=5.0),
+            device_id=target_id,
+        )
+    )
+    window._refresh_targets()  # type: ignore[attr-defined]
+
+
+def test_demo_panel_reregister_rename_delete_target_by_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """시연 탭의 물체 관리 버튼이 '시선 인식' 탭과 같은 registry를 조작한다."""
     app = QApplication.instance() or QApplication([])
     window = MainWindow(
         env={},
@@ -814,10 +837,52 @@ def test_demo_registration_button_opens_gaze_registration_tab(tmp_path: Path) ->
         start_tab="시연",
     )
     try:
-        window._demo_panel._registration_button.click()
-        tabs = window.centralWidget()
-        assert tabs is not None
-        assert tabs.tabText(tabs.currentIndex()) == "시선 인식"
+        _upsert_test_target(window)
+        assert [r.target_id for r in window._target_registry.records] == ["target_001"]
+        window._demo_panel._target_list.setCurrentRow(0)
+
+        monkeypatch.setattr(QInputDialog, "getText", lambda *_a, **_k: ("새 이름", True))
+        window._demo_panel._rename_target_button.click()
+        assert window._find_target_record("target_001").name == "새 이름"
+
+        window._demo_panel._reregister_target_button.click()
+        assert window._registration is not None
+        assert window._registration.name == "새 이름"
+        window._cancel_target_registration()
+        assert window._registration is None
+
+        monkeypatch.setattr(
+            QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.Yes
+        )
+        window._demo_panel._delete_target_button.click()
+        assert window._target_registry.records == []
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_registration_guidance_and_status_mirror_to_demo_panel(tmp_path: Path) -> None:
+    """등록을 시작하면 '시선 인식' 탭뿐 아니라 시연 패널에도 같은 상태·가이드가 뜬다."""
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        env={},
+        start_camera=False,
+        samples_path=tmp_path / "samples.json",
+        gesture_models_dir=tmp_path,
+        profiles_path=tmp_path / "profiles.json",
+    )
+    try:
+        window._begin_registration("target_001", "전구", "electric bulb", "target_001")
+        assert window._demo_video._registration_guide is not None
+        assert window._gaze_video._registration_guide == window._demo_video._registration_guide
+        assert "전구" in window._demo_panel._registration_status_label.text()
+        assert window._demo_panel._cancel_registration_button.isEnabled() is True
+        assert window._demo_panel._register_target_button.isEnabled() is False
+
+        window._cancel_target_registration()
+        assert window._demo_video._registration_guide is None
+        assert window._demo_panel._cancel_registration_button.isEnabled() is False
+        assert window._demo_panel._register_target_button.isEnabled() is True
     finally:
         window.close()
         app.processEvents()
@@ -856,7 +921,6 @@ def test_registered_device_type_is_automatically_mapped_for_demo(
     )
     try:
         assert window._device_mapping.get("target_001") == runtime_device
-        assert window._demo_panel._mapping_combos["target_001"].currentData() == runtime_device
     finally:
         window.close()
         app.processEvents()
@@ -935,8 +999,12 @@ def test_bulb_command_ignores_computer_control_toggle(tmp_path: Path) -> None:
         app.processEvents()
 
 
-def test_demo_tab_never_double_executes_static_pose_control(tmp_path: Path) -> None:
-    """시연은 TCN→Fusion만 실행하며 정적 pose 이벤트를 OS에 중복 전달하지 않는다."""
+def test_demo_tab_runs_static_pose_control_alongside_tcn(tmp_path: Path) -> None:
+    """시연 탭도 실시간 탭과 동일하게 정적 pose 제어를 그대로 실행한다(사용자 지시 2026-07-22).
+
+    시연 탭이라는 이유만으로 정적 pose를 끄지 않는다 — lock이 노트북이 아닌 기기일
+    때만(`should_suppress_pose`) 억제하며, 이는 실시간 탭과 같은 기준이다.
+    """
     app = QApplication.instance() or QApplication([])
     window = MainWindow(
         env={},
@@ -951,7 +1019,7 @@ def test_demo_tab_never_double_executes_static_pose_control(tmp_path: Path) -> N
     try:
         window._demo_panel._execution_toggle.setChecked(True)
         window._on_hand(_lost_hand_snapshot(1))
-        assert applied == []
+        assert applied == [1]
         assert window._demo_bridge.execution_enabled is True
     finally:
         window.close()

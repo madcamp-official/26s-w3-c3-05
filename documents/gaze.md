@@ -432,7 +432,7 @@ invalidates legacy/stale rows. Renaming does not change the fingerprint.
 | --- | ---: | --- |
 | `unknown_probability_threshold` | `0.80` | Reject as `UNKNOWN` when top-1 target probability is too low. |
 | `unknown_max_angle_deg` | `25.0` | Reject as `UNKNOWN` when even the nearest registered direction is farther than this. |
-| `target_match_tolerance` | `1.10` | Radial convex-hull boundary tolerance; up to 10% beyond the traced edge is accepted. |
+| `target_match_tolerance` | `1.30` | Radial convex-hull boundary tolerance; up to 30% beyond the traced edge is accepted (raised from 1.10 on 2026-07-22 — genuinely looking at a target still missed as `x1.28 > x1.10`, especially when the object is far from the camera and phase-2 boundary tracing naturally spreads wider). |
 | `minimum_probability` | `0.80` | Minimum probability for Gaze Lock candidate/hold. |
 | `minimum_margin` | `0.20` | Minimum top-1 vs top-2 margin for confident lock. |
 | `dwell_time_ms` | `1500` | Same target must remain the confident engine result this long before confirmation (2026-07-22: 3000→1500, demo feel). |
@@ -494,7 +494,7 @@ invalidates legacy/stale rows. Renaming does not change the fingerprint.
 | --- | ---: | --- |
 | `registration_min_spread_deg` | `4.0` | Minimum angular spread saved for a registered target. Prevents overly tiny target regions. |
 | `registration_max_spread_deg` | `8.0` | Maximum angular spread saved for a registered target. Prevents one target from swallowing too much space. |
-| `registration_max_area_radius_deg` | `6.0` | Runtime cap for edge-loop target area radius, even if an old JSON profile saved a larger area. |
+| `registration_max_area_radius_deg` | `4.5` | Runtime cap for edge-loop target area radius, even if an old JSON profile saved a larger area. Lowered from `6.0` (2026-07-22) — large near-camera objects (e.g. a monitor) traced right up to the old cap, crowding the angular space around nearby targets. |
 | `pose_correction_bin_edges_deg` | `(-30, -20, -10, 10, 20, 30)` | Head-yaw bin boundaries for the pose-conditioned gaze correction learned from phase-1 samples. |
 | `pose_correction_min_bin_samples` | `8` | Bins with fewer phase-1 samples do not produce a correction point. |
 | `pose_correction_max_offset_deg` | `10.0` | Per-bin cap on the stored gaze correction offset. Measured bias was 4~8° at head yaw 35°. |

@@ -98,6 +98,28 @@ def test_unmapped_device_fails() -> None:
     assert "no WiZ device mapped" in result.detail
 
 
+def test_read_state_returns_none_when_unconfigured() -> None:
+    assert WizAdapter(None, FakeTransport()).read_state("room.bulb") is None
+
+
+def test_read_state_returns_none_for_unmapped_device() -> None:
+    adapter = WizAdapter(WizConfig({"other.bulb": TARGET}), FakeTransport())
+    assert adapter.read_state("room.bulb") is None
+
+
+def test_read_state_returns_none_on_transport_failure() -> None:
+    adapter = _adapter(FakeTransport(fail=WizTimeout("no response")))
+    assert adapter.read_state("room.bulb") is None
+
+
+def test_read_state_returns_pilot_without_sending_a_command() -> None:
+    transport = FakeTransport({"state": True, "dimming": 42, "temp": 3000})
+    adapter = _adapter(transport)
+    state = adapter.read_state("room.bulb")
+    assert state == {"state": True, "dimming": 42, "temp": 3000}
+    assert transport.sent == []  # 읽기만 했다 — setPilot은 한 번도 안 나갔다
+
+
 def test_from_env_returns_none_without_targets() -> None:
     assert WizConfig.from_env({}) is None
     assert WizConfig.from_env({"WIZ_DEVICE_TARGETS": "{}"}) is None

@@ -23,12 +23,10 @@ from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 from jarvis.monitoring.demo_bridge import PRESET_STRICT  # noqa: E402
 from jarvis.monitoring.demo_panel import DemoPanel, TargetChoice  # noqa: E402
-from jarvis.monitoring.virtual_bulb import VirtualBulbState  # noqa: E402
 
 
 def _panel() -> DemoPanel:
     return DemoPanel(
-        on_mapping_changed=lambda target_id, device_id: None,
         on_fallback_changed=lambda device_id: None,
         on_preset_changed=lambda preset: None,
         on_execution_toggled=lambda enabled: None,
@@ -168,44 +166,132 @@ def test_raw_target_is_shown_separately_from_locked_device() -> None:
         app.processEvents()
 
 
-def test_mapping_table_rebuilds_without_leaking_rows() -> None:
+def test_target_management_buttons_emit_selected_target_id() -> None:
+    """등록·재등록·이름변경·삭제 버튼은 목록에서 선택된 target_id를 그대로 넘긴다."""
     app = QApplication.instance() or QApplication([])
-    panel = _panel()
+    registered: list[bool] = []
+    reregistered: list[str] = []
+    renamed: list[str] = []
+    deleted: list[str] = []
+    cancelled: list[bool] = []
+    panel = DemoPanel(
+        on_fallback_changed=lambda device_id: None,
+        on_preset_changed=lambda preset: None,
+        on_execution_toggled=lambda enabled: None,
+        on_register_target=lambda: registered.append(True),
+        on_reregister_target=reregistered.append,
+        on_rename_target=renamed.append,
+        on_delete_target=deleted.append,
+        on_cancel_registration=lambda: cancelled.append(True),
+    )
     try:
-        panel.set_targets([], {})
         panel.set_targets(
             [
                 TargetChoice("target_001", "전구", "electric bulb"),
                 TargetChoice("target_002", "노트북", "computer"),
-            ],
-            {"target_001": "room.bulb"},
+            ]
         )
-        assert panel._mapping_combos["target_001"].currentData() == "room.bulb"
-        assert panel._mapping_combos["target_002"].currentText() == "(연결 안 함)"
+        panel._target_list.setCurrentRow(1)
 
-        panel.set_targets([TargetChoice("target_003", "새 물체")], {})
-        assert set(panel._mapping_combos) == {"target_003"}
+        panel._register_target_button.click()
+        assert registered == [True]
+
+        panel._reregister_target_button.click()
+        assert reregistered == ["target_002"]
+
+        panel._rename_target_button.click()
+        assert renamed == ["target_002"]
+
+        panel._delete_target_button.click()
+        assert deleted == ["target_002"]
+
+        panel.set_registration_active(active=True)  # 취소 버튼은 등록 중에만 활성화된다
+        panel._cancel_registration_button.click()
+        assert cancelled == [True]
     finally:
         panel.deleteLater()
         app.processEvents()
 
 
-def test_registration_area_is_compact_and_hand_status_updates_live() -> None:
-    """긴 등록 설명은 없애고 웹캠에서 옮긴 손 상태를 같은 자리에 보여준다."""
+def test_target_list_keeps_selection_by_id_across_refresh() -> None:
+    """이름 변경으로 표시 텍스트가 바뀌어도 같은 물체가 계속 선택돼 있어야 한다."""
     app = QApplication.instance() or QApplication([])
-    opened: list[bool] = []
-    panel = DemoPanel(
-        on_mapping_changed=lambda target_id, device_id: None,
-        on_fallback_changed=lambda device_id: None,
-        on_preset_changed=lambda preset: None,
-        on_execution_toggled=lambda enabled: None,
-        on_open_registration=lambda: opened.append(True),
-    )
+    panel = _panel()
     try:
-        assert panel._registration_button.text() == "등록 관리"
-        panel._registration_button.click()
-        assert opened == [True]
+        panel.set_targets(
+            [
+                TargetChoice("target_001", "전구", "electric bulb"),
+                TargetChoice("target_002", "노트북", "computer"),
+            ]
+        )
+        panel._target_list.setCurrentRow(1)
 
+        panel.set_targets(
+            [
+                TargetChoice("target_001", "전구", "electric bulb"),
+                TargetChoice("target_002", "내 노트북", "computer"),
+            ]
+        )
+        assert panel._target_list.currentRow() == 1
+        assert "내 노트북" in panel._target_list.item(1).text()
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
+def test_registration_active_locks_management_buttons_and_unlocks_cancel() -> None:
+    app = QApplication.instance() or QApplication([])
+    panel = _panel()
+    try:
+        panel.set_registration_active(active=True)
+        assert panel._register_target_button.isEnabled() is False
+        assert panel._reregister_target_button.isEnabled() is False
+        assert panel._rename_target_button.isEnabled() is False
+        assert panel._delete_target_button.isEnabled() is False
+        assert panel._cancel_registration_button.isEnabled() is True
+
+        panel.set_registration_active(active=False)
+        assert panel._register_target_button.isEnabled() is True
+        assert panel._cancel_registration_button.isEnabled() is False
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
+def test_registration_status_text_and_color_reflect_active_state() -> None:
+    app = QApplication.instance() or QApplication([])
+    panel = _panel()
+    try:
+        panel.set_registration_status("등록 진행 중", active=True)
+        assert panel._registration_status_label.text() == "등록 진행 중"
+        assert "#f0b429" in panel._registration_status_label.styleSheet()
+
+        panel.set_registration_status("대기", active=False)
+        assert "color" in panel._registration_status_label.styleSheet()
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
+def test_log_widget_is_exposed_but_not_owned_by_panel_layout() -> None:
+    """판정 로그 위젯은 밖(웹캠 밑)에 배치하므로 패널 자신의 레이아웃에는 없어야 한다."""
+    app = QApplication.instance() or QApplication([])
+    panel = _panel()
+    try:
+        assert panel.log_widget is panel._log_list
+        assert panel.layout().indexOf(panel.log_widget) == -1
+        panel.append_line("판정 완료", ok=True)
+        assert panel.log_widget.count() == 1
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
+def test_hand_status_updates_live() -> None:
+    """웹캠에서 옮긴 손 상태를 물체 관리 아래 같은 자리에 실시간으로 보여준다."""
+    app = QApplication.instance() or QApplication([])
+    panel = _panel()
+    try:
         pose = SimpleNamespace(label="none", confidence=0.97, trusted=True, reason="")
         snapshot = SimpleNamespace(
             hand_detected=True,
@@ -234,7 +320,6 @@ def test_execution_toggle_reports_armed_and_judgment_only_modes() -> None:
     app = QApplication.instance() or QApplication([])
     toggled: list[bool] = []
     panel = DemoPanel(
-        on_mapping_changed=lambda target_id, device_id: None,
         on_fallback_changed=lambda device_id: None,
         on_preset_changed=lambda preset: None,
         on_execution_toggled=toggled.append,
@@ -260,7 +345,6 @@ def test_fallback_combo_emits_runtime_id_not_display_label() -> None:
     app = QApplication.instance() or QApplication([])
     selected: list[str | None] = []
     panel = DemoPanel(
-        on_mapping_changed=lambda target_id, device_id: None,
         on_fallback_changed=selected.append,
         on_preset_changed=lambda preset: None,
         on_execution_toggled=lambda enabled: None,
@@ -276,18 +360,19 @@ def test_fallback_combo_emits_runtime_id_not_display_label() -> None:
 
 
 def test_bulb_view_survives_every_state() -> None:
-    """전원 꺼짐·경계값에서도 색 계산이 예외를 내지 않는다."""
+    """조회 실패(None)·전원 꺼짐·경계값에서도 색 계산이 예외를 내지 않는다."""
     app = QApplication.instance() or QApplication([])
     panel = _panel()
     try:
         assert panel.bulb_view.width() == 56
         assert panel.bulb_view.height() == 56
-        for state in (
-            VirtualBulbState(power=False),
-            VirtualBulbState(power=True, brightness=10, color_temperature=2700),
-            VirtualBulbState(power=True, brightness=100, color_temperature=6500),
+        for pilot in (
+            None,  # 조회 실패·미설정 — 아직 실물 색을 모른다
+            {"state": False},
+            {"state": True, "dimming": 10, "temp": 2700},
+            {"state": True, "dimming": 100, "temp": 6500},
         ):
-            panel.set_bulb(state, badge="미설정", ok=False)
+            panel.set_bulb_live(pilot)
             assert panel.bulb_view._bulb_color().isValid()
     finally:
         panel.deleteLater()
@@ -298,7 +383,6 @@ def test_preset_callback_fires_with_selected_preset() -> None:
     app = QApplication.instance() or QApplication([])
     chosen: list[object] = []
     panel = DemoPanel(
-        on_mapping_changed=lambda target_id, device_id: None,
         on_fallback_changed=lambda device_id: None,
         on_preset_changed=chosen.append,
         on_execution_toggled=lambda enabled: None,
@@ -312,30 +396,26 @@ def test_preset_callback_fires_with_selected_preset() -> None:
 
 
 def test_bulb_view_follows_the_active_color_mode() -> None:
-    """색상 모드의 그림 색은 adapter가 기기로 보내는 RGB와 같아야 한다.
+    """색상 모드의 그림 색은 실물이 보고한 r/g/b 그대로여야 한다.
 
-    화면과 실물이 서로 다른 색을 내면 시연에서 바로 들통난다 — 두 곳이 같은 변환
-    (`wiz.hue_to_rgb`)을 쓰는지 고정한다.
+    화면과 실물이 서로 다른 색을 내면 시연에서 바로 들통난다 — 재채도 변환 없이
+    getPilot의 r/g/b를 그대로 쓰는지 고정한다. `temp` 필드가 오면 CCT 모드로
+    갈린다는 것도 함께 확인한다.
     """
     from jarvis.runtime_protocol.adapters.wiz import hue_to_rgb
 
     app = QApplication.instance() or QApplication([])
     panel = _panel()
     try:
-        panel.set_bulb(
-            VirtualBulbState(power=True, brightness=100, color_mode=True, hue=120),
-            badge="OK",
-            ok=True,
-        )
-        assert panel.bulb_view._tint() == hue_to_rgb(120)
+        red, green, blue = hue_to_rgb(120)
+        color_pilot = {"state": True, "dimming": 100, "r": red, "g": green, "b": blue}
+        panel.set_bulb_live(color_pilot)
+        assert panel.bulb_view._tint(color_pilot) == (red, green, blue)
 
-        # 색온도 모드로 돌아가면 색조 계산도 그쪽을 따른다.
-        panel.set_bulb(
-            VirtualBulbState(power=True, brightness=100, color_mode=False),
-            badge="OK",
-            ok=True,
-        )
-        assert panel.bulb_view._tint() != hue_to_rgb(120)
+        # temp 필드가 있으면 CCT 모드로 갈린다 — 같은 hue의 rgb와는 달라야 한다.
+        cct_pilot = {"state": True, "dimming": 100, "temp": 4000}
+        panel.set_bulb_live(cct_pilot)
+        assert panel.bulb_view._tint(cct_pilot) != (red, green, blue)
     finally:
         panel.deleteLater()
         app.processEvents()

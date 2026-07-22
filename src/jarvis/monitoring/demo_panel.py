@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -48,12 +47,8 @@ from jarvis.monitoring.virtual_bulb import (
     COLOR_TEMPERATURE_MIN,
     VirtualBulbState,
 )
-from jarvis.runtime_protocol.adapters.wiz import hue_to_rgb
-
 if TYPE_CHECKING:
     from jarvis.monitoring.hand_probe import HandSnapshot
-
-_NO_DEVICE = "(연결 안 함)"
 
 # 이 앱에는 전역 다크 테마가 없다 — 어두운 외관은 위젯마다 stylesheet로 직접 만든다
 # (`app.py`의 `_MONO`가 색을 항상 함께 지정하는 것과 같은 규약). 그래서 `background`만
@@ -69,17 +64,27 @@ _STATUS_STYLE = (
 
 @dataclass(frozen=True, slots=True)
 class TargetChoice:
-    """매핑 UI 한 줄 — 등록된 물체 하나."""
+    """물체 관리 목록 한 줄 — 등록된 물체 하나."""
 
     target_id: str
     name: str
     device_type: str = ""
 
 
-class BulbView(QWidget):
-    """가상 전구 — 전원·밝기·색온도를 원 하나의 색과 밝기로 그린다.
+def _pilot_number(pilot: Mapping[str, object], key: str, default: float) -> float:
+    """getPilot 응답 한 필드를 안전하게 float로. 없거나 비수치면 default."""
+    value = pilot.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return float(value)
 
-    실물 상태를 읽어오지 않는다. 그린 값은 지금까지 **보낸 명령의 누적**이다.
+
+class BulbView(QWidget):
+    """실물 전구 — 주기적으로 읽어온 실측 ``getPilot`` 상태를 원 하나로 그린다.
+
+    아직 한 번도 조회에 성공하지 못했으면(시작 직후·설정 없음·통신 실패) 꺼짐과
+    같은 회색으로 그린다 — 마지막으로 **보낸** 명령을 지어내 "실물이 이렇다"고
+    보여주지 않는다(development-principles 1.1, 정직한 상태).
     """
 
     def __init__(self) -> None:
@@ -87,10 +92,11 @@ class BulbView(QWidget):
         # 시연 상태를 보조하는 아이콘일 뿐 핵심 화면이 아니다. 레이아웃이 남는 세로
         # 공간을 모두 줘 원이 200px 이상 커지지 않도록 작은 고정 크기로 제한한다.
         self.setFixedSize(56, 56)
-        self._state = VirtualBulbState()
+        self._pilot: Mapping[str, object] | None = None
 
-    def set_state(self, state: VirtualBulbState) -> None:
-        self._state = state
+    def set_live_state(self, pilot: Mapping[str, object] | None) -> None:
+        """실물에서 막 읽어온 ``getPilot`` 결과. 조회 실패·미설정이면 ``None``."""
+        self._pilot = pilot
         self.update()
 
     def paintEvent(self, event: object) -> None:  # noqa: N802 - Qt override name
@@ -105,45 +111,63 @@ class BulbView(QWidget):
         painter.end()
 
     def _bulb_color(self) -> QColor:
-        if not self._state.power:
+        pilot = self._pilot
+        if pilot is None or not bool(pilot.get("state", False)):
             return QColor("#21262d")
-        red, green, blue = self._tint()
+        red, green, blue = self._tint(pilot)
         # 밝기는 명도로. 하한이 10이라 완전히 검어지지는 않는다(꺼짐과 구분).
-        level = (self._state.brightness - BRIGHTNESS_MIN) / (BRIGHTNESS_MAX - BRIGHTNESS_MIN)
+        dimming = _pilot_number(pilot, "dimming", BRIGHTNESS_MIN)
+        level = (dimming - BRIGHTNESS_MIN) / (BRIGHTNESS_MAX - BRIGHTNESS_MIN)
         scale = 0.35 + 0.65 * max(0.0, min(1.0, level))
         return QColor(int(red * scale), int(green * scale), int(blue * scale))
 
-    def _tint(self) -> tuple[int, int, int]:
-        """색조. 실물 WiZ와 같이 색상 모드와 색온도 모드 중 하나를 따른다."""
-        if self._state.color_mode:
-            # 색상 모드: adapter가 기기로 보내는 것과 **같은** 변환을 쓴다 — 화면과
-            # 실물이 서로 다른 색을 내면 시연에서 바로 들통난다.
-            return hue_to_rgb(self._state.hue)
-        # 색온도 모드: 따뜻한 주황(2700K) ↔ 차가운 흰(6500K) 사이 선형 보간.
-        span = COLOR_TEMPERATURE_MAX - COLOR_TEMPERATURE_MIN
-        warmth = (self._state.color_temperature - COLOR_TEMPERATURE_MIN) / span
-        warmth = max(0.0, min(1.0, warmth))
-        return 255, int(170 + 70 * warmth), int(90 + 155 * warmth)
+    def _tint(self, pilot: Mapping[str, object]) -> tuple[int, int, int]:
+        """색조. 실물 WiZ와 같이 색상 모드와 색온도 모드 중 하나를 따른다.
+
+        ``temp`` 필드 존재로 모드를 가른다 — CCT 모드에서는 WiZ가 ``temp``를
+        주고 r/g/b는 아예 안 주거나 0으로 준다(wiz.py 모듈 docstring과 같은 관찰).
+        """
+        if "temp" in pilot:
+            span = COLOR_TEMPERATURE_MAX - COLOR_TEMPERATURE_MIN
+            temp = _pilot_number(pilot, "temp", COLOR_TEMPERATURE_MIN)
+            warmth = max(0.0, min(1.0, (temp - COLOR_TEMPERATURE_MIN) / span))
+            return 255, int(170 + 70 * warmth), int(90 + 155 * warmth)
+        # 색상 모드: 기기가 보고한 r/g/b를 그대로 쓴다(재채도 변환 없음) — WiZ 앱
+        # 등 다른 경로로 파스텔 색을 넣었을 때도 화면이 실물과 같은 색을 낸다.
+        red = int(max(0, min(255, _pilot_number(pilot, "r", 0))))
+        green = int(max(0, min(255, _pilot_number(pilot, "g", 0))))
+        blue = int(max(0, min(255, _pilot_number(pilot, "b", 0))))
+        return red, green, blue
 
 
 class DemoPanel(QWidget):
-    """시연 탭 본문 — 상태 스트립 + 가상 전구 + 설정 + 판정 로그."""
+    """시연 탭 우측 본문 — 상태 스트립 + 가상 전구 + 설정 + 물체 관리.
+
+    판정·실행 로그(`log_widget`)는 이 패널에 배치하지 않는다 — MainWindow가 웹캠
+    바로 밑에 둔다. 위젯 자체는 여기서 만들어 `append_line`이 계속 이 패널을 통해
+    쓰지만, 부모 레이아웃은 밖에서 정해진다.
+    """
 
     def __init__(
         self,
         *,
-        on_mapping_changed: Callable[[str, str | None], None],
         on_fallback_changed: Callable[[str | None], None],
         on_preset_changed: Callable[[DemoPreset], None],
         on_execution_toggled: Callable[[bool], None],
-        on_open_registration: Callable[[], None] | None = None,
+        on_register_target: Callable[[], None] | None = None,
+        on_reregister_target: Callable[[str], None] | None = None,
+        on_rename_target: Callable[[str], None] | None = None,
+        on_delete_target: Callable[[str], None] | None = None,
+        on_cancel_registration: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
-        self._on_mapping_changed = on_mapping_changed
         self._on_fallback_changed = on_fallback_changed
         self._on_preset_changed = on_preset_changed
         self._on_execution_toggled = on_execution_toggled
-        self._mapping_combos: dict[str, QComboBox] = {}
+        self._on_reregister_target = on_reregister_target
+        self._on_rename_target = on_rename_target
+        self._on_delete_target = on_delete_target
+        self._target_ids: list[str] = []
 
         layout = QVBoxLayout(self)
 
@@ -170,7 +194,7 @@ class DemoPanel(QWidget):
         self._last_action.setStyleSheet(_STATUS_STYLE + " color:#8b949e;")
         layout.addWidget(self._last_action)
 
-        # --- 가상 전구 ----------------------------------------------------
+        # --- 전구 ----------------------------------------------------------
         bulb_row = QHBoxLayout()
         self.bulb_view = BulbView()
         bulb_row.addWidget(self.bulb_view)
@@ -178,7 +202,7 @@ class DemoPanel(QWidget):
         self._bulb_state_label = QLabel("밝기 60% · 색온도 4000K")
         self._bulb_state_label.setStyleSheet(f"font-weight:700; color:{_STATUS_TEXT};")
         bulb_text.addWidget(self._bulb_state_label)
-        bulb_note = QLabel("위 값은 보낸 명령 기준이며 실물 응답이 아닙니다.")
+        bulb_note = QLabel("원은 전구에서 직접 읽어온 실측 색입니다. 위 문구는 보낸 명령 기준입니다.")
         bulb_note.setWordWrap(True)
         bulb_note.setStyleSheet("color:#6e7681; font-size:11px;")
         bulb_text.addWidget(bulb_note)
@@ -196,9 +220,7 @@ class DemoPanel(QWidget):
         # 발화하지 않으므로, 상태 라벨은 초기 체크 상태를 직접 반영해 만든다 —
         # 초기 bridge 상태는 MainWindow가 패널 값을 읽어 명시 동기화한다
         # (app.py `_build_demo_tab`).
-        self._execution_toggle = QCheckBox(
-            "기기 명령 실행 (TCN 동적 제스처 · 끄면 판정만 하고 실행하지 않음)"
-        )
+        self._execution_toggle = QCheckBox("기기 명령 실행")
         self._execution_toggle.setChecked(True)
         self._execution_toggle.toggled.connect(self._emit_execution)
         layout.addWidget(self._execution_toggle)
@@ -247,13 +269,47 @@ class DemoPanel(QWidget):
         preset_row.addWidget(self._preset_combo, 1)
         layout.addLayout(preset_row)
 
-        # --- 등록 관리 + 실시간 손 판정 ------------------------------------
-        # 설명 문단 대신 시선 인식 탭으로 가는 짧은 버튼 하나만 둔다. 확보한 자리는
-        # 웹캠에서 뺀 손 진단 숫자를 매 프레임 보여주는 데 사용한다.
-        self._registration_button = QPushButton("등록 관리")
-        if on_open_registration is not None:
-            self._registration_button.clicked.connect(on_open_registration)
-        layout.addWidget(self._registration_button)
+        # --- 물체 등록·관리 -------------------------------------------------
+        # '시선 인식' 탭과 같은 등록 엔진을 그대로 쓴다(MainWindow가 콜백으로 잇는다) —
+        # 시연 탭을 떠나지 않고 등록·재등록·이름변경·삭제까지 끝낼 수 있게.
+        layout.addWidget(_section("물체 관리"))
+        # MainWindow._clear_registration_state가 쓰는 대기 문구와 똑같이 시작한다 —
+        # "2단계 물체 등록: 대기" 같은 내부 단계 이름만 있으면 맥락 없이 뜬금없어 보인다.
+        self._registration_status_label = QLabel(
+            "1단계에서는 물체 중앙 한 점을 응시한 채 고개·거리만 바꾸고, "
+            "2단계에서는 고개를 고정한 채 눈으로 테두리를 정밀하게 따라갑니다."
+        )
+        self._registration_status_label.setWordWrap(True)
+        self._registration_status_label.setStyleSheet(_STATUS_STYLE + " color:#8b949e;")
+        layout.addWidget(self._registration_status_label)
+
+        target_controls = QHBoxLayout()
+        self._register_target_button = QPushButton("물체 등록")
+        if on_register_target is not None:
+            self._register_target_button.clicked.connect(on_register_target)
+        self._reregister_target_button = QPushButton("재등록")
+        self._reregister_target_button.clicked.connect(self._emit_reregister)
+        self._rename_target_button = QPushButton("이름 변경")
+        self._rename_target_button.clicked.connect(self._emit_rename)
+        self._delete_target_button = QPushButton("삭제")
+        self._delete_target_button.clicked.connect(self._emit_delete)
+        self._cancel_registration_button = QPushButton("등록 취소")
+        self._cancel_registration_button.setEnabled(False)
+        if on_cancel_registration is not None:
+            self._cancel_registration_button.clicked.connect(on_cancel_registration)
+        for button in (
+            self._register_target_button,
+            self._reregister_target_button,
+            self._rename_target_button,
+            self._delete_target_button,
+            self._cancel_registration_button,
+        ):
+            target_controls.addWidget(button)
+        layout.addLayout(target_controls)
+        self._target_list = QListWidget()
+        self._target_list.setMaximumHeight(110)
+        layout.addWidget(self._target_list)
+
         self._hand_status = QLabel(
             "HAND  미검출  det 0%\npalm scale  —\ntilt —   pose —\n제어  TCN 판정 대기 · 실행 ON"
         )
@@ -263,23 +319,37 @@ class DemoPanel(QWidget):
         )
         layout.addWidget(self._hand_status)
 
-        # 등록된 시선 target을 실제 명령 대상에 연결하는 콤보. 자동 연결 결과를
-        # 보여주며, 사용자가 수동으로 바꾸거나 연결을 끊을 수도 있다.
-        self._mapping_container = QWidget()
-        self._mapping_layout = QGridLayout(self._mapping_container)
-        self._mapping_layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._mapping_container)
+        layout.addStretch(1)
 
         # --- 판정 로그 ------------------------------------------------------
-        layout.addWidget(_section("판정·실행 로그"))
+        # 위젯만 여기서 만든다. 웹캠 밑(MainWindow._build_demo_tab)에 두므로 이
+        # 패널의 레이아웃에는 넣지 않는다 — `log_widget`으로 밖에서 배치한다.
         self._log_list = QListWidget()
         self._log_list.setStyleSheet(
             "QListWidget{background:#0a0d12; border:1px solid #30363d;"
             " font-family:Consolas,monospace; font-size:12px; color:#c9d1d9;}"
         )
-        layout.addWidget(self._log_list, 1)
 
     # --- 조작 → 콜백 -------------------------------------------------------
+
+    def _current_target_id(self) -> str | None:
+        row = self._target_list.currentRow()
+        return self._target_ids[row] if 0 <= row < len(self._target_ids) else None
+
+    def _emit_reregister(self) -> None:
+        target_id = self._current_target_id()
+        if target_id is not None and self._on_reregister_target is not None:
+            self._on_reregister_target(target_id)
+
+    def _emit_rename(self) -> None:
+        target_id = self._current_target_id()
+        if target_id is not None and self._on_rename_target is not None:
+            self._on_rename_target(target_id)
+
+    def _emit_delete(self) -> None:
+        target_id = self._current_target_id()
+        if target_id is not None and self._on_delete_target is not None:
+            self._on_delete_target(target_id)
 
     def _emit_fallback(self) -> None:
         device = self._fallback_combo.currentData() if self._fallback_toggle.isChecked() else None
@@ -345,44 +415,40 @@ class DemoPanel(QWidget):
             _STATUS_STYLE + f" color:{color}; font-family:Consolas,monospace; font-weight:600;"
         )
 
-    def set_targets(self, choices: Sequence[TargetChoice], mapping: dict[str, str]) -> None:
-        """매핑 표를 다시 그린다(물체 등록·삭제·이름 변경 후 호출)."""
-        while self._mapping_layout.count():
-            item = self._mapping_layout.takeAt(0)
-            if item is None:
-                break
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self._mapping_combos.clear()
+    def set_targets(self, choices: Sequence[TargetChoice]) -> None:
+        """물체 관리 목록을 다시 그린다(물체 등록·삭제·이름 변경 후 호출).
 
-        if not choices:
-            self._mapping_layout.addWidget(
-                QLabel("등록된 물체가 없습니다 — '시선 인식' 탭에서 먼저 등록하세요."), 0, 0
-            )
-            return
-
-        for row, choice in enumerate(choices):
+        선택 상태는 target_id 기준으로 유지한다 — 재등록·이름변경으로 표시 텍스트가
+        바뀌어도 같은 물체가 선택된 채로 남게 한다.
+        """
+        selected_id = self._current_target_id()
+        self._target_list.clear()
+        self._target_ids = [choice.target_id for choice in choices]
+        for choice in choices:
             kind = f" · {choice.device_type}" if choice.device_type else ""
-            self._mapping_layout.addWidget(
-                QLabel(f"{choice.name} ({choice.target_id}{kind})"), row, 0
-            )
-            combo = QComboBox()
-            combo.addItem(_NO_DEVICE, userData=None)
-            for device_id in RUNTIME_DEVICE_IDS:
-                combo.addItem(RUNTIME_DEVICE_LABELS[device_id], userData=device_id)
-            current = mapping.get(choice.target_id)
-            if current is not None:
-                index = combo.findData(current)
-                if index >= 0:
-                    combo.setCurrentIndex(index)
-            combo.currentIndexChanged.connect(
-                lambda _index, target_id=choice.target_id, source=combo: self._on_mapping_changed(
-                    target_id, source.currentData()
-                )
-            )
-            self._mapping_combos[choice.target_id] = combo
-            self._mapping_layout.addWidget(combo, row, 1)
+            self._target_list.addItem(f"{choice.name} ({choice.target_id}{kind})")
+        if selected_id is not None and selected_id in self._target_ids:
+            self._target_list.setCurrentRow(self._target_ids.index(selected_id))
+
+    def set_registration_active(self, *, active: bool) -> None:
+        """등록 진행 중에는 등록/재등록/이름변경/삭제를 잠그고 취소만 연다."""
+        for button in (
+            self._register_target_button,
+            self._reregister_target_button,
+            self._rename_target_button,
+            self._delete_target_button,
+        ):
+            button.setEnabled(not active)
+        self._cancel_registration_button.setEnabled(active)
+
+    def set_registration_status(self, text: str, *, active: bool) -> None:
+        self._registration_status_label.setText(text)
+        self._registration_status_label.setStyleSheet(
+            "background:#3d2a12; color:#f0b429; border:1px solid #7a5a1e;"
+            " border-radius:6px; padding:8px; font-weight:700;"
+            if active
+            else _STATUS_STYLE + " color:#8b949e;"
+        )
 
     def set_state(
         self,
@@ -416,12 +482,16 @@ class DemoPanel(QWidget):
         self._phase_label.setText(f"Intent: {phase}")
 
     def set_bulb(self, state: VirtualBulbState, *, badge: str, ok: bool) -> None:
-        self.bulb_view.set_state(state)
+        """명령 기준 문구 + 배지를 갱신한다. 원(BulbView)은 `set_bulb_live`가 맡는다."""
         self._bulb_state_label.setText(state.describe())
         self._bulb_badge.setText(f"실물: {badge}")
         self._bulb_badge.setStyleSheet(
             ("color:#3fb950;" if ok else "color:#d29922;") + " font-weight:700;"
         )
+
+    def set_bulb_live(self, pilot: Mapping[str, object] | None) -> None:
+        """`BulbPoller`가 읽어온 실물 상태로 원을 갱신한다. 조회 실패면 ``None``."""
+        self.bulb_view.set_live_state(pilot)
 
     def set_last_action(self, text: str, *, ok: bool) -> None:
         self._last_action.setText(f"마지막 실행: {text}")
@@ -453,6 +523,12 @@ class DemoPanel(QWidget):
     @property
     def fallback_device(self) -> str | None:
         return self._fallback_combo.currentData() if self._fallback_toggle.isChecked() else None
+
+    @property
+    def log_widget(self) -> QListWidget:
+        """판정·실행 로그 위젯. 이 패널의 레이아웃에는 넣지 않고 밖에서 배치한다
+        (MainWindow._build_demo_tab이 웹캠 밑에 둔다)."""
+        return self._log_list
 
 
 def _section(title: str) -> QLabel:
