@@ -349,6 +349,19 @@ def _run_verify_target(args: argparse.Namespace) -> int:
         output_path.write_text(rendered + "\n", encoding="utf-8")
         print(f"saved to {output_path}")
 
+    if args.save_samples:
+        from jarvis.gaze.target_verification import export_sweep_samples
+
+        export_sweep_samples(
+            args.save_samples,
+            target_id=record.target_id,
+            name=record.name,
+            center_yaw_pitch=(area_profile.center_yaw, area_profile.center_pitch),
+            samples=samples,
+            label=args.label,
+        )
+        print(f"raw samples saved to {args.save_samples}")
+
     if args.compare:
         earlier_payload = json.loads(Path(args.compare).read_text(encoding="utf-8"))
         earlier_bins = earlier_payload.get("summary", {}).get("bins", [])
@@ -358,32 +371,84 @@ def _run_verify_target(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_ab_residual(args: argparse.Namespace) -> int:
-    """등록 시 저장된 1단계 원시 샘플로 Ridge residual A/B를 오프라인 평가한다.
-
-    leave-one-yaw-bin-out으로 raw / 현재 bin 보정표 / Ridge의 held-out 오차를
-    비교한다. 한 파일(한 target) 데이터는 그 물체 주변에서만 유효하다 —
-    전역 보정 판단은 여러 방향의 target 파일을 각각 평가해서 종합한다.
-    """
+def _load_residual_dataset(path: Path):
     import numpy as np
 
-    from jarvis.gaze.config import GazeConfig
     from jarvis.gaze.feature_profile import TargetFeatureSample
+    from jarvis.gaze.ridge_residual import ResidualDataset
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return ResidualDataset(
+        target_id=str(payload.get("target_id", path.stem)),
+        center_yaw_pitch=(
+            float(payload["center_yaw_pitch"][0]),
+            float(payload["center_yaw_pitch"][1]),
+        ),
+        samples=tuple(
+            TargetFeatureSample.from_array(np.asarray(row, dtype=np.float64))
+            for row in payload["samples"]
+        ),
+    )
+
+
+def _run_ab_residual(args: argparse.Namespace) -> int:
+    """저장된 원시 샘플(등록/스윕 export)로 residual 보정 후보를 오프라인 평가한다.
+
+    두 모드:
+    - 단일 파일(positional): leave-one-yaw-bin-out — 같은 세션 안의 관대한 시험.
+    - `--train`/`--eval`: 교차 세션 관문 — 세션 A로 학습해 세션 B에서만 평가.
+      런타임 채택 판정은 반드시 이쪽이며, 서로 다른 날 eval 2개 PASS가 기준이다.
+    """
+    from jarvis.gaze.config import GazeConfig
+
+    if args.train or args.eval:
+        if not (args.train and args.eval):
+            raise RuntimeError("--train and --eval must be given together")
+        from jarvis.gaze.ridge_residual import evaluate_cross_session
+
+        train_sets = [_load_residual_dataset(Path(p)) for p in args.train]
+        eval_sets = [_load_residual_dataset(Path(p)) for p in args.eval]
+        report = evaluate_cross_session(
+            train_sets,
+            eval_sets,
+            GazeConfig(),
+            ridge_lambda=args.ridge_lambda,
+            kernel_bandwidth=args.kernel_bandwidth,
+        )
+        train_n = sum(len(d.samples) for d in train_sets)
+        eval_n = sum(len(d.samples) for d in eval_sets)
+        print(
+            f"train: {len(train_sets)} files / {train_n} samples "
+            f"({', '.join(d.target_id for d in train_sets)})"
+        )
+        print(f"eval:  {len(eval_sets)} files / {eval_n} samples")
+        print("bin         n    raw    bin-table  ridge   kernel  (eval median error, deg)")
+        for item in report.bins:
+            table = (
+                f"{item.table_error_deg:6.2f}" if item.table_error_deg is not None else "  n/a "
+            )
+            print(
+                f"{item.label:11s} {item.frame_count:4d} {item.raw_error_deg:6.2f}  "
+                f"{table}    {item.ridge_error_deg:6.2f}  {item.kernel_error_deg:6.2f}"
+            )
+        for line in report.verdict_lines:
+            print(f"- {line}")
+        return 0
+
+    if not args.samples:
+        raise RuntimeError("pass a samples file, or --train/--eval for the cross-session gate")
     from jarvis.gaze.ridge_residual import evaluate_leave_one_bin_out
 
-    payload = json.loads(Path(args.samples).read_text(encoding="utf-8"))
-    samples = [
-        TargetFeatureSample.from_array(np.asarray(row, dtype=np.float64))
-        for row in payload["samples"]
-    ]
-    center = (float(payload["center_yaw_pitch"][0]), float(payload["center_yaw_pitch"][1]))
+    dataset = _load_residual_dataset(Path(args.samples))
     report = evaluate_leave_one_bin_out(
-        samples,
-        center,
+        list(dataset.samples),
+        dataset.center_yaw_pitch,
         GazeConfig(),
         ridge_lambda=args.ridge_lambda,
     )
-    print(f"target={payload.get('target_id')} samples={len(samples)} lambda={args.ridge_lambda}")
+    print(
+        f"target={dataset.target_id} samples={len(dataset.samples)} lambda={args.ridge_lambda}"
+    )
     print("bin         n    raw      bin-table  ridge   (held-out median error, deg)")
     for item in report.bins:
         table = f"{item.bin_table_error_deg:6.2f}" if item.bin_table_error_deg is not None else "  n/a "
@@ -462,14 +527,25 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--label", default="verify", help="run label stored in the JSON output")
     verify.add_argument("--output", help="save this run's JSON here (for a later --compare)")
     verify.add_argument("--compare", help="earlier run's JSON to diff against (collection bug vs drift)")
+    verify.add_argument(
+        "--save-samples",
+        help="save this sweep's raw feature samples here (session data for ab-residual --train/--eval)",
+    )
     verify.set_defaults(handler=_run_verify_target)
 
     ab_residual = subparsers.add_parser(
         "ab-residual",
-        help="offline leave-one-bin-out A/B: raw vs bin table vs Ridge residual",
+        help="offline residual A/B: single-file leave-bin-out, or --train/--eval cross-session gate",
     )
-    ab_residual.add_argument("samples", help="phase-1 raw sample JSON exported at registration")
+    ab_residual.add_argument(
+        "samples", nargs="?", help="single raw sample JSON for leave-one-bin-out"
+    )
+    ab_residual.add_argument(
+        "--train", nargs="+", help="session-A sample files (registration or --save-samples exports)"
+    )
+    ab_residual.add_argument("--eval", nargs="+", help="session-B sample files (held-out session)")
     ab_residual.add_argument("--ridge-lambda", type=float, default=1.0)
+    ab_residual.add_argument("--kernel-bandwidth", type=float, default=1.0)
     ab_residual.set_defaults(handler=_run_ab_residual)
 
     evaluate = subparsers.add_parser("evaluate", help="measure Target Selection Accuracy")
