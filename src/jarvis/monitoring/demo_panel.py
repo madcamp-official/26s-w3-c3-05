@@ -141,10 +141,20 @@ class DemoPanel(QWidget):
         layout = QVBoxLayout(self)
 
         # --- 상태 스트립 -------------------------------------------------
+        # 실시간 시선(raw_target)과 바라보는 기기(locked/candidate)는 서로 다른
+        # 신호다 — raw는 이번 프레임 classifier 결과 그대로(매 프레임 흔들릴 수
+        # 있음), "바라보는 기기"는 Fusion이 dwell로 확정/후보 판정한 값이다.
+        # 시연에서 "왜 아직 안 잡히지"를 raw로 바로 보여주기 위해 분리한다.
+        self._raw_target_label = QLabel("실시간 시선: -")
         self._target_label = QLabel("바라보는 기기: -")
         self._gesture_label = QLabel("제스처: -")
         self._phase_label = QLabel("Intent: IDLE")
-        for label in (self._target_label, self._gesture_label, self._phase_label):
+        for label in (
+            self._raw_target_label,
+            self._target_label,
+            self._gesture_label,
+            self._phase_label,
+        ):
             label.setStyleSheet(_STATUS_STYLE)
             layout.addWidget(label)
 
@@ -313,7 +323,13 @@ class DemoPanel(QWidget):
         phase: str,
         gesture: str,
         suppressed: bool,
+        raw_target: str | None = None,
     ) -> None:
+        raw_text = f"실시간 시선: {raw_target}" if raw_target is not None else "실시간 시선: 없음"
+        raw_color = "#58a6ff" if raw_target is not None else "#8b949e"
+        self._raw_target_label.setText(raw_text)
+        self._raw_target_label.setStyleSheet(_STATUS_STYLE + f" color:{raw_color};")
+
         if locked is not None:
             target_text = f"바라보는 기기: {locked} (LOCKED)"
             color = "#3fb950"

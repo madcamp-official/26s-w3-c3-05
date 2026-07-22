@@ -67,9 +67,14 @@ def test_status_labels_keep_a_readable_color_after_updates() -> None:
     try:
         panel.set_state(
             locked="room.bulb", candidate=None, phase="TARGET_LOCKED",
-            gesture="none", suppressed=True,
+            gesture="none", suppressed=True, raw_target="room.bulb",
         )
-        for label in (panel._target_label, panel._gesture_label, panel._phase_label):
+        for label in (
+            panel._raw_target_label,
+            panel._target_label,
+            panel._gesture_label,
+            panel._phase_label,
+        ):
             assert re.search(r"\bcolor\s*:", label.styleSheet()), label.text()
     finally:
         panel.deleteLater()
@@ -99,6 +104,46 @@ def test_state_text_reflects_lock_candidate_and_suppression() -> None:
         assert "커서 제어 정지" in panel._target_label.text()
         assert "stop_sign" in panel._gesture_label.text()
         assert "TARGET_LOCKED" in panel._phase_label.text()
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
+def test_raw_target_is_shown_separately_from_locked_device() -> None:
+    """실시간 시선(원시 classifier 결과)과 바라보는 기기(Fusion dwell 확정)는
+    서로 다른 값을 동시에 보여줄 수 있어야 한다 — 예: 아직 확정 전이라 '바라보는
+    기기: 없음'이어도 지금 막 laptop을 보고 있다는 건 실시간 시선에 남는다."""
+    app = QApplication.instance() or QApplication([])
+    panel = _panel()
+    try:
+        panel.set_state(
+            locked=None, candidate=None, phase="IDLE", gesture="-",
+            suppressed=False, raw_target=None,
+        )
+        assert "없음" in panel._raw_target_label.text()
+        assert "없음" in panel._target_label.text()
+
+        panel.set_state(
+            locked=None, candidate=None, phase="IDLE", gesture="-",
+            suppressed=False, raw_target="laptop",
+        )
+        assert "laptop" in panel._raw_target_label.text()
+        assert "없음" in panel._target_label.text()  # 아직 dwell 확정 전
+
+        panel.set_state(
+            locked="room.bulb", candidate=None, phase="TARGET_LOCKED",
+            gesture="-", suppressed=False, raw_target="laptop",
+        )
+        # 확정된 기기(bulb)와 지금 실제로 보는 기기(laptop)가 달라도 둘 다
+        # 각자의 값을 그대로 보여준다 — 서로를 덮어쓰지 않는다.
+        assert "laptop" in panel._raw_target_label.text()
+        assert "room.bulb" in panel._target_label.text()
+
+        # raw_target을 생략하면(기존 호출부 호환) 조용히 '없음'으로 떨어진다.
+        panel.set_state(
+            locked=None, candidate=None, phase="IDLE", gesture="-", suppressed=False
+        )
+        assert "없음" in panel._raw_target_label.text()
     finally:
         panel.deleteLater()
         app.processEvents()

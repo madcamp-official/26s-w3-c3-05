@@ -107,6 +107,7 @@ from jarvis.monitoring.overlay import (
 from jarvis.monitoring.demo_bridge import (
     BULB_DEVICE_ID,
     DEVICE_TYPE_TO_RUNTIME_ID,
+    UNKNOWN_TARGET,
     DemoBridge,
     DemoPreset,
     DeviceMappingStore,
@@ -1903,12 +1904,24 @@ class MainWindow(QMainWindow):
 
     def _update_demo_state(self, gesture: str) -> None:
         self._last_demo_gesture = gesture
+        # "실시간 시선"은 이번 gaze 프레임의 원시 classifier 결과를 그대로
+        # 기기 id로 치환한 값이다 — Fusion dwell을 거치지 않아 프레임마다
+        # 흔들릴 수 있다("바라보는 기기"는 그 이후 확정/후보 상태). 타깃
+        # 고정(fallback)이 켜져 있으면 원시 시선 대신 고정된 기기를 그대로
+        # 보여준다 — push_target()이 실제로 쓰는 값과 화면이 어긋나지 않게.
+        raw_target: str | None = None
+        if self._demo_bridge.fallback_device is not None:
+            raw_target = self._demo_bridge.fallback_device
+        elif self._latest_gaze is not None:
+            resolved = self._demo_bridge.resolve_target(self._latest_gaze.target_estimate.target)
+            raw_target = resolved if resolved != UNKNOWN_TARGET else None
         self._demo_panel.set_state(
             locked=self._demo_bridge.locked_device,
             candidate=self._demo_bridge.candidate_device,
             phase=str(self._demo_bridge.intent_phase),
             gesture=gesture,
             suppressed=self._demo_bridge.should_suppress_pose,
+            raw_target=raw_target,
         )
 
     def _on_control_toggled_live(self, enabled: bool) -> None:
