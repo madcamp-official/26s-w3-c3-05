@@ -311,8 +311,8 @@ def test_swipe_commit_expires_after_inactivity() -> None:
     초기화돼, 다시 오른쪽을 가리켜도 스와이프가 나지 않는다(첫 커밋 취급)."""
     machine = PoseStateMachine()
     _feed(machine, "two_fingers", ms=200, landmarks=_hand(0.9, 0.0))  # 왼쪽 커밋(side+1)
-    _feed(machine, "fist", ms=700, start=300)  # 주먹으로 >500ms 대기 → 커밋 만료
-    events = _feed(machine, "two_fingers", ms=200, start=1100, landmarks=_hand(-0.9, 0.0))
+    _feed(machine, "fist", ms=1200, start=300)  # 주먹으로 >SWIPE_RESET_MS 대기 → 커밋 만료
+    events = _feed(machine, "two_fingers", ms=200, start=1600, landmarks=_hand(-0.9, 0.0))
     assert _desktop_kinds(events) == []
 
 
