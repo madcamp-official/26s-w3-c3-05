@@ -66,7 +66,7 @@ RELEASE_FRAMES = 3
 UNTRUSTED_GRACE_FRAMES = 3
 
 # 핀치를 이보다 오래 쥐고 있으면 클릭이 아니라 드래그로 본다.
-CLICK_MAX_MS = 400
+CLICK_MAX_MS = 1000
 # 직전 클릭과 이 간격 안에 다음 클릭이 나오면 더블클릭으로 승격한다(마우스와 동일 UX).
 # 간격은 두 핀치의 **진입** 시각으로 잰다(_leave 확정 간격이 아니라) — dwell·release
 # 확정 지연을 예산에서 빼야 사용자가 체감하는 간격과 맞는다.
