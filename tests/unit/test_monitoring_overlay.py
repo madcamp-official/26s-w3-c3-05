@@ -25,6 +25,7 @@ from jarvis.monitoring.overlay import (  # noqa: E402
     draw_target_minimap,
     placeholder_frame,
     render_target_map,
+    TargetMapEntry,
 )
 
 
@@ -222,14 +223,34 @@ def test_draw_target_minimap_is_noop_without_registered_targets() -> None:
 
 
 def test_render_target_map_returns_standalone_image_with_targets() -> None:
-    """시연 패널 위젯용 단독 렌더 — 등록 물체가 있으면 이미지, 없으면 None."""
-    image = render_target_map(_registered_snapshot(), width=300)
+    """시연 패널 위젯용 단독 렌더 — 엔트리가 있으면 이미지, 없으면 None."""
+    entries = (
+        TargetMapEntry(
+            label="room.bulb", center_yaw=-25.0, center_pitch=0.0,
+            radius_yaw=6.0, radius_pitch=6.0,
+        ),
+    )
+    image = render_target_map(entries, gaze_yaw_pitch=(-20.0, 1.0), width=300)
     assert image is not None
     assert image.shape[1] == 300
     assert image.shape[0] > 200  # 맵 본체 + 범례
     assert image.any()  # 무언가 그려졌다
 
-    assert render_target_map(_snapshot(detected=True)) is None  # 등록 물체 없음
+    assert render_target_map(()) is None  # 등록 물체 없음
+
+
+def test_render_target_map_draws_without_gaze_point() -> None:
+    """시선이 없어도(점 없음) 등록 영역 지도는 그려진다 — 사용자 지시 2026-07-23."""
+    entries = (
+        TargetMapEntry(
+            label="laptop", center_yaw=0.0, center_pitch=3.0,
+            radius_yaw=5.0, radius_pitch=4.0,
+            boundary_polygon=((-5.0, -1.0), (5.0, -1.0), (5.0, 7.0), (-5.0, 7.0)),
+        ),
+    )
+    image = render_target_map(entries, gaze_yaw_pitch=None)
+    assert image is not None
+    assert image.any()
 
 
 def test_draw_gaze_overlay_shows_tracking_lost_banner() -> None:

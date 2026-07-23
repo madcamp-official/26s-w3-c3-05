@@ -97,7 +97,9 @@ from jarvis.monitoring.overlay import (
     Frame,
     draw_target_heatmap,
     draw_target_minimap,
+    gaze_point_from_snapshot,
     render_target_map,
+    TargetMapEntry,
     draw_gaze_overlay,
     draw_hand_overlay,
     draw_hud,
@@ -1899,6 +1901,9 @@ class MainWindow(QMainWindow):
             for record in self._target_registry.records
         ]
         self._demo_panel.set_targets(choices)
+        # 등록이 바뀌면 시선 지도도 즉시 갱신 — 카메라·gaze가 아직 없어도(시작 직후,
+        # --no-gaze) 등록 영역은 그려진다(사용자 지시 2026-07-23).
+        self._update_demo_target_map(self._latest_gaze)
 
     def _ensure_demo_mappings(self) -> None:
         """등록 시 선택한 기종을 실제 런타임 기기에 한 번만 자동 연결한다.
@@ -2259,8 +2264,7 @@ class MainWindow(QMainWindow):
         self._demo_video.set_gaze(snapshot)
         # 시연 패널 최상단의 시선 지도 — 웹캠이 아니라 우측 패널에 그린다(사용자
         # 지시 2026-07-23). 등록 물체가 없으면 render가 None을 줘 위젯이 숨는다.
-        if hasattr(self, "_demo_panel"):
-            self._demo_panel.set_target_map(self._target_map_pixmap(snapshot))
+        self._update_demo_target_map(snapshot)
         self._gaze_history.append(snapshot)
         cutoff_ms = snapshot.timestamp_ms - 500
         while self._gaze_history and self._gaze_history[0].timestamp_ms < cutoff_ms:
@@ -2306,16 +2310,46 @@ class MainWindow(QMainWindow):
             if self._registration.is_elapsed(snapshot.timestamp_ms):
                 self._finish_target_registration()
 
-    @staticmethod
-    def _target_map_pixmap(snapshot: GazeSnapshot) -> QPixmap | None:
-        """시연 패널용 시선 지도 렌더링(BGR ndarray → QPixmap). 등록 물체 없으면 None."""
-        image = render_target_map(snapshot)
+    def _target_map_entries(self, snapshot: GazeSnapshot | None) -> tuple[TargetMapEntry, ...]:
+        """등록 레지스트리 → 지도 엔트리. gaze 프레임과 무관해 시선이 없어도 그려진다.
+
+        라벨은 cv2로 그려지므로 한글 기기명 대신 매핑된 런타임 id(room.bulb 등)를
+        쓰고, 매핑 전이면 등록 id(target_001)를 그대로 쓴다. `selected`는 이번
+        스냅샷의 실시간 판정과 맞춘다(스냅샷이 없으면 아무것도 선택 안 됨).
+        """
+        live_target = snapshot.target if snapshot is not None else None
+        entries = []
+        for record in self._target_registry.records:
+            area = record.area_profile
+            entries.append(
+                TargetMapEntry(
+                    label=self._device_mapping.get(record.target_id) or record.target_id,
+                    center_yaw=area.center_yaw if area else record.direction.yaw,
+                    center_pitch=area.center_pitch if area else record.direction.pitch,
+                    radius_yaw=area.radius_yaw if area else record.spread.yaw,
+                    radius_pitch=area.radius_pitch if area else record.spread.pitch,
+                    boundary_polygon=area.boundary_polygon if area else (),
+                    selected=record.target_id == live_target,
+                )
+            )
+        return tuple(entries)
+
+    def _update_demo_target_map(self, snapshot: GazeSnapshot | None) -> None:
+        """시연 패널 최상단 시선 지도 갱신. 시선이 없으면 지도만 남고 점이 빠진다."""
+        if not hasattr(self, "_demo_panel"):
+            return  # 시연 탭이 아직 만들어지기 전(등록 탭이 먼저 빌드된다)
+        image = render_target_map(
+            self._target_map_entries(snapshot),
+            gaze_yaw_pitch=gaze_point_from_snapshot(snapshot) if snapshot is not None else None,
+            gaze_selected=snapshot is not None and snapshot.target != UNKNOWN_TARGET,
+        )
         if image is None:
-            return None
+            self._demo_panel.set_target_map(None)
+            return
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
-        return QPixmap.fromImage(
-            QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+        self._demo_panel.set_target_map(
+            QPixmap.fromImage(QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy())
         )
 
     @staticmethod

@@ -9,6 +9,7 @@ rest of ``jarvis.monitoring`` never needs cv2.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import cv2
@@ -236,37 +237,87 @@ _MINIMAP_YAW_SPAN = 80.0
 _MINIMAP_PITCH_SPAN = 56.0
 
 
-def _collect_target_map_details(
-    snapshot: GazeSnapshot,
-) -> tuple[tuple[object, ...], tuple[object, ...]]:
-    """미니맵에 그릴 등록 물체 상세: (폴리곤 area들, 폴리곤 없는 기기의 원들)."""
-    polygon_details = tuple(
-        sorted(
-            (detail for detail in snapshot.area_details if detail.boundary_polygon),
-            key=lambda detail: detail.device_id,
+@dataclass(frozen=True)
+class TargetMapEntry:
+    """미니맵에 그릴 등록 물체 하나 — gaze 프레임과 독립적인 순수 등록 데이터.
+
+    시선이 잡히지 않는 순간에도 등록 영역은 변하지 않으므로, 지도는 스냅샷의
+    프레임별 detail이 아니라 이 자료로 그린다(사용자 지시 2026-07-23: "시선이
+    없을 때에도 미니맵이 뜨게"). `label`은 cv2.putText로 그려지므로 ASCII만
+    안전하다 — 한글 기기명 대신 런타임 id(room.bulb 등)를 쓴다.
+    """
+
+    label: str
+    center_yaw: float
+    center_pitch: float
+    radius_yaw: float
+    radius_pitch: float
+    boundary_polygon: tuple[tuple[float, float], ...] = ()
+    selected: bool = False
+
+
+def gaze_point_from_snapshot(snapshot: GazeSnapshot) -> tuple[float, float] | None:
+    """지도에 찍을 현재 시선 (yaw, pitch). 시선이 없으면 ``None`` — 지어내지 않는다.
+
+    area 판정에 실제 쓰인 gaze(pose 보정 rescue 반영)가 있으면 그 값을, 없으면
+    스무딩된 방향을 환산한다 — 판정과 화면이 같은 점을 봐야 디버깅이 된다.
+    """
+    for area in snapshot.area_details:
+        if math.isfinite(area.used_gaze_yaw) and math.isfinite(area.used_gaze_pitch):
+            return (area.used_gaze_yaw, area.used_gaze_pitch)
+    if snapshot.smoothed_gaze_direction is not None:
+        dx, dy, dz = snapshot.smoothed_gaze_direction
+        return (
+            math.degrees(math.atan2(dx, dz)),
+            math.degrees(math.atan2(-dy, math.hypot(dx, dz))),
         )
-    )
-    polygon_ids = {detail.device_id for detail in polygon_details}
-    circle_details = tuple(
-        sorted(
-            (
-                detail
-                for detail in snapshot.device_details
-                if not np.isnan(detail.target_yaw_deg)
-                and not np.isnan(detail.target_pitch_deg)
-                and detail.device_id not in polygon_ids
-            ),
-            key=lambda detail: detail.device_id,
+    return None
+
+
+def _entries_from_snapshot(snapshot: GazeSnapshot) -> tuple[TargetMapEntry, ...]:
+    """스냅샷의 프레임별 detail → 지도 엔트리(웹캠 코너 미니맵 경로용)."""
+    entries: list[TargetMapEntry] = []
+    polygon_ids: set[str] = set()
+    for area in snapshot.area_details:
+        if not area.boundary_polygon:
+            continue
+        polygon_ids.add(area.device_id)
+        entries.append(
+            TargetMapEntry(
+                label=area.device_id,
+                center_yaw=area.center_yaw,
+                center_pitch=area.center_pitch,
+                radius_yaw=area.radius_yaw,
+                radius_pitch=area.radius_pitch,
+                boundary_polygon=area.boundary_polygon,
+                selected=area.is_selected,
+            )
         )
-    )
-    return polygon_details, circle_details
+    for detail in snapshot.device_details:
+        if (
+            np.isnan(detail.target_yaw_deg)
+            or np.isnan(detail.target_pitch_deg)
+            or detail.device_id in polygon_ids
+        ):
+            continue
+        entries.append(
+            TargetMapEntry(
+                label=detail.device_id,
+                center_yaw=detail.target_yaw_deg,
+                center_pitch=detail.target_pitch_deg,
+                radius_yaw=detail.allowed_radius_deg,
+                radius_pitch=detail.allowed_radius_deg,
+                selected=detail.is_selected,
+            )
+        )
+    return tuple(sorted(entries, key=lambda entry: entry.label))
 
 
 def _draw_target_map(
     frame: Frame,
-    snapshot: GazeSnapshot,
-    polygon_details: tuple,
-    circle_details: tuple,
+    entries: tuple[TargetMapEntry, ...],
+    gaze_yaw_pitch: tuple[float, float] | None,
+    gaze_selected: bool,
     x0: int,
     y0: int,
     map_w: int,
@@ -291,44 +342,31 @@ def _draw_target_map(
     cv2.line(frame, (cx0, y0 + 2), (cx0, y0 + map_h - 2), (55, 60, 68), 1, cv2.LINE_AA)
     cv2.line(frame, (x0 + 2, cy0), (x0 + map_w - 2, cy0), (55, 60, 68), 1, cv2.LINE_AA)
 
-    device_ids = sorted(
-        {d.device_id for d in polygon_details} | {d.device_id for d in circle_details}
-    )
-    color_index = {device_id: index for index, device_id in enumerate(device_ids)}
+    color_index = {entry.label: index for index, entry in enumerate(entries)}
 
-    for area in polygon_details[: len(_TARGET_COLORS)]:
-        color_bgr = _TARGET_COLORS[color_index[area.device_id] % len(_TARGET_COLORS)]
-        points = np.asarray(
-            [to_px(yaw, pitch) for yaw, pitch in area.boundary_polygon], dtype=np.int32
-        )
-        fill = frame.copy()
-        cv2.fillConvexPoly(fill, points, color_bgr, lineType=cv2.LINE_AA)
-        cv2.addWeighted(fill, 0.30, frame, 0.70, 0, dst=frame)
-        # 지금 이 물체로 판정 중이면 테두리를 굵게 — 어느 영역이 살아 있는지 즉시 보인다.
-        cv2.polylines(frame, [points], True, color_bgr, 2 if area.is_selected else 1, cv2.LINE_AA)
-    for detail in circle_details[: len(_TARGET_COLORS)]:
-        color_bgr = _TARGET_COLORS[color_index[detail.device_id] % len(_TARGET_COLORS)]
-        center = to_px(detail.target_yaw_deg, detail.target_pitch_deg)
-        radius = max(3, int(detail.allowed_radius_deg / _MINIMAP_YAW_SPAN * map_w))
-        cv2.circle(frame, center, radius, color_bgr, 2 if detail.is_selected else 1, cv2.LINE_AA)
+    for entry in entries[: len(_TARGET_COLORS)]:
+        color_bgr = _TARGET_COLORS[color_index[entry.label] % len(_TARGET_COLORS)]
+        thickness = 2 if entry.selected else 1
+        if entry.boundary_polygon:
+            points = np.asarray(
+                [to_px(yaw, pitch) for yaw, pitch in entry.boundary_polygon], dtype=np.int32
+            )
+            fill = frame.copy()
+            cv2.fillConvexPoly(fill, points, color_bgr, lineType=cv2.LINE_AA)
+            cv2.addWeighted(fill, 0.30, frame, 0.70, 0, dst=frame)
+            # 지금 이 물체로 판정 중이면 테두리를 굵게 — 어느 영역이 살아 있는지 즉시 보인다.
+            cv2.polylines(frame, [points], True, color_bgr, thickness, cv2.LINE_AA)
+        else:
+            center = to_px(entry.center_yaw, entry.center_pitch)
+            axes = (
+                max(3, int(entry.radius_yaw / _MINIMAP_YAW_SPAN * map_w)),
+                max(3, int(entry.radius_pitch / _MINIMAP_PITCH_SPAN * map_h)),
+            )
+            cv2.ellipse(frame, center, axes, 0.0, 0.0, 360.0, color_bgr, thickness, cv2.LINE_AA)
 
-    # 현재 시선. area 판정에 실제 쓰인 gaze(pose 보정 rescue 반영)가 있으면 그 값을,
-    # 없으면 스무딩된 방향을 환산해 그린다 — 판정과 화면이 같은 점을 봐야 디버깅이 된다.
-    gaze_yaw_pitch: tuple[float, float] | None = None
-    for area in polygon_details:
-        if math.isfinite(area.used_gaze_yaw) and math.isfinite(area.used_gaze_pitch):
-            gaze_yaw_pitch = (area.used_gaze_yaw, area.used_gaze_pitch)
-            break
-    if gaze_yaw_pitch is None and snapshot.smoothed_gaze_direction is not None:
-        dx, dy, dz = snapshot.smoothed_gaze_direction
-        gaze_yaw_pitch = (
-            math.degrees(math.atan2(dx, dz)),
-            math.degrees(math.atan2(-dy, math.hypot(dx, dz))),
-        )
     if gaze_yaw_pitch is not None:
         gx, gy = to_px(*gaze_yaw_pitch)
-        selected = snapshot.target != "UNKNOWN"
-        dot_color = (80, 220, 120) if selected else (235, 235, 235)
+        dot_color = (80, 220, 120) if gaze_selected else (235, 235, 235)
         cv2.circle(frame, (gx, gy), 4, dot_color, thickness=-1, lineType=cv2.LINE_AA)
         cv2.circle(frame, (gx, gy), 7, dot_color, 1, cv2.LINE_AA)
 
@@ -347,8 +385,8 @@ def draw_target_minimap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
     동일하다(yaw+ 오른쪽 → 화면 오른쪽, mirror와 무관 — 방향 데이터는 이미
     사용자 기준 yaw로 표현돼 있다).
     """
-    polygon_details, circle_details = _collect_target_map_details(snapshot)
-    if not polygon_details and not circle_details:
+    entries = _entries_from_snapshot(snapshot)
+    if not entries:
         return frame
 
     h, w = frame.shape[:2]
@@ -356,39 +394,51 @@ def draw_target_minimap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
     map_h = int(map_w * _MINIMAP_PITCH_SPAN / _MINIMAP_YAW_SPAN)
     x0, y0 = w - map_w - 10, 10
     color_index = _draw_target_map(
-        frame, snapshot, polygon_details, circle_details, x0, y0, map_w, map_h
+        frame,
+        entries,
+        gaze_point_from_snapshot(snapshot),
+        snapshot.target != "UNKNOWN",
+        x0,
+        y0,
+        map_w,
+        map_h,
     )
-    for index, device_id in enumerate(sorted(color_index)[: len(_TARGET_COLORS)]):
-        color_bgr = _TARGET_COLORS[color_index[device_id] % len(_TARGET_COLORS)]
+    for index, label in enumerate(sorted(color_index)[: len(_TARGET_COLORS)]):
+        color_bgr = _TARGET_COLORS[color_index[label] % len(_TARGET_COLORS)]
         ly = y0 + map_h + 14 + index * 15
         cv2.circle(frame, (x0 + 6, ly - 4), 4, color_bgr, thickness=-1)
-        cv2.putText(frame, device_id, (x0 + 14, ly), _FONT, 0.38, color_bgr, 1, cv2.LINE_AA)
+        cv2.putText(frame, label, (x0 + 14, ly), _FONT, 0.38, color_bgr, 1, cv2.LINE_AA)
     return frame
 
 
-def render_target_map(snapshot: GazeSnapshot, *, width: int = 300) -> Frame | None:
+def render_target_map(
+    entries: tuple[TargetMapEntry, ...],
+    *,
+    gaze_yaw_pitch: tuple[float, float] | None = None,
+    gaze_selected: bool = False,
+    width: int = 300,
+) -> Frame | None:
     """미니맵을 웹캠 프레임이 아닌 **단독 이미지**로 렌더링한다(시연 패널 위젯용).
 
-    등록 물체가 하나도 없으면 ``None`` — 호출자가 위젯을 숨긴다. 맵 본체 아래에
-    기기 색 범례를 함께 그려 이미지 하나로 완결된다.
+    엔트리는 gaze 프레임이 아니라 등록 레지스트리에서 온다 — 시선이 끊겨도 지도는
+    남고 시선 점만 빠진다(값을 지어내지 않는다). 엔트리가 없으면 ``None`` —
+    호출자가 위젯을 숨긴다. 맵 본체 아래에 기기 색 범례를 함께 그린다.
     """
-    polygon_details, circle_details = _collect_target_map_details(snapshot)
-    if not polygon_details and not circle_details:
+    if not entries:
         return None
 
     map_h = int(width * _MINIMAP_PITCH_SPAN / _MINIMAP_YAW_SPAN)
-    device_count = len({d.device_id for d in polygon_details} | {d.device_id for d in circle_details})
-    legend_h = 8 + 16 * min(device_count, len(_TARGET_COLORS))
+    legend_h = 8 + 16 * min(len(entries), len(_TARGET_COLORS))
     image: Frame = np.zeros((map_h + legend_h, width, 3), dtype=np.uint8)
     image[:] = (13, 17, 22)  # 시연 패널 배경(#161b22)과 이어지는 어두운 톤(BGR)
     color_index = _draw_target_map(
-        image, snapshot, polygon_details, circle_details, 0, 0, width, map_h
+        image, entries, gaze_yaw_pitch, gaze_selected, 0, 0, width, map_h
     )
-    for index, device_id in enumerate(sorted(color_index)[: len(_TARGET_COLORS)]):
-        color_bgr = _TARGET_COLORS[color_index[device_id] % len(_TARGET_COLORS)]
+    for index, label in enumerate(sorted(color_index)[: len(_TARGET_COLORS)]):
+        color_bgr = _TARGET_COLORS[color_index[label] % len(_TARGET_COLORS)]
         ly = map_h + 14 + index * 16
         cv2.circle(image, (8, ly - 4), 4, color_bgr, thickness=-1)
-        cv2.putText(image, device_id, (17, ly), _FONT, 0.4, color_bgr, 1, cv2.LINE_AA)
+        cv2.putText(image, label, (17, ly), _FONT, 0.4, color_bgr, 1, cv2.LINE_AA)
     return image
 
 
