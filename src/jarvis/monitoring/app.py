@@ -97,6 +97,7 @@ from jarvis.monitoring.overlay import (
     Frame,
     draw_target_heatmap,
     draw_target_minimap,
+    render_target_map,
     draw_gaze_overlay,
     draw_hand_overlay,
     draw_hud,
@@ -1840,6 +1841,9 @@ class MainWindow(QMainWindow):
             show_hand_overlay=True,
             show_hand_details=False,
             show_registration_guidance=True,
+            # 시연 탭의 시선 지도는 웹캠 오버레이가 아니라 우측 패널 최상단 위젯으로
+            # 보여준다(사용자 지시 2026-07-23) — 같은 지도가 두 곳에 뜨지 않게 끈다.
+            show_target_minimap=False,
         )
         self._demo_panel = DemoPanel(
             on_fallback_changed=self._on_demo_fallback_changed,
@@ -2253,6 +2257,10 @@ class MainWindow(QMainWindow):
         self._demo_bridge.push_target(snapshot.target_estimate)
         self._update_demo_state(self._last_demo_gesture)
         self._demo_video.set_gaze(snapshot)
+        # 시연 패널 최상단의 시선 지도 — 웹캠이 아니라 우측 패널에 그린다(사용자
+        # 지시 2026-07-23). 등록 물체가 없으면 render가 None을 줘 위젯이 숨는다.
+        if hasattr(self, "_demo_panel"):
+            self._demo_panel.set_target_map(self._target_map_pixmap(snapshot))
         self._gaze_history.append(snapshot)
         cutoff_ms = snapshot.timestamp_ms - 500
         while self._gaze_history and self._gaze_history[0].timestamp_ms < cutoff_ms:
@@ -2297,6 +2305,18 @@ class MainWindow(QMainWindow):
             self._update_registration_guidance(snapshot.timestamp_ms)
             if self._registration.is_elapsed(snapshot.timestamp_ms):
                 self._finish_target_registration()
+
+    @staticmethod
+    def _target_map_pixmap(snapshot: GazeSnapshot) -> QPixmap | None:
+        """시연 패널용 시선 지도 렌더링(BGR ndarray → QPixmap). 등록 물체 없으면 None."""
+        image = render_target_map(snapshot)
+        if image is None:
+            return None
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        return QPixmap.fromImage(
+            QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+        )
 
     @staticmethod
     def _smoothed_from_snapshot(snapshot: GazeSnapshot) -> SmoothedGaze | None:

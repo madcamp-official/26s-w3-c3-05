@@ -359,6 +359,25 @@ def test_fallback_combo_emits_runtime_id_not_display_label() -> None:
         app.processEvents()
 
 
+def test_target_map_widget_hides_without_pixmap_and_shows_with_one() -> None:
+    """패널 최상단 시선 지도: None이면 숨고, pixmap이 오면 보인다."""
+    from PySide6.QtGui import QPixmap
+
+    app = QApplication.instance() or QApplication([])
+    panel = _panel()
+    try:
+        assert panel._target_map_label.isVisibleTo(panel) is False  # 시작은 숨김
+        pixmap = QPixmap(120, 90)
+        pixmap.fill()
+        panel.set_target_map(pixmap)
+        assert panel._target_map_label.isVisibleTo(panel) is True
+        panel.set_target_map(None)
+        assert panel._target_map_label.isVisibleTo(panel) is False
+    finally:
+        panel.deleteLater()
+        app.processEvents()
+
+
 def test_bulb_view_survives_every_state() -> None:
     """조회 실패(None)·전원 꺼짐·경계값에서도 색 계산이 예외를 내지 않는다."""
     app = QApplication.instance() or QApplication([])

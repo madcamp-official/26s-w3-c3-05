@@ -20,7 +20,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -170,6 +171,16 @@ class DemoPanel(QWidget):
         self._target_ids: list[str] = []
 
         layout = QVBoxLayout(self)
+
+        # --- 시선 지도 (패널 최상단) ---------------------------------------
+        # 등록 물체의 인식 영역과 현재 시선 점을 작은 지도로 보여준다(사용자 지시
+        # 2026-07-23: 웹캠 오버레이 대신 우측 패널 맨 위). 렌더링은 MainWindow가
+        # `render_target_map`(overlay.py)으로 하고 QPixmap만 밀어 넣는다 — 이
+        # 패널은 cv2를 모른 채 표시만 맡는다. 등록 물체가 없으면 숨겨진다.
+        self._target_map_label = QLabel()
+        self._target_map_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._target_map_label.setVisible(False)
+        layout.addWidget(self._target_map_label)
 
         # --- 상태 스트립 -------------------------------------------------
         # 실시간 시선(raw_target)과 바라보는 기기(locked/candidate)는 서로 다른
@@ -511,6 +522,14 @@ class DemoPanel(QWidget):
     def set_bulb_live(self, pilot: Mapping[str, object] | None) -> None:
         """`BulbPoller`가 읽어온 실물 상태로 원을 갱신한다. 조회 실패면 ``None``."""
         self.bulb_view.set_live_state(pilot)
+
+    def set_target_map(self, pixmap: QPixmap | None) -> None:
+        """패널 최상단 시선 지도 갱신. ``None``이면(등록 물체 없음) 숨긴다."""
+        if pixmap is None:
+            self._target_map_label.setVisible(False)
+            return
+        self._target_map_label.setPixmap(pixmap)
+        self._target_map_label.setVisible(True)
 
     def set_last_action(self, text: str, *, ok: bool) -> None:
         self._last_action.setText(f"마지막 실행: {text}")

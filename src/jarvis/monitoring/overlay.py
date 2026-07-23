@@ -236,15 +236,10 @@ _MINIMAP_YAW_SPAN = 80.0
 _MINIMAP_PITCH_SPAN = 56.0
 
 
-def draw_target_minimap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = False) -> Frame:
-    """우상단 미니맵: 등록 물체의 yaw/pitch 영역과 현재 시선이 어디를 가리키는지.
-
-    전체 화면을 덮는 `draw_target_heatmap`(디버그 토글)과 달리 항상 켜 둘 수 있는
-    작은 보조 창이다 — "어디를 봐야 인식되는가"를 시연 중에도 화면에서 바로 확인
-    하게 한다. 등록 물체가 하나도 없으면 아무것도 그리지 않는다. 좌표 규약은
-    heatmap과 동일하다(yaw+ 오른쪽 → 화면 오른쪽, mirror와 무관 — 방향 데이터는
-    이미 사용자 기준 yaw로 표현돼 있다).
-    """
+def _collect_target_map_details(
+    snapshot: GazeSnapshot,
+) -> tuple[tuple[object, ...], tuple[object, ...]]:
+    """미니맵에 그릴 등록 물체 상세: (폴리곤 area들, 폴리곤 없는 기기의 원들)."""
     polygon_details = tuple(
         sorted(
             (detail for detail in snapshot.area_details if detail.boundary_polygon),
@@ -264,13 +259,20 @@ def draw_target_minimap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
             key=lambda detail: detail.device_id,
         )
     )
-    if not polygon_details and not circle_details:
-        return frame
+    return polygon_details, circle_details
 
-    h, w = frame.shape[:2]
-    map_w = max(150, int(w * 0.24))
-    map_h = int(map_w * _MINIMAP_PITCH_SPAN / _MINIMAP_YAW_SPAN)
-    x0, y0 = w - map_w - 10, 10
+
+def _draw_target_map(
+    frame: Frame,
+    snapshot: GazeSnapshot,
+    polygon_details: tuple,
+    circle_details: tuple,
+    x0: int,
+    y0: int,
+    map_w: int,
+    map_h: int,
+) -> dict[str, int]:
+    """맵 본체(배경·영역·시선 점)를 지정 사각형 안에 그린다. 색 인덱스를 돌려준다."""
 
     def to_px(yaw: float, pitch: float) -> tuple[int, int]:
         px = x0 + int((yaw / _MINIMAP_YAW_SPAN + 0.5) * map_w)
@@ -333,12 +335,61 @@ def draw_target_minimap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
     cv2.putText(
         frame, "TARGET MAP", (x0 + 5, y0 + 13), _FONT, 0.38, (170, 175, 185), 1, cv2.LINE_AA
     )
-    for index, device_id in enumerate(device_ids[: len(_TARGET_COLORS)]):
+    return color_index
+
+
+def draw_target_minimap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = False) -> Frame:
+    """우상단 미니맵: 등록 물체의 yaw/pitch 영역과 현재 시선이 어디를 가리키는지.
+
+    전체 화면을 덮는 `draw_target_heatmap`(디버그 토글)과 달리 항상 켜 둘 수 있는
+    작은 보조 창이다 — "어디를 봐야 인식되는가"를 화면에서 바로 확인하게 한다.
+    등록 물체가 하나도 없으면 아무것도 그리지 않는다. 좌표 규약은 heatmap과
+    동일하다(yaw+ 오른쪽 → 화면 오른쪽, mirror와 무관 — 방향 데이터는 이미
+    사용자 기준 yaw로 표현돼 있다).
+    """
+    polygon_details, circle_details = _collect_target_map_details(snapshot)
+    if not polygon_details and not circle_details:
+        return frame
+
+    h, w = frame.shape[:2]
+    map_w = max(150, int(w * 0.24))
+    map_h = int(map_w * _MINIMAP_PITCH_SPAN / _MINIMAP_YAW_SPAN)
+    x0, y0 = w - map_w - 10, 10
+    color_index = _draw_target_map(
+        frame, snapshot, polygon_details, circle_details, x0, y0, map_w, map_h
+    )
+    for index, device_id in enumerate(sorted(color_index)[: len(_TARGET_COLORS)]):
         color_bgr = _TARGET_COLORS[color_index[device_id] % len(_TARGET_COLORS)]
         ly = y0 + map_h + 14 + index * 15
         cv2.circle(frame, (x0 + 6, ly - 4), 4, color_bgr, thickness=-1)
         cv2.putText(frame, device_id, (x0 + 14, ly), _FONT, 0.38, color_bgr, 1, cv2.LINE_AA)
     return frame
+
+
+def render_target_map(snapshot: GazeSnapshot, *, width: int = 300) -> Frame | None:
+    """미니맵을 웹캠 프레임이 아닌 **단독 이미지**로 렌더링한다(시연 패널 위젯용).
+
+    등록 물체가 하나도 없으면 ``None`` — 호출자가 위젯을 숨긴다. 맵 본체 아래에
+    기기 색 범례를 함께 그려 이미지 하나로 완결된다.
+    """
+    polygon_details, circle_details = _collect_target_map_details(snapshot)
+    if not polygon_details and not circle_details:
+        return None
+
+    map_h = int(width * _MINIMAP_PITCH_SPAN / _MINIMAP_YAW_SPAN)
+    device_count = len({d.device_id for d in polygon_details} | {d.device_id for d in circle_details})
+    legend_h = 8 + 16 * min(device_count, len(_TARGET_COLORS))
+    image: Frame = np.zeros((map_h + legend_h, width, 3), dtype=np.uint8)
+    image[:] = (13, 17, 22)  # 시연 패널 배경(#161b22)과 이어지는 어두운 톤(BGR)
+    color_index = _draw_target_map(
+        image, snapshot, polygon_details, circle_details, 0, 0, width, map_h
+    )
+    for index, device_id in enumerate(sorted(color_index)[: len(_TARGET_COLORS)]):
+        color_bgr = _TARGET_COLORS[color_index[device_id] % len(_TARGET_COLORS)]
+        ly = map_h + 14 + index * 16
+        cv2.circle(image, (8, ly - 4), 4, color_bgr, thickness=-1)
+        cv2.putText(image, device_id, (17, ly), _FONT, 0.4, color_bgr, 1, cv2.LINE_AA)
+    return image
 
 
 def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = False) -> Frame:
