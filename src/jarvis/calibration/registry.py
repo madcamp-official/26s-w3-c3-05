@@ -23,9 +23,9 @@ from jarvis.gaze.feature_profile import (
 
 
 # 기기 종류별 area 판정 반경 배율. 전구는 물리적으로 작아 2단계 테두리 트레이싱이
-# 좁게 잡히므로 판정에서만 10% 여유를 준다(사용자 지시 2026-07-23). 저장된 등록
-# 데이터는 그대로 두고 런타임 판정 반경만 키운다 — 등록 원본을 오염시키지 않는다.
-DEVICE_TYPE_AREA_RADIUS_SCALE: dict[str, float] = {"electric bulb": 1.10}
+# 좁게 잡히므로 판정에서만 20% 여유를 준다(사용자 지시 2026-07-23, 10%→20% 재조정).
+# 저장된 등록 데이터는 그대로 두고 런타임 판정 반경만 키운다 — 등록 원본을 오염시키지 않는다.
+DEVICE_TYPE_AREA_RADIUS_SCALE: dict[str, float] = {"electric bulb": 1.20}
 
 
 def area_radius_scale_for(device_type: str) -> float:

@@ -273,7 +273,7 @@ class TargetClassifier:
         한 곳에 둔다.
         """
         max_radius = self._config.registration_max_area_radius_deg
-        # 기기별 반경 배율(예: 전구 1.10). 상한(max_radius) 적용 **뒤에** 곱해지므로
+        # 기기별 반경 배율(예: 전구 1.20). 상한(max_radius) 적용 **뒤에** 곱해지므로
         # (feature_profile.normalized_distance 참고) 배율이 상한에 다시 깎이지 않는다.
         radius_scale = self._area_radius_scales.get(device_id, 1.0)
         raw_distance = profile.normalized_distance(

@@ -238,7 +238,7 @@ def test_area_profile_runtime_cap_rejects_overwide_registered_area() -> None:
 
 
 def test_area_radius_scale_widens_judgment_without_touching_stored_area() -> None:
-    """기기별 반경 배율(전구 1.10): 같은 시선이 배율 없이는 OUT, 배율로는 IN.
+    """기기별 반경 배율(예: 1.10): 같은 시선이 배율 없이는 OUT, 배율로는 IN.
 
     저장된 area_profile 자체는 그대로 두고 판정에서만 키운다(사용자 지시
     2026-07-23 — 전구는 물리적으로 작아 트레이싱 영역이 좁게 잡힌다).
