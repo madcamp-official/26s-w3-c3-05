@@ -395,12 +395,15 @@ def test_index_point_moves_cursor() -> None:
     assert moves and all(e.delta[0] != 0 for e in moves)
 
 
-def test_pinch_drag_also_moves_cursor() -> None:
-    """드래그(핀치 유지) 중에도 커서가 따라 움직인다 — 진입 down 뒤 move가 이어진다."""
-    machine = PoseStateMachine()
-    events = _feed_cursor(machine, "pinch_index", ((0.4, 0.4), (0.6, 0.6)), ms=700)
-    assert any(e.kind == "move" for e in events)
-    assert any(e.kind == "mouse_down" for e in events)  # 진입에서 버튼 down(=드래그 시작)
+def test_pinch_click_freezes_cursor_then_drags() -> None:
+    """핀치 진입 뒤 click_max_ms 이내에는 커서를 얼리고(클릭 보호), 넘기면 드래그로 움직인다."""
+    machine = PoseStateMachine()  # click_max_ms 기본 1000
+    events = _feed_cursor(machine, "pinch_index", ((0.4, 0.4), (0.6, 0.6)), ms=1400)
+    assert any(e.kind == "mouse_down" for e in events)  # 진입에서 버튼 down
+    moves = [e for e in events if e.kind == "move"]
+    # 얼림 구간(진입~click_max_ms): move 없음. 이후: move 이어짐(=드래그).
+    assert all(e.timestamp_ms >= machine.click_max_ms for e in moves)
+    assert any(e.timestamp_ms >= machine.click_max_ms for e in moves)
 
 
 def _index_hand(*, straight: bool) -> np.ndarray:

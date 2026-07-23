@@ -66,7 +66,7 @@ RELEASE_FRAMES = 3
 UNTRUSTED_GRACE_FRAMES = 3
 
 # 핀치를 이보다 오래 쥐고 있으면 클릭이 아니라 드래그로 본다.
-CLICK_MAX_MS = 400
+CLICK_MAX_MS = 1000
 # 직전 클릭과 이 간격 안에 다음 클릭이 나오면 더블클릭으로 승격한다(마우스와 동일 UX).
 # 간격은 두 핀치의 **진입** 시각으로 잰다(_leave 확정 간격이 아니라) — dwell·release
 # 확정 지연을 예산에서 빼야 사용자가 체감하는 간격과 맞는다.
@@ -591,6 +591,12 @@ class PoseStateMachine:
                     landmarks, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP
                 )
                 gated = straightness is not None and straightness < INDEX_STRAIGHTNESS_MIN
+            elif self.state == "pinch_index" and timestamp_ms - self._state_since < self.click_max_ms:
+                # 클릭 의도 보호: 핀치로 누른 뒤 click_max_ms 이내에는 커서를 얼린다. 짧은
+                # 핀치(클릭)가 손 흔들림으로 미세 드래그가 돼 배경 창 포커스가 새는 걸 막는다.
+                # 이 시간을 넘겨 계속 쥐고 있으면 그때부터 드래그로 커서가 따라간다(누르고
+                # 버티기→드래그). 얼리는 동안 참조점을 버려, 드래그 시작 시 급점프가 없다.
+                gated = True
             if gated:
                 # 게이트로 멈춘 동안의 손 이동이 재개 시 급점프로 튀지 않게 참조점을 버린다.
                 self._cursor_ref = None
