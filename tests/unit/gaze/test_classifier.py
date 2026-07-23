@@ -237,6 +237,44 @@ def test_area_profile_runtime_cap_rejects_overwide_registered_area() -> None:
     assert result.target == GazeConfig().UNKNOWN_TARGET
 
 
+def test_area_radius_scale_widens_judgment_without_touching_stored_area() -> None:
+    """기기별 반경 배율(전구 1.10): 같은 시선이 배율 없이는 OUT, 배율로는 IN.
+
+    저장된 area_profile 자체는 그대로 두고 판정에서만 키운다(사용자 지시
+    2026-07-23 — 전구는 물리적으로 작아 트레이싱 영역이 좁게 잡힌다).
+    """
+    area = TargetAreaProfile(
+        center_yaw=0.0, center_pitch=0.0, radius_yaw=6.0, radius_pitch=6.0, sample_count=80
+    )
+    # 상한(6.0) × tolerance(1.60) = 9.6도 밖, × 배율 1.10(6.6 × 1.60 = 10.56도) 안.
+    probe = TargetFeatureSample(10.0, 0.0, 0.0, 0.0, 0.0, 0.1)
+
+    plain = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
+    plain.register_profile(
+        DeviceGazeProfile("bulb", _unit([0.0, 0.0, 1.0]), variance=0.01), area_profile=area
+    )
+    assert plain.classify(_unit([0.0, 0.0, 1.0]), feature_sample=probe).target == "UNKNOWN"
+
+    scaled = TargetClassifier(GazeConfig(unknown_probability_threshold=0.0))
+    scaled.register_profile(
+        DeviceGazeProfile("bulb", _unit([0.0, 0.0, 1.0]), variance=0.01),
+        area_profile=area,
+        area_radius_scale=1.10,
+    )
+    assert scaled.classify(_unit([0.0, 0.0, 1.0]), feature_sample=probe).target == "bulb"
+    # 저장된 area 자체는 그대로다 — 배율은 등록 데이터를 오염시키지 않는다.
+    assert scaled.area_profiles["bulb"].radius_yaw == 6.0
+
+
+def test_area_radius_scale_rejects_invalid_values() -> None:
+    classifier = TargetClassifier(GazeConfig())
+    with pytest.raises(ValueError):
+        classifier.register_profile(
+            DeviceGazeProfile("bulb", _unit([0.0, 0.0, 1.0]), variance=0.01),
+            area_radius_scale=0.0,
+        )
+
+
 def test_area_profile_accepts_near_boundary_with_tolerance() -> None:
     classifier = TargetClassifier(
         GazeConfig(

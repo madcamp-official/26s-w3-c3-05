@@ -60,7 +60,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from jarvis.calibration.registry import TargetRecord, TargetRegistry
+from jarvis.calibration.registry import TargetRecord, TargetRegistry, area_radius_scale_for
 from jarvis.calibration.target_registration import RegistrationPhase, TargetRegistrationSession
 from jarvis.contracts.messages import Command, GestureEstimate, Intent
 from jarvis.gaze.config import GazeConfig
@@ -2616,6 +2616,7 @@ class MainWindow(QMainWindow):
                 pose_correction=record.pose_correction,
                 requires_nod_gate=record.requires_nod_gate,
                 label=record.name,
+                area_radius_scale=area_radius_scale_for(record.device_type),
             )
             self._log.info(
                 f"'{record.name}' 2단계 등록 완료 "
@@ -2713,6 +2714,7 @@ class MainWindow(QMainWindow):
                 pose_correction=updated.pose_correction,
                 requires_nod_gate=updated.requires_nod_gate,
                 label=updated.name,
+                area_radius_scale=area_radius_scale_for(updated.device_type),
             )
             self._refresh_targets()
 

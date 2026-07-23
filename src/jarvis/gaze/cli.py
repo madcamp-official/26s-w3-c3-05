@@ -256,6 +256,8 @@ def _run_verify_target(args: argparse.Namespace) -> int:
         known = ", ".join(item.target_id for item in records)
         raise RuntimeError(f"multiple targets registered ({known}) — pass target_id")
 
+    from jarvis.calibration.registry import area_radius_scale_for
+
     classifier = TargetClassifier(config)
     for item in records:
         classifier.register_profile(
@@ -264,6 +266,7 @@ def _run_verify_target(args: argparse.Namespace) -> int:
             feature_profile=item.feature_profile,
             area_profile=item.area_profile,
             pose_correction=item.pose_correction,
+            area_radius_scale=area_radius_scale_for(item.device_type),
         )
     area_profile = classifier.area_profiles.get(record.target_id)
     if area_profile is None:

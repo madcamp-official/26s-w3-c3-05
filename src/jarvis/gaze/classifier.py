@@ -165,6 +165,7 @@ class TargetClassifier:
         self._feature_profiles: dict[str, TargetFeatureProfile] = {}
         self._area_profiles: dict[str, TargetAreaProfile] = {}
         self._pose_corrections: dict[str, TargetPoseCorrection] = {}
+        self._area_radius_scales: dict[str, float] = {}
 
     def register_profile(
         self,
@@ -173,13 +174,21 @@ class TargetClassifier:
         feature_profile: TargetFeatureProfile | None = None,
         area_profile: TargetAreaProfile | None = None,
         pose_correction: TargetPoseCorrection | None = None,
+        area_radius_scale: float = 1.0,
     ) -> None:
         """기기 gaze profile을 등록하거나 갱신한다.
 
         `geometry_3d`가 있으면 이후 `classify()`가 `origin`과 함께 호출될 때 이
         기기는 깊이로 정규화한 3D 매칭을 우선 시도한다(`effective_distance_and_variance`
         참고). `geometry_3d=None`으로 다시 등록하면 3D geometry가 제거된다.
+
+        `area_radius_scale`은 이 기기의 area 판정 반경 배율이다 — 전구처럼
+        물리적으로 작은 물체는 트레이싱 영역이 좁게 잡히므로 호출자가 기기
+        종류에 따라 여유를 줄 수 있다(저장된 등록 데이터는 건드리지 않고
+        판정에서만 키운다).
         """
+        if not math.isfinite(area_radius_scale) or area_radius_scale <= 0.0:
+            raise ValueError(f"area_radius_scale must be finite and positive, got {area_radius_scale}")
         self._profiles[profile.device_id] = profile
         if geometry_3d is not None:
             self._geometries[profile.device_id] = geometry_3d
@@ -197,6 +206,7 @@ class TargetClassifier:
             self._pose_corrections[profile.device_id] = pose_correction
         else:
             self._pose_corrections.pop(profile.device_id, None)
+        self._area_radius_scales[profile.device_id] = area_radius_scale
 
     def unregister_profile(self, device_id: str) -> None:
         self._profiles.pop(device_id, None)
@@ -204,6 +214,7 @@ class TargetClassifier:
         self._feature_profiles.pop(device_id, None)
         self._area_profiles.pop(device_id, None)
         self._pose_corrections.pop(device_id, None)
+        self._area_radius_scales.pop(device_id, None)
 
     @property
     def profiles(self) -> dict[str, DeviceGazeProfile]:
@@ -262,11 +273,18 @@ class TargetClassifier:
         한 곳에 둔다.
         """
         max_radius = self._config.registration_max_area_radius_deg
-        raw_distance = profile.normalized_distance(sample.gaze_yaw, sample.gaze_pitch, max_radius)
+        # 기기별 반경 배율(예: 전구 1.10). 상한(max_radius) 적용 **뒤에** 곱해지므로
+        # (feature_profile.normalized_distance 참고) 배율이 상한에 다시 깎이지 않는다.
+        radius_scale = self._area_radius_scales.get(device_id, 1.0)
+        raw_distance = profile.normalized_distance(
+            sample.gaze_yaw, sample.gaze_pitch, max_radius, radius_scale
+        )
         corrected_yaw, corrected_pitch = self.corrected_gaze_for(device_id, sample)
         if (corrected_yaw, corrected_pitch) == (sample.gaze_yaw, sample.gaze_pitch):
             return raw_distance, sample.gaze_yaw, sample.gaze_pitch
-        corrected_distance = profile.normalized_distance(corrected_yaw, corrected_pitch, max_radius)
+        corrected_distance = profile.normalized_distance(
+            corrected_yaw, corrected_pitch, max_radius, radius_scale
+        )
         if corrected_distance < raw_distance:
             return corrected_distance, corrected_yaw, corrected_pitch
         return raw_distance, sample.gaze_yaw, sample.gaze_pitch

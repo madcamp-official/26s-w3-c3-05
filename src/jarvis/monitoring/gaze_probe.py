@@ -868,7 +868,7 @@ class GazeProbe:
         """
         if profiles_path is None or not profiles_path.is_file():
             return 0
-        from jarvis.calibration.registry import TargetRegistry
+        from jarvis.calibration.registry import TargetRegistry, area_radius_scale_for
 
         registry = TargetRegistry(profiles_path)
         count = 0
@@ -879,6 +879,7 @@ class GazeProbe:
                 feature_profile=record.feature_profile,
                 area_profile=record.area_profile,
                 pose_correction=record.pose_correction,
+                area_radius_scale=area_radius_scale_for(record.device_type),
             )
             self._target_labels[record.target_id] = record.name
             if record.requires_nod_gate:
@@ -907,6 +908,7 @@ class GazeProbe:
         pose_correction: TargetPoseCorrection | None = None,
         requires_nod_gate: bool = False,
         label: str | None = None,
+        area_radius_scale: float = 1.0,
     ) -> None:
         """Add or replace one target profile in the live classifier."""
         existed = profile.device_id in self._classifier.profiles
@@ -916,6 +918,7 @@ class GazeProbe:
             feature_profile=feature_profile,
             area_profile=area_profile,
             pose_correction=pose_correction,
+            area_radius_scale=area_radius_scale,
         )
         if requires_nod_gate:
             self._nod_gated_devices.add(profile.device_id)
