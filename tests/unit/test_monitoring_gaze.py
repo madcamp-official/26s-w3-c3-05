@@ -428,8 +428,10 @@ def test_device_detail_reports_outside_registered_range() -> None:
         )
     )
 
+    # 완화된 tolerance(1.60)보다도 확실히 밖에 있도록 yaw를 크게 준다 — 이 테스트의
+    # 의도는 "등록 범위 밖은 OUT으로 보고한다"이지 경계값 자체가 아니다.
     snapshot = evaluate(
-        _observation(yaw=12.0),
+        _observation(yaw=20.0),
         smoother=smoother,
         classifier=classifier,
         lock=lock,
@@ -439,7 +441,7 @@ def test_device_detail_reports_outside_registered_range() -> None:
     (detail,) = snapshot.device_details
     assert detail.device_id == "small_target"
     assert detail.allowed_radius_deg == 2.0
-    assert detail.normalized_distance > 1.0
+    assert detail.normalized_distance > config.target_match_tolerance
     assert detail.within_profile_radius is False
     assert detail.range_status == "OUT"
 

@@ -504,6 +504,10 @@ invalidates legacy/stale rows. Renaming does not change the fingerprint.
 | `coverage_scale_near_ratio` / `coverage_scale_far_ratio` | `1.15` / `0.87` | Near/far buckets relative to the front-bucket median face scale. |
 | `registration_coverage_total_override_multiplier` | `10.0` | If total valid frames seen reach this multiple of `registration_coverage_min_frames`, the front and near/far buckets count as met even at zero — added 2026-07-22 because front gates near/far (its reference scale) and the pair can jointly make phase 1 impossible to finish. Left/right and up/down are not covered by this override; their existing either-side relaxation is enough. |
 
+2026-07-23 blink/tolerance retune (user feedback: blinking disrupts recognition too much; matching too conservative): `blink_hold_ms` 300→450, `blink_recovery_hold_ms` 250→350, `candidate_grace_ms` 600→1000, `target_match_tolerance` 1.30→1.60, `unknown_max_angle_deg` 25→30. The grace must exceed hold+recovery so it actually absorbs the post-blink UNKNOWN tail.
+
+The webcam views also draw a small **target minimap** (top-right inset, `draw_target_minimap`) showing every registered target's yaw/pitch area plus the live gaze point — visible even on the demo tab where debug overlays are off, so the presenter can see where to look for each device. The full-frame heatmap toggle remains as a separate debug view.
+
 Profiles saved before `boundary_polygon` existed continue to use the legacy ellipse for compatibility. Re-register the target to collect a real hull. The debug heatmap fills and outlines the stored polygon and the target list shows its hull vertex count.
 
 ### Legacy 3D profile compatibility

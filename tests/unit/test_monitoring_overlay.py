@@ -22,6 +22,7 @@ from jarvis.monitoring.overlay import (  # noqa: E402
     draw_hud,
     draw_registration_guidance,
     draw_target_heatmap,
+    draw_target_minimap,
     placeholder_frame,
 )
 
@@ -168,6 +169,55 @@ def test_draw_target_heatmap_draws_registered_target_regions() -> None:
     draw_target_heatmap(frame, snapshot)
 
     assert not np.array_equal(before, frame)
+
+
+def _registered_snapshot() -> GazeSnapshot:
+    config = GazeConfig()
+    classifier = TargetClassifier(config)
+    classifier.register_profile(
+        DeviceGazeProfile(
+            "monitor",
+            np.array([0.0, 0.0, 1.0], dtype=np.float64),
+            variance=np.radians(15.0) ** 2,
+        )
+    )
+    return evaluate(
+        FaceObservation(
+            timestamp_ms=0,
+            frame_id=0,
+            left_iris_relative=(0.0, 0.0),
+            right_iris_relative=(0.0, 0.0),
+            head_yaw_deg=0.0,
+            head_pitch_deg=0.0,
+            head_roll_deg=0.0,
+            eye_tracking_confidence=1.0,
+            face_tracking_confidence=1.0,
+            face_detected=True,
+        ),
+        smoother=GazeSmoother(config),
+        classifier=classifier,
+        lock=GazeLockStateMachine(config),
+        config=config,
+    )
+
+
+def test_draw_target_minimap_draws_inset_when_targets_registered() -> None:
+    """등록 물체가 있으면 우상단 미니맵이 그려진다 — 좌하단 영역은 건드리지 않는다."""
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    before = frame.copy()
+
+    draw_target_minimap(frame, _registered_snapshot())
+
+    assert not np.array_equal(before, frame)
+    # 미니맵은 우상단 보조 창이다 — 프레임 좌하단 사분면은 그대로여야 한다.
+    assert np.array_equal(before[140:, :140], frame[140:, :140])
+
+
+def test_draw_target_minimap_is_noop_without_registered_targets() -> None:
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    before = frame.copy()
+    draw_target_minimap(frame, _snapshot(detected=True))  # 등록 물체 없음
+    assert np.array_equal(before, frame)
 
 
 def test_draw_gaze_overlay_shows_tracking_lost_banner() -> None:

@@ -143,7 +143,11 @@ def test_recorder_writes_self_contained_session(tmp_path: Path) -> None:
 
     assert footer["frames"] == 12
     session = load_session(path)
-    assert session.header["config"]["target_match_tolerance"] == pytest.approx(1.30)
+    # 세션 헤더가 실제 config 값을 그대로 담는지만 고정한다 — 기본값 자체는
+    # 튜닝 대상이라 하드코딩하면 값 조정 때마다 테스트가 같이 깨진다.
+    assert session.header["config"]["target_match_tolerance"] == pytest.approx(
+        GazeConfig().target_match_tolerance
+    )
     assert session.target_names == {TARGET_ID: "monitor"}
     stored = session.target_record(TARGET_ID)
     assert stored is not None

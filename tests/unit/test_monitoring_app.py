@@ -767,17 +767,30 @@ def test_video_view_can_show_only_hand_tracking_without_other_debug_overlays(
         "draw_registration_guidance",
         lambda *a, **k: calls.append("registration"),
     )
+    monkeypatch.setattr(
+        app_module, "draw_target_minimap", lambda *a, **k: calls.append("minimap")
+    )
 
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
-    clean = VideoView(show_overlay=False)
+    clean = VideoView(show_overlay=False, show_target_minimap=False)
     clean.set_gaze(object())
     clean.set_hand(object())
     clean.set_registration_guidance("t", "i", 0.5)
     clean.show_frame(frame)
     assert calls == []
 
-    hand_only = VideoView(show_overlay=False, show_hand_overlay=True)
+    # 미니맵은 관객용 화면(show_overlay=False)에서도 기본으로 그린다 — "어디를
+    # 봐야 인식되는가"는 시연 중에도 보여야 한다(사용자 지시 2026-07-23).
+    minimap_only = VideoView(show_overlay=False)
+    minimap_only.set_gaze(object())
+    minimap_only.show_frame(frame)
+    assert calls == ["minimap"]
+    calls.clear()
+
+    hand_only = VideoView(
+        show_overlay=False, show_hand_overlay=True, show_target_minimap=False
+    )
     hand_only.set_gaze(object())
     hand_only.set_hand(object())
     hand_only.set_registration_guidance("t", "i", 0.5)
@@ -802,7 +815,7 @@ def test_video_view_can_show_only_hand_tracking_without_other_debug_overlays(
     debug.set_hand(object())
     debug.set_registration_guidance("t", "i", 0.5)
     debug.show_frame(frame)
-    assert calls == ["hud", "gaze", "registration", "hand"]
+    assert calls == ["hud", "gaze", "minimap", "registration", "hand"]
 
 
 def test_demo_tab_video_keeps_only_hand_overlay(tmp_path: Path) -> None:

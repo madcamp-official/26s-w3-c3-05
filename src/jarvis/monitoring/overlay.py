@@ -230,6 +230,117 @@ def draw_target_heatmap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = 
     return frame
 
 
+# 미니맵의 yaw/pitch 표시 범위(도). 등록 물체(전구 yaw -25 부근)와 시선의 자연스러운
+# 이동 범위를 여유 있게 덮되, 너무 넓혀 물체 영역이 점으로 찌그러지지 않게 잡았다.
+_MINIMAP_YAW_SPAN = 80.0
+_MINIMAP_PITCH_SPAN = 56.0
+
+
+def draw_target_minimap(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = False) -> Frame:
+    """우상단 미니맵: 등록 물체의 yaw/pitch 영역과 현재 시선이 어디를 가리키는지.
+
+    전체 화면을 덮는 `draw_target_heatmap`(디버그 토글)과 달리 항상 켜 둘 수 있는
+    작은 보조 창이다 — "어디를 봐야 인식되는가"를 시연 중에도 화면에서 바로 확인
+    하게 한다. 등록 물체가 하나도 없으면 아무것도 그리지 않는다. 좌표 규약은
+    heatmap과 동일하다(yaw+ 오른쪽 → 화면 오른쪽, mirror와 무관 — 방향 데이터는
+    이미 사용자 기준 yaw로 표현돼 있다).
+    """
+    polygon_details = tuple(
+        sorted(
+            (detail for detail in snapshot.area_details if detail.boundary_polygon),
+            key=lambda detail: detail.device_id,
+        )
+    )
+    polygon_ids = {detail.device_id for detail in polygon_details}
+    circle_details = tuple(
+        sorted(
+            (
+                detail
+                for detail in snapshot.device_details
+                if not np.isnan(detail.target_yaw_deg)
+                and not np.isnan(detail.target_pitch_deg)
+                and detail.device_id not in polygon_ids
+            ),
+            key=lambda detail: detail.device_id,
+        )
+    )
+    if not polygon_details and not circle_details:
+        return frame
+
+    h, w = frame.shape[:2]
+    map_w = max(150, int(w * 0.24))
+    map_h = int(map_w * _MINIMAP_PITCH_SPAN / _MINIMAP_YAW_SPAN)
+    x0, y0 = w - map_w - 10, 10
+
+    def to_px(yaw: float, pitch: float) -> tuple[int, int]:
+        px = x0 + int((yaw / _MINIMAP_YAW_SPAN + 0.5) * map_w)
+        py = y0 + int((0.5 - pitch / _MINIMAP_PITCH_SPAN) * map_h)
+        return (
+            min(max(px, x0 + 2), x0 + map_w - 2),
+            min(max(py, y0 + 2), y0 + map_h - 2),
+        )
+
+    # 반투명 배경 + 테두리 + 중앙 십자선(yaw=0/pitch=0 기준선).
+    backdrop = frame.copy()
+    cv2.rectangle(backdrop, (x0, y0), (x0 + map_w, y0 + map_h), (10, 12, 16), thickness=-1)
+    cv2.addWeighted(backdrop, 0.65, frame, 0.35, 0, dst=frame)
+    cv2.rectangle(frame, (x0, y0), (x0 + map_w, y0 + map_h), (90, 96, 105), 1, cv2.LINE_AA)
+    cx0, cy0 = to_px(0.0, 0.0)
+    cv2.line(frame, (cx0, y0 + 2), (cx0, y0 + map_h - 2), (55, 60, 68), 1, cv2.LINE_AA)
+    cv2.line(frame, (x0 + 2, cy0), (x0 + map_w - 2, cy0), (55, 60, 68), 1, cv2.LINE_AA)
+
+    device_ids = sorted(
+        {d.device_id for d in polygon_details} | {d.device_id for d in circle_details}
+    )
+    color_index = {device_id: index for index, device_id in enumerate(device_ids)}
+
+    for area in polygon_details[: len(_TARGET_COLORS)]:
+        color_bgr = _TARGET_COLORS[color_index[area.device_id] % len(_TARGET_COLORS)]
+        points = np.asarray(
+            [to_px(yaw, pitch) for yaw, pitch in area.boundary_polygon], dtype=np.int32
+        )
+        fill = frame.copy()
+        cv2.fillConvexPoly(fill, points, color_bgr, lineType=cv2.LINE_AA)
+        cv2.addWeighted(fill, 0.30, frame, 0.70, 0, dst=frame)
+        # 지금 이 물체로 판정 중이면 테두리를 굵게 — 어느 영역이 살아 있는지 즉시 보인다.
+        cv2.polylines(frame, [points], True, color_bgr, 2 if area.is_selected else 1, cv2.LINE_AA)
+    for detail in circle_details[: len(_TARGET_COLORS)]:
+        color_bgr = _TARGET_COLORS[color_index[detail.device_id] % len(_TARGET_COLORS)]
+        center = to_px(detail.target_yaw_deg, detail.target_pitch_deg)
+        radius = max(3, int(detail.allowed_radius_deg / _MINIMAP_YAW_SPAN * map_w))
+        cv2.circle(frame, center, radius, color_bgr, 2 if detail.is_selected else 1, cv2.LINE_AA)
+
+    # 현재 시선. area 판정에 실제 쓰인 gaze(pose 보정 rescue 반영)가 있으면 그 값을,
+    # 없으면 스무딩된 방향을 환산해 그린다 — 판정과 화면이 같은 점을 봐야 디버깅이 된다.
+    gaze_yaw_pitch: tuple[float, float] | None = None
+    for area in polygon_details:
+        if math.isfinite(area.used_gaze_yaw) and math.isfinite(area.used_gaze_pitch):
+            gaze_yaw_pitch = (area.used_gaze_yaw, area.used_gaze_pitch)
+            break
+    if gaze_yaw_pitch is None and snapshot.smoothed_gaze_direction is not None:
+        dx, dy, dz = snapshot.smoothed_gaze_direction
+        gaze_yaw_pitch = (
+            math.degrees(math.atan2(dx, dz)),
+            math.degrees(math.atan2(-dy, math.hypot(dx, dz))),
+        )
+    if gaze_yaw_pitch is not None:
+        gx, gy = to_px(*gaze_yaw_pitch)
+        selected = snapshot.target != "UNKNOWN"
+        dot_color = (80, 220, 120) if selected else (235, 235, 235)
+        cv2.circle(frame, (gx, gy), 4, dot_color, thickness=-1, lineType=cv2.LINE_AA)
+        cv2.circle(frame, (gx, gy), 7, dot_color, 1, cv2.LINE_AA)
+
+    cv2.putText(
+        frame, "TARGET MAP", (x0 + 5, y0 + 13), _FONT, 0.38, (170, 175, 185), 1, cv2.LINE_AA
+    )
+    for index, device_id in enumerate(device_ids[: len(_TARGET_COLORS)]):
+        color_bgr = _TARGET_COLORS[color_index[device_id] % len(_TARGET_COLORS)]
+        ly = y0 + map_h + 14 + index * 15
+        cv2.circle(frame, (x0 + 6, ly - 4), 4, color_bgr, thickness=-1)
+        cv2.putText(frame, device_id, (x0 + 14, ly), _FONT, 0.38, color_bgr, 1, cv2.LINE_AA)
+    return frame
+
+
 def draw_gaze_overlay(frame: Frame, snapshot: GazeSnapshot, *, mirror: bool = False) -> Frame:
     """Overlay the live Gaze pipeline result: gaze ray, head angles, lock state.
 

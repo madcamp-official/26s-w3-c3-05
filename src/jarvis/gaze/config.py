@@ -25,13 +25,18 @@ class GazeConfig:
     유예(candidate_grace_ms 600ms)가 있어 짧아진 dwell에서도 오탐 승격은 확률
     0.80 + 마진 0.20 게이트가 막는다."""
 
-    candidate_grace_ms: int = 600
+    candidate_grace_ms: int = 1000
     """dwell 적립 중 순간 UNKNOWN/저신뢰를 허용하는 유예 시간.
 
     깜빡임 한 번으로 3초 dwell이 0으로 리셋되면 자연 깜빡임 주기(2~5초)보다
-    dwell이 길어 확정이 영원히 안 된다(2026-07-22 실사용). blink hold(300ms) +
-    recovery(250ms)가 못 덮는 꼬리까지 포함하도록 600ms로 둔다. 유예 구간도
-    dwell 경과 시간에는 포함된다."""
+    dwell이 길어 확정이 영원히 안 된다(2026-07-22 실사용). blink hold +
+    recovery가 못 덮는 꼬리까지 포함하도록 여유 있게 둔다. 유예 구간도
+    dwell 경과 시간에는 포함된다.
+
+    2026-07-23 조정: 600→1000ms. 실사용에서 깜빡임 뒤 홍채가 재안정되는 동안
+    UNKNOWN 꼬리가 600ms를 넘겨 dwell이 리셋되는 체감 보고("깜빡임에 방해받는
+    게 너무 크다")를 반영. blink hold(450ms)+recovery(350ms) 합계보다 커야
+    유예가 실제로 그 꼬리를 덮는다."""
 
     minimum_probability: float = 0.80
     """대상 후보로 인정하거나 Lock을 유지하기 위한 최소 top-1 확률."""
@@ -77,11 +82,14 @@ class GazeConfig:
     공유한다 — 서로 다른 값이 필요해지면 그 이유를 documents/decisions.md에 남긴다.
     """
 
-    unknown_max_angle_deg: float = 25.0
+    unknown_max_angle_deg: float = 30.0
     """가장 가까운 등록 방향과도 이 각도보다 멀면 UNKNOWN으로 거부한다.
 
     기기 간 상대 확률만 사용하면 등록 기기가 하나일 때 모든 방향의 확률이 1.0이
     되는 문제를 막는 절대 거리 안전 기준이다.
+
+    2026-07-23: 25→30도 — target_match_tolerance 완화(1.30→1.60)와 발맞춰,
+    안전 기준이 완화된 정규화 거리보다 먼저 걸려 완화를 무효화하지 않게 한다.
     """
 
     # Gaze vector composition (README 7장 "시선 방향 벡터 합성")
@@ -113,11 +121,17 @@ class GazeConfig:
     ema_max_alpha: float = 0.65
     """높은 confidence 프레임에 적용할 EMA 반영률."""
 
-    blink_hold_ms: int = 300
-    """Short eye-closed intervals keep the last stable gaze instead of jumping."""
+    blink_hold_ms: int = 450
+    """Short eye-closed intervals keep the last stable gaze instead of jumping.
 
-    blink_recovery_hold_ms: int = 250
-    """Keep holding briefly after reopening eyes so unstable iris landmarks settle."""
+    2026-07-23: 300→450ms — 실사용에서 깜빡임이 판정을 자주 끊는다는 보고를
+    반영해 자연 깜빡임(전형적으로 100~400ms)을 온전히 덮도록 늘렸다."""
+
+    blink_recovery_hold_ms: int = 350
+    """Keep holding briefly after reopening eyes so unstable iris landmarks settle.
+
+    2026-07-23: 250→350ms — 재개안 직후 홍채 landmark가 튀며 gaze가 잠깐 엉뚱한
+    곳을 가리키던 꼬리를 더 길게 흡수한다(blink_hold_ms와 같은 이유로 상향)."""
 
     eye_closed_ratio_threshold: float = 0.12
     """Twice the collapsed-eye guard used by adaptive blink detection.
@@ -310,13 +324,17 @@ class GazeConfig:
     gaze_motion_max_interval_ms: int = 250
     """Reset motion derivatives after a long gap, blink, or tracking hold."""
 
-    target_match_tolerance: float = 1.30
+    target_match_tolerance: float = 1.60
     """Accept near-boundary target matches up to this normalized distance.
 
     1.10(10% 여유)이었을 때 물체를 정면으로 보고 있어도 `x1.28 > x1.10`처럼
     등록된 traced area 바로 바깥으로 밀려나 `실시간=응시대상 없음`이 되는
     사례가 실측됐다(2026-07-22) — 특히 물체가 카메라에서 멀어 2단계 경계
-    추적이 자연스럽게 퍼지는 경우. 30%로 늘려 그 여유를 흡수한다."""
+    추적이 자연스럽게 퍼지는 경우. 30%로 늘려 그 여유를 흡수했다.
+
+    2026-07-23: 1.30→1.60. 실사용 진단 로그에서 전구를 보는 프레임 다수가
+    x1.39~x1.66으로 거부됐다("각도 범위가 너무 보수적") — 등록 영역 대비
+    60% 여유까지 인정한다. 상한 2.0(검증식)에는 여유를 남긴다."""
 
     target_context_tolerance: float = 1.35
     """Soft scale for normalized 8D context distance during candidate ranking."""

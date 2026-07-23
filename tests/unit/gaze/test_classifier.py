@@ -227,9 +227,11 @@ def test_area_profile_runtime_cap_rejects_overwide_registered_area() -> None:
         ),
     )
 
+    # 등록 반경(20도) 안이지만 런타임 상한(6도) × tolerance(1.60) = 9.6도 밖 —
+    # 상한이 실제 판정 반경을 지배함을 고정한다.
     result = classifier.classify(
         _unit([0.0, 0.0, 1.0]),
-        feature_sample=TargetFeatureSample(8.0, 0.0, 0.0, 0.0, 0.0, 0.1),
+        feature_sample=TargetFeatureSample(11.0, 0.0, 0.0, 0.0, 0.0, 0.1),
     )
 
     assert result.target == GazeConfig().UNKNOWN_TARGET

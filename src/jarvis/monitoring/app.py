@@ -96,6 +96,7 @@ from jarvis.monitoring.messages import MessageLevel, MessageLog
 from jarvis.monitoring.overlay import (
     Frame,
     draw_target_heatmap,
+    draw_target_minimap,
     draw_gaze_overlay,
     draw_hand_overlay,
     draw_hud,
@@ -985,6 +986,7 @@ class VideoView(QLabel):
         show_hand_overlay: bool | None = None,
         show_hand_details: bool = True,
         show_registration_guidance: bool | None = None,
+        show_target_minimap: bool = True,
     ) -> None:
         super().__init__()
         self.setMinimumSize(480, 360)
@@ -996,6 +998,9 @@ class VideoView(QLabel):
         self._show_registration_guidance = (
             show_overlay if show_registration_guidance is None else show_registration_guidance
         )
+        # 등록 물체 영역 미니맵(우상단). gaze 스냅샷이 이 뷰에 연결되지 않으면(예:
+        # 파인튜닝 탭) 그릴 데이터 자체가 없어 저절로 나타나지 않는다.
+        self._show_target_minimap = show_target_minimap
         self._fps_times: deque[float] = deque(maxlen=30)
         self._frame_count = 0
         self._gaze: GazeSnapshot | None = None
@@ -1046,6 +1051,10 @@ class VideoView(QLabel):
                 if self._show_target_heatmap:
                     draw_target_heatmap(display, self._gaze, mirror=True)
                 draw_gaze_overlay(display, self._gaze, mirror=True)
+        # 미니맵은 디버그 오버레이(show_overlay)와 독립적으로 그린다 — 관객용 시연
+        # 화면(show_overlay=False)에서도 "어디를 봐야 인식되는가"는 보여야 한다.
+        if self._show_target_minimap and self._gaze is not None:
+            draw_target_minimap(display, self._gaze, mirror=True)
         if self._show_registration_guidance and self._registration_guide is not None:
             title, instruction, progress = self._registration_guide
             draw_registration_guidance(
